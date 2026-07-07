@@ -91,4 +91,8 @@ Jeśli chcesz dołączyć — issue, PR albo kontakt przez profil GitHub.
 
 ## Licencja
 
-Na razie bez formalnej licencji w repozytorium. Ustalimy przy pierwszym zewnętrznym wkładzie.
+Kod w tym repozytorium (Cynober DB, KarminQL, warstwa HSS/HSL, pliki `karmazyn_*` i `cynober_*`) jest na licencji **[MIT](LICENSE)**.
+
+Dokumentacja specyfikacji HSL: [`HSL_Paper_v1_1_0_EN.md`](HSL_Paper_v1_1_0_EN.md) — **CC BY 4.0** (osobno od licencji kodu).
+
+Rdzeń KarmazynOS pochodzi z ekosystemu [KarmazynOs](https://github.com/Maciej-EriAmo/KarmazynOs); docelowo oba repozytoria mają wspólną licencję MIT.
