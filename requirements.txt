@@ -1,0 +1,7 @@
+# Rdzeń Cynober DB i KarminQL działają na samym Pythonie 3.10+ (stdlib).
+# Poniższe pakiety są opcjonalne — włączają dodatkowe funkcje.
+
+numpy>=1.24          # HSS (Ring-LWE), HRR, rezonans SZUKAJ, karmazyn_proca
+cryptography>=41.0   # ECDH/X25519 + AES-GCM w tunelu Cynober
+plotly>=5.0          # komenda WYKRES w Cynober_db.py
+pandas>=2.0          # komenda WYKRES w Cynober_db.py
