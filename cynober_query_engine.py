@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-cynober_query_engine.py — Silnik zapytań KarminQL v6.0 (PL + aliasy EN)
+cynober_query_engine.py — Silnik zapytań KarminQL v6.1 (PL + aliasy EN)
 ==========================================================================
 Rozszerzenia SQL-owe: WYPISZ GDZIE, ZAKTUALIZUJ GDZIE, złożone warunki,
 JOIN po relacji (POŁĄCZONE JAKO), JOIN relacyjny (DOŁĄCZ Z), HAVING (MAJĄCE),
@@ -120,6 +120,14 @@ class MergeNode(ASTNode):
     properties: Tuple[Tuple[str, str], ...]
 
 @dataclass(frozen=True)
+class RelJoinSpec:
+    alias: str
+    pairs: Tuple[Tuple[str, str], ...]
+    left_outer: bool = False
+    filter_subquery: Optional[Any] = None
+
+
+@dataclass(frozen=True)
 class ProjColumn:
     label: str
     kind: str = "ref"
@@ -166,8 +174,7 @@ class ProjectWhereNode(ASTNode):
     cond: CondExpr
     join_relation: Optional[str] = None
     join_target: Optional[str] = None
-    rel_join_alias: Optional[str] = None
-    rel_join_pairs: Tuple[Tuple[str, str], ...] = ()
+    rel_joins: Tuple[RelJoinSpec, ...] = ()
     distinct: bool = False
     sort_by: Optional[str] = None
     sort_desc: bool = False
@@ -284,6 +291,7 @@ _ALIAS_PHRASES: Tuple[Tuple[str, str], ...] = (
     (r"DESCRIBE\s+DB", "OPISZ BAZĘ"),
     (r"MERGE\s+ON", "SCAL PO"),
     (r"UPSERT\s+ON", "SCAL PO"),
+    (r"LEFT\s+JOIN\s+\"([^\"]+)\"\s+ON", r'LEWY DOŁĄCZ Z "\1" GDZIE'),
     (r"JOIN\s+\"([^\"]+)\"\s+ON", r'DOŁĄCZ Z "\1" GDZIE'),
 )
 
@@ -735,23 +743,65 @@ class KarminParser:
     def _parse_projection_columns(self, keys_str: str) -> Tuple[ProjColumn, ...]:
         return tuple(self._parse_simple_ref(item) for item in self._split_projection_items(keys_str))
 
-    def _extract_rel_join(self, conds_str: str) -> Tuple[str, Optional[str], Tuple[Tuple[str, str], ...]]:
-        m = re.search(
-            r'\s+DOŁĄCZ\s+Z\s+"([^"]+)"\s+GDZIE\s+(.+)$',
-            conds_str,
-            re.IGNORECASE,
-        )
-        if not m:
-            return conds_str, None, ()
-        alias = m.group(1)
-        join_body = m.group(2).strip()
+    def _read_paren_expr(self, text: str) -> Tuple[str, str]:
+        if not text.startswith("("):
+            raise SyntaxError("Oczekiwano (podzapytanie) po DOŁĄCZ Z")
+        depth = 0
+        for i, ch in enumerate(text):
+            if ch == "(":
+                depth += 1
+            elif ch == ")":
+                depth -= 1
+                if depth == 0:
+                    return text[1:i], text[i + 1 :].lstrip()
+        raise SyntaxError("Niezamknięty nawias w podzapytaniu JOIN")
+
+    def _parse_join_pairs(self, join_body: str) -> Tuple[Tuple[str, str], ...]:
         pairs: List[Tuple[str, str]] = []
         for part in self._split_top_oraz(join_body):
             jm = re.match(r'^"?([^"]+)"?\s*=\s*"?([^"]+)"?$', part.strip())
             if not jm:
                 raise SyntaxError(f"JOIN relacyjny wymaga równości cech: {part}")
             pairs.append((jm.group(1).strip(), jm.group(2).strip()))
-        return conds_str[:m.start()].strip(), alias, tuple(pairs)
+        return tuple(pairs)
+
+    def _extract_all_rel_joins(self, conds_str: str) -> Tuple[str, Tuple[RelJoinSpec, ...]]:
+        joins: List[RelJoinSpec] = []
+        text = conds_str.strip()
+        while text:
+            m = re.search(r'\s+(LEWY\s+)?DOŁĄCZ\s+Z\s+', text, re.IGNORECASE)
+            if not m:
+                break
+            left_outer = bool(m.group(1))
+            head = text[:m.start()].strip()
+            tail = text[m.end():].lstrip()
+            subquery_node = None
+            alias = None
+            if tail.startswith("("):
+                inner, tail = self._read_paren_expr(tail)
+                subquery_node = self._parse_subquery_atom(inner)
+                if tail.upper().startswith("JAKO "):
+                    am = re.match(r'^JAKO\s+"([^"]+)"\s+', tail, re.IGNORECASE)
+                    if not am:
+                        raise SyntaxError("Oczekiwano JAKO \"alias\" po podzapytaniu JOIN")
+                    alias = am.group(1)
+                    tail = tail[am.end():].lstrip()
+                else:
+                    alias = "Prawa"
+            else:
+                am = re.match(r'^"([^"]+)"\s+', tail)
+                if not am:
+                    raise SyntaxError('Oczekiwano "alias" lub (podzapytanie) po DOŁĄCZ Z')
+                alias = am.group(1)
+                tail = tail[am.end():].lstrip()
+            gm = re.match(r'^GDZIE\s+(.+)$', tail, re.IGNORECASE)
+            if not gm:
+                raise SyntaxError("Oczekiwano GDZIE po DOŁĄCZ Z …")
+            joins.insert(0, RelJoinSpec(
+                alias, self._parse_join_pairs(gm.group(1).strip()), left_outer, subquery_node,
+            ))
+            text = head
+        return text, tuple(joins)
 
     def _parse_prop_pairs(self, text: str) -> List[Tuple[str, str]]:
         pairs: List[Tuple[str, str]] = []
@@ -956,12 +1006,12 @@ class KarminParser:
             columns = self._parse_projection_columns(match.group(1))
             join_rel, join_tgt = match.group(2), match.group(3)
             conds_str, limit, offset, sort_by, sort_desc, _, _, _, _, distinct = self._extract_modifiers(match.group(4))
-            conds_str, rel_alias, rel_pairs = self._extract_rel_join(conds_str)
+            conds_str, rel_joins = self._extract_all_rel_joins(conds_str)
             if re.match(r'^WYPISZ\s+UNIKALNE\s+', line, re.IGNORECASE):
                 distinct = True
             return ProjectWhereNode(
                 columns, self.cond_parser.parse(conds_str), join_rel, join_tgt,
-                rel_alias, rel_pairs, distinct, sort_by, sort_desc, limit, offset,
+                rel_joins, distinct, sort_by, sort_desc, limit, offset,
             )
 
         if match := self.zaktualizuj_gdzie_pattern.match(line):
@@ -1046,7 +1096,7 @@ class BubbleAlreadyExistsError(Exception): pass
 class SubstrateAPI:
     def __init__(self, store):
         self.store = store
-        self.namespaces = {"DEFAULT": {"bubbles": {}, "inv_index": {}}}
+        self.namespaces = {"DEFAULT": {"bubbles": {}, "inv_index": {}, "atom_index": {}}}
         self.active_ns = "DEFAULT"
         self._backup_state = None
 
@@ -1056,9 +1106,12 @@ class SubstrateAPI:
     @property
     def _inv_index(self): return self.namespaces[self.active_ns]["inv_index"]
 
+    @property
+    def _atom_index(self): return self.namespaces[self.active_ns]["atom_index"]
+
     def create_namespace(self, name: str):
         if name in self.namespaces: raise ValueError(f"Przestrzeń '{name}' już istnieje.")
-        self.namespaces[name] = {"bubbles": {}, "inv_index": {}}
+        self.namespaces[name] = {"bubbles": {}, "inv_index": {}, "atom_index": {}}
 
     def use_namespace(self, name: str):
         if name not in self.namespaces: raise ValueError(f"Przestrzeń '{name}' nie istnieje. Utrwal ją najpierw.")
@@ -1076,6 +1129,7 @@ class SubstrateAPI:
             "bubbles": list(self.store.bubbles),
             "inv_index": {k: {v: s.copy() for v, s in vals.items()}
                           for k, vals in self._inv_index.items()},
+            "atom_index": {aid: s.copy() for aid, s in self._atom_index.items()},
         }
 
     def commit_transaction(self):
@@ -1106,6 +1160,7 @@ class SubstrateAPI:
         self.store.roots[:] = bs["roots"]
         self.store.bubbles[:] = bs["bubbles"]
         self.namespaces[self.active_ns]["inv_index"] = bs["inv_index"]
+        self.namespaces[self.active_ns]["atom_index"] = bs["atom_index"]
         self.commit_transaction()
 
     def _get_bubble(self, name: str):
@@ -1114,10 +1169,40 @@ class SubstrateAPI:
 
     def _update_index(self, bubble_name: str, key: str, value: Any, add: bool = True):
         val_str = KarminType.to_str(value)
-        if key not in self._inv_index: self._inv_index[key] = {}
-        if val_str not in self._inv_index[key]: self._inv_index[key][val_str] = set()
-        if add: self._inv_index[key][val_str].add(bubble_name)
-        else: self._inv_index[key][val_str].discard(bubble_name)
+        if key not in self._inv_index:
+            self._inv_index[key] = {}
+        if val_str not in self._inv_index[key]:
+            self._inv_index[key][val_str] = set()
+        if add:
+            self._inv_index[key][val_str].add(bubble_name)
+        else:
+            self._inv_index[key][val_str].discard(bubble_name)
+
+    def _track_atom(self, bubble_name: str, atom_id: str, add: bool = True):
+        if not atom_id:
+            return
+        if add:
+            self._atom_index.setdefault(atom_id, set()).add(bubble_name)
+        else:
+            if atom_id in self._atom_index:
+                self._atom_index[atom_id].discard(bubble_name)
+                if not self._atom_index[atom_id]:
+                    del self._atom_index[atom_id]
+
+    def _indexed_equals(self, cmp: CondCompare, universe: Set[str]) -> Optional[Set[str]]:
+        if cmp.subquery is not None or str(cmp.val).startswith("$"):
+            return None
+        if cmp.op != "=":
+            return None
+        if cmp.key.upper() in ("BĄBEL", "TEMPERATURA"):
+            return None
+        if cmp.key not in self._inv_index:
+            return None
+        val_str = KarminType.to_str(KarminType.parse(cmp.val))
+        bucket = self._inv_index[cmp.key].get(val_str)
+        if bucket is None:
+            return set()
+        return set(bucket) & universe
 
     def create_bubble(self, name: str):
         if name in self._bubble_index: raise BubbleAlreadyExistsError(f"Bąbel '{name}' już istnieje w '{self.active_ns}'.")
@@ -1328,12 +1413,14 @@ class SubstrateAPI:
         atom.metadata.update({'timestamp': int(time.time() * 1000), 'v': val})
         bubble.bind(key, atom)
         self._update_index(bubble_name, key, val, add=True)
+        self._track_atom(bubble_name, atom.id, add=True)
 
     def update_property(self, bubble_name: str, key: str, value_raw: str):
         bubble = self._get_bubble(bubble_name)
         old_atom_id = bubble.bindings.get(key)
         old_val = None
         if old_atom_id:
+            self._track_atom(bubble_name, old_atom_id, add=False)
             old_atom = self.store.get_atom(old_atom_id)
             if old_atom:
                 old_val = old_atom.metadata.get('v')
@@ -1349,12 +1436,14 @@ class SubstrateAPI:
         atom.metadata.update({'timestamp': int(time.time() * 1000), 'v': new_val})
         bubble.bind(key, atom)
         self._update_index(bubble_name, key, new_val, add=True)
+        self._track_atom(bubble_name, atom.id, add=True)
 
     def remove_property(self, bubble_name: str, key: str):
         bubble = self._get_bubble(bubble_name)
         if key not in bubble.bindings: raise KeyError(f"Brak cechy '{key}'")
         old_atom_id = bubble.bindings.get(key)
         if old_atom_id:
+            self._track_atom(bubble_name, old_atom_id, add=False)
             old_atom = self.store.get_atom(old_atom_id)
             if old_atom:
                 self._update_index(bubble_name, key, old_atom.metadata.get('v'), add=False)
@@ -1379,8 +1468,10 @@ class SubstrateAPI:
         bubble = self._get_bubble(bubble_name)
         for key, atom_id in bubble.bindings.items():
             if not key.startswith("hist:") and not key.startswith("rel:"):
+                self._track_atom(bubble_name, atom_id, add=False)
                 atom = self.store.get_atom(atom_id)
-                if atom: self._update_index(bubble_name, key, atom.metadata.get('v'), add=False)
+                if atom:
+                    self._update_index(bubble_name, key, atom.metadata.get('v'), add=False)
         self.store.unset_root(bubble)
         del self._bubble_index[bubble_name]
 
@@ -1412,29 +1503,28 @@ class SubstrateAPI:
             return alias.strip(), key.strip()
         return default_alias, prop.strip()
 
-    def _get_side_value(self, bubble_name: Optional[str], alias: Optional[str], key: str,
-                        left_name: str, right_name: Optional[str], join_alias: Optional[str]) -> Any:
-        if key.upper() == "BĄBEL":
-            if alias and join_alias and alias == join_alias:
-                return right_name
+    def _resolve_alias_bubble(self, alias: Optional[str], left_name: str,
+                              join_ctx: dict) -> Optional[str]:
+        if not alias:
             return left_name
-        target = left_name
-        if alias and join_alias and alias == join_alias:
-            target = right_name or ""
-        elif alias and join_alias and alias != join_alias:
-            return None
-        return self._get_property_value(target, key) if target else None
+        return join_ctx.get(alias)
 
-    def _eval_proj_column(self, col: ProjColumn, left_name: str, right_name: Optional[str],
-                          join_alias: Optional[str]) -> Any:
+    def _value_from_ctx(self, alias: Optional[str], key: str,
+                        left_name: str, join_ctx: dict) -> Any:
+        if key.upper() == "BĄBEL":
+            target = self._resolve_alias_bubble(alias, left_name, join_ctx)
+            return target
+        target = self._resolve_alias_bubble(alias, left_name, join_ctx)
+        if not target:
+            return None
+        return self._get_property_value(target, key)
+
+    def _eval_proj_column(self, col: ProjColumn, left_name: str, join_ctx: dict) -> Any:
         if col.kind == "ref":
-            return self._get_side_value(
-                None, col.ref_alias, col.ref_key or col.label,
-                left_name, right_name, join_alias,
-            )
+            return self._value_from_ctx(col.ref_alias, col.ref_key or col.label, left_name, join_ctx)
         if col.kind == "arith":
-            left = self._eval_proj_column(col.arith_left, left_name, right_name, join_alias)
-            right = self._eval_proj_column(col.arith_right, left_name, right_name, join_alias)
+            left = self._eval_proj_column(col.arith_left, left_name, join_ctx)
+            right = self._eval_proj_column(col.arith_right, left_name, join_ctx)
             if left is None or right is None:
                 return None
             if col.arith_op == "+":
@@ -1449,29 +1539,63 @@ class SubstrateAPI:
         if col.kind == "case" and col.case_parts:
             for cond, then_val in col.case_parts:
                 if left_name in self._eval_cond_expr(cond, {}, {left_name}, None):
-                    return KarminType.parse(f'"{then_val}"' if not then_val.replace(".", "").isdigit() else then_val)
+                    return KarminType.parse(
+                        f'"{then_val}"' if not then_val.replace(".", "").isdigit() else then_val
+                    )
             if col.case_else is not None:
                 return KarminType.parse(
                     f'"{col.case_else}"' if not str(col.case_else).replace(".", "").isdigit() else col.case_else
                 )
         return None
 
-    def _project_row(self, left_name: str, right_name: Optional[str],
-                     columns: Tuple[ProjColumn, ...], join_alias: Optional[str] = None) -> dict:
-        return {col.label: self._eval_proj_column(col, left_name, right_name, join_alias) for col in columns}
+    def _project_row(self, left_name: str, join_ctx: dict,
+                     columns: Tuple[ProjColumn, ...]) -> dict:
+        return {col.label: self._eval_proj_column(col, left_name, join_ctx) for col in columns}
 
-    def _rel_join_match(self, left_name: str, right_name: str,
+    def _join_pair_values(self, left_name: str, right_name: str, join_ctx: dict,
+                          l_prop: str, r_prop: str, join_alias: str) -> Tuple[Any, Any]:
+        l_alias, l_key = self._split_qualified(l_prop, None)
+        r_alias, r_key = self._split_qualified(r_prop, join_alias)
+        l_val = self._value_from_ctx(l_alias, l_key, left_name, join_ctx)
+        r_val = self._get_property_value(right_name, r_key)
+        return l_val, r_val
+
+    def _rel_join_match(self, left_name: str, right_name: str, join_ctx: dict,
                         pairs: Tuple[Tuple[str, str], ...], join_alias: str) -> bool:
         if left_name == right_name:
             return False
         for left_prop, right_prop in pairs:
-            l_alias, l_key = self._split_qualified(left_prop, None)
-            r_alias, r_key = self._split_qualified(right_prop, join_alias)
-            l_val = self._get_side_value(None, l_alias, l_key, left_name, right_name, join_alias)
-            r_val = self._get_side_value(None, r_alias, r_key, left_name, right_name, join_alias)
+            l_val, r_val = self._join_pair_values(
+                left_name, right_name, join_ctx, left_prop, right_prop, join_alias,
+            )
             if l_val != r_val:
                 return False
         return True
+
+    def _build_join_hash(self, candidates: Set[str], pairs: Tuple[Tuple[str, str], ...],
+                         join_alias: str) -> Optional[dict]:
+        if len(pairs) != 1:
+            return None
+        _, r_key = self._split_qualified(pairs[0][1], join_alias)
+        _, l_key = self._split_qualified(pairs[0][0], None)
+        lookup: dict = {}
+        for name in candidates:
+            val = self._get_property_value(name, r_key)
+            if val is not None:
+                lookup.setdefault(val, []).append(name)
+        return {"l_key": l_key, "r_key": r_key, "lookup": lookup}
+
+    def _find_join_matches(self, left_name: str, join_ctx: dict, spec: RelJoinSpec,
+                           candidates: Set[str], join_hash: Optional[dict]) -> List[str]:
+        if join_hash:
+            l_val = self._value_from_ctx(None, join_hash["l_key"], left_name, join_ctx)
+            if l_val is None:
+                return []
+            return [n for n in join_hash["lookup"].get(l_val, []) if n != left_name]
+        return [
+            n for n in sorted(candidates)
+            if self._rel_join_match(left_name, n, join_ctx, spec.pairs, spec.alias)
+        ]
 
     def get_history(self, bubble_name: str, key: str) -> list:
         bubble = self._get_bubble(bubble_name)
@@ -1499,11 +1623,10 @@ class SubstrateAPI:
 
     def search_resonance(self, query: str) -> list:
         hits = self.store.resonance(query, k=5, threshold=0.1)
-        found = set()
+        found: Set[str] = set()
         for _, atom_id in hits:
-            for name, b in self._bubble_index.items():
-                if atom_id in b.bindings.values(): found.add(name)
-        return sorted(list(found))
+            found |= self._atom_index.get(atom_id, set())
+        return sorted(found)
 
     def find_relation(self, relation: str, target: str) -> list:
         return sorted([name for name, b in self._bubble_index.items() if f"rel:{relation}:{target}" in b.bindings])
@@ -1616,6 +1739,9 @@ class SubstrateAPI:
     def _eval_cond_expr(self, expr: CondExpr, env: dict, universe: Set[str],
                         query_runner: Optional[Any] = None) -> Set[str]:
         if isinstance(expr, CondCompare):
+            indexed = self._indexed_equals(expr, universe)
+            if indexed is not None:
+                return indexed
             return {name for name in universe if self._eval_compare(name, expr, env, query_runner)}
         if isinstance(expr, CondNot):
             all_in = set(universe)
@@ -1624,10 +1750,18 @@ class SubstrateAPI:
         if isinstance(expr, CondAnd):
             if not expr.parts:
                 return set()
-            result = self._eval_cond_expr(expr.parts[0], env, universe, query_runner)
-            for part in expr.parts[1:]:
-                result &= self._eval_cond_expr(part, env, universe, query_runner)
-            return result
+            current = universe
+            result: Optional[Set[str]] = None
+            for part in expr.parts:
+                if result is not None:
+                    current = result
+                if isinstance(part, CondCompare):
+                    indexed = self._indexed_equals(part, current)
+                    if indexed is not None:
+                        result = indexed
+                        continue
+                result = self._eval_cond_expr(part, env, current, query_runner)
+            return result or set()
         if isinstance(expr, CondOr):
             result: Set[str] = set()
             for part in expr.parts:
@@ -1681,28 +1815,36 @@ class SubstrateAPI:
 
     def project_where(self, columns: Tuple[ProjColumn, ...], cond: CondExpr, env: dict,
                       join_relation: Optional[str] = None, join_target: Optional[str] = None,
-                      rel_join_alias: Optional[str] = None,
-                      rel_join_pairs: Tuple[Tuple[str, str], ...] = (),
+                      rel_joins: Tuple[RelJoinSpec, ...] = (),
                       distinct: bool = False,
                       sort_by: Optional[str] = None, sort_desc: bool = False,
                       limit: Optional[int] = None, offset: Optional[int] = None,
-                      query_runner: Optional[Any] = None) -> Tuple[List[dict], List[str]]:
+                      query_runner: Optional[Any] = None,
+                      join_filter_fn: Optional[Any] = None) -> Tuple[List[dict], List[str]]:
         keys = [c.label for c in columns]
         matched = self.evaluate_cond_expr(cond, env, join_relation, join_target, query_runner)
-        rows: List[dict] = []
-        if rel_join_alias and rel_join_pairs:
-            right_candidates = sorted(self._bubble_index.keys())
-            for left_name in sorted(matched):
-                joined = False
-                for right_name in right_candidates:
-                    if not self._rel_join_match(left_name, right_name, rel_join_pairs, rel_join_alias):
-                        continue
-                    rows.append(self._project_row(left_name, right_name, columns, rel_join_alias))
-                    joined = True
-                if not joined:
-                    rows.append(self._project_row(left_name, None, columns, rel_join_alias))
+        if not rel_joins:
+            rows = [self._project_row(name, {}, columns) for name in sorted(matched)]
         else:
-            rows = [self._project_row(name, None, columns) for name in sorted(matched)]
+            contexts: List[Tuple[str, dict]] = [(n, {}) for n in sorted(matched)]
+            for spec in rel_joins:
+                if spec.filter_subquery and join_filter_fn:
+                    candidates = set(join_filter_fn(spec.filter_subquery))
+                else:
+                    candidates = set(self._bubble_index.keys())
+                join_hash = self._build_join_hash(candidates, spec.pairs, spec.alias)
+                next_ctx: List[Tuple[str, dict]] = []
+                for left_name, ctx in contexts:
+                    matches = self._find_join_matches(left_name, ctx, spec, candidates, join_hash)
+                    if matches:
+                        for right_name in matches:
+                            new_ctx = dict(ctx)
+                            new_ctx[spec.alias] = right_name
+                            next_ctx.append((left_name, new_ctx))
+                    elif spec.left_outer:
+                        next_ctx.append((left_name, ctx))
+                contexts = next_ctx
+            rows = [self._project_row(left, ctx, columns) for left, ctx in contexts]
         if distinct:
             rows = self._dedupe_rows(rows, keys)
         rows = self._apply_row_modifiers(rows, keys, sort_by, sort_desc, limit, offset)
@@ -2152,17 +2294,25 @@ class KarminEngine:
     def _(self, node):
         return {"status": "ok", "action": "PROJECT", "target": node.target, "data": self.api.project_contents(node.target, node.keys)}
 
+    def _resolve_join_filter(self, subquery_node: ASTNode) -> List[str]:
+        res = subquery_node.accept(self)
+        action = res.get("action", "")
+        if action in ("FIND_WHERE", "FIND_REL", "SEARCH", "SET_OP"):
+            return list(res.get("matches", []))
+        raise ValueError(f"Filtr JOIN wymaga podzapytania ZNAJDŹ (otrzymano {action})")
+
     @visit.register(ProjectWhereNode)
     def _(self, node):
         rows, matched = self.api.project_where(
             node.columns, node.cond, self.env, node.join_relation, node.join_target,
-            node.rel_join_alias, node.rel_join_pairs,
+            node.rel_joins,
             node.distinct, node.sort_by, node.sort_desc, node.limit, node.offset,
-            self._subquery_values)
+            self._subquery_values, self._resolve_join_filter,
+        )
         return {
             "status": "ok", "action": "PROJECT_WHERE", "columns": node.keys,
             "rows": rows, "matches": matched, "count": len(rows), "distinct": node.distinct,
-            "rel_join": node.rel_join_alias,
+            "rel_joins": [j.alias for j in node.rel_joins],
         }
 
     @visit.register(ShowHistoryNode)

@@ -1,10 +1,11 @@
-# Cynober DB — Podręcznik Użytkownika i Składnia KarminQL (v5.3)
+# Cynober DB — Podręcznik Użytkownika i Składnia KarminQL (v6.1)
 
 Cynober DB to relacyjno-grafowa baza danych na termodynamicznym rdzeniu **KarmazynOS**, z transportem **Cynober-Secure-1.2** i warstwą **HSL** (Holographic Session Links). Trzy autorskie elementy — silnik, baza, protokół — opierają się na jednej zasadzie: **struktura wynika z rezonansu stanu sesji**, a nie z zewnętrznych etykiet (adres, certyfikat, ACL).
 
 | Komponent | Wersja | Plik |
 |-----------|--------|------|
-| KarminQL (silnik zapytań) | v5.3 | `cynober_query_engine.py` |
+| KarminQL (silnik zapytań) | v6.1 | `cynober_query_engine.py` |
+| Most pandas | — | `cynober_pandas_bridge.py` |
 | Klient CLI | v1.8.0 | `Cynober_db.py` |
 | Serwer | — | `cynober_server.py` |
 | Protokół transportu | Cynober-Secure-1.2 | `cynober_rpc.py` |
@@ -30,7 +31,7 @@ Cynober DB to relacyjno-grafowa baza danych na termodynamicznym rdzeniu **Karmaz
          └──────────────────┬─────────────────────────┘
                             ▼
                    ┌─────────────────┐
-                   │  KarminEngine   │  KarminQL v4.8
+                   │  KarminEngine   │  KarminQL v6.1
                    └────────┬────────┘
                             ▼
                    ┌─────────────────┐
@@ -457,6 +458,49 @@ ZNAJDŹ GDZIE "RAM" MIĘDZY 100 DO 500
 | Rezonans (HRR) | `SZUKAJ "koncepcja"` *(wymaga numpy)* |
 
 Klauzula `POŁĄCZONE JAKO "relacja" Z "cel"` ogranicza kandydatów do bąbli wskazujących na cel daną relacją (JOIN 1-hop). Działa z `WYPISZ … GDZIE`, `ZNAJDŹ … GDZIE`, `ZAKTUALIZUJ … GDZIE` i agregacjami.
+
+### JOIN relacyjny (v6.0–v6.1)
+
+Łączenie bąbli po **wartości cech** (jak SQL JOIN po kluczu), nie po grafie:
+
+```
+WYPISZ "BĄBEL", "Qty", Katalog.Cena GDZIE "Qty" > 0
+  DOŁĄCZ Z "Katalog" GDZIE "Sku" = "Sku"
+```
+
+| SQL | KarminQL |
+|-----|----------|
+| INNER JOIN | `DOŁĄCZ Z "Alias" GDZIE "Klucz" = "Klucz"` |
+| LEFT JOIN | `LEWY DOŁĄCZ Z "Alias" GDZIE …` |
+| JOIN z filtrem | `DOŁĄCZ Z (ZNAJDŹ GDZIE "Typ"="Katalog") JAKO "Katalog" GDZIE …` |
+
+Kolumny z prefiksem (`Katalog.Cena`) biorą wartości z dopasowanego bąbla po prawej. Wiele JOIN-ów można łańcuchować.
+
+### Katalog, UPSERT, pandas (v6.0)
+
+| Operacja | Składnia |
+|----------|----------|
+| Katalog bazy | `OPISZ BAZĘ` (`DESCRIBE DATABASE`) |
+| UPSERT po nazwie | `SCAL "Bąbel" Z "Cecha" = Wartość` |
+| UPSERT po kluczu | `SCAL PO "Sku" = "X" Z "RAM" = 16` |
+| DataFrame | `read_karmin(engine, "WYPISZ … GDZIE …")` — `cynober_pandas_bridge.py` |
+
+Demo: `examples/analyst_demo.py`.
+
+### Wyrażenia w SELECT (v6.0)
+
+- `LIKE` → `PODOBNE` (wzorzec z `%` i `_`)
+- `CASE WHEN … THEN … ELSE … END AS "Kolumna"`
+- Arytmetyka: `"Cena" * "Ilość" AS "Suma"`
+
+### Optymalizacja substratu (v6.1)
+
+Silnik utrzymuje w przestrzeni nazw:
+
+- **`inv_index`** — odwrotny indeks `cecha → wartość → bąble`; przyspiesza `GDZIE "Typ" = "X"` i hash-join przy pojedynczym kluczu równości.
+- **`atom_index`** — mapa `atom_id → bąble`; przyspiesza `SZUKAJ` (rezonans HRR) bez skanowania wszystkich bąbli.
+
+Indeksy są aktualizowane przy `WSTRZYKNIJ` / `ZAKTUALIZUJ` / `USUŃ` i objęte rollbackiem transakcji.
 
 ### Operacje zbiorów (UNION / INTERSECT / EXCEPT)
 

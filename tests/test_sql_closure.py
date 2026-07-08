@@ -88,6 +88,52 @@ class TestMergeUpsert(unittest.TestCase):
         self.assertEqual(show["data"]["properties"]["Sku"], "NEW")
 
 
+class TestV61JoinExtensions(unittest.TestCase):
+    def setUp(self):
+        self.engine = KarminEngine(kernel.Store(thermal=True))
+        self.engine.execute(
+            'UTRWAL "O1"\nWSTRZYKNIJ "Sku" = "A" DO "O1"\nWSTRZYKNIJ "Qty" = 2 DO "O1"\n'
+            'UTRWAL "O2"\nWSTRZYKNIJ "Sku" = "B" DO "O2"\nWSTRZYKNIJ "Qty" = 5 DO "O2"\n'
+            'UTRWAL "K1"\nWSTRZYKNIJ "Sku" = "A" DO "K1"\nWSTRZYKNIJ "Cena" = 10 DO "K1"'
+        )
+
+    def test_inner_join_excludes_unmatched(self):
+        r = _last(self.engine.execute(
+            'WYPISZ "BĄBEL", "Qty" GDZIE "Qty" > 0 '
+            'DOŁĄCZ Z "Katalog" GDZIE "Sku" = "Sku"'
+        ))
+        self.assertEqual(r["count"], 1)
+        self.assertEqual(r["rows"][0]["BĄBEL"], "O1")
+
+    def test_left_join_keeps_unmatched(self):
+        r = _last(self.engine.execute(
+            'WYPISZ "BĄBEL", "Qty", Katalog.Cena GDZIE "Qty" > 0 '
+            'LEWY DOŁĄCZ Z "Katalog" GDZIE "Sku" = "Sku"'
+        ))
+        self.assertEqual(r["count"], 2)
+        unmatched = [row for row in r["rows"] if row["BĄBEL"] == "O2"][0]
+        self.assertIsNone(unmatched.get("Cena"))
+
+    def test_join_with_subquery_filter(self):
+        self.engine.execute('WSTRZYKNIJ "Typ" = "Katalog" DO "K1"')
+        r = _last(self.engine.execute(
+            'WYPISZ "BĄBEL", Katalog.Cena GDZIE "Qty" > 0 '
+            'DOŁĄCZ Z (ZNAJDŹ GDZIE "Typ" = "Katalog") JAKO "Katalog" GDZIE "Sku" = "Sku"'
+        ))
+        self.assertEqual(r["count"], 1)
+        self.assertEqual(r["rows"][0]["Cena"], 10)
+
+
+class TestSubstrateIndexPerf(unittest.TestCase):
+    def test_inv_index_speeds_up_equality_where(self):
+        engine = KarminEngine(kernel.Store(thermal=True))
+        for i in range(200):
+            engine.execute(f'UTRWAL "B{i}"\nWSTRZYKNIJ "Typ" = "X" DO "B{i}"')
+        engine.execute('UTRWAL "Target"\nWSTRZYKNIJ "Typ" = "Hit" DO "Target"')
+        r = _last(engine.execute('ZNAJDŹ GDZIE "Typ" = "Hit"'))
+        self.assertEqual(r["matches"], ["Target"])
+
+
 class TestRelationalJoin(unittest.TestCase):
     def setUp(self):
         self.engine = KarminEngine(kernel.Store(thermal=True))
