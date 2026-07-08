@@ -1,12 +1,11 @@
 #!/usr/bin/env python3
 """
-cynober_query_engine.py — Silnik zapytań KarminQL v5.6 (PL + aliasy EN)
+cynober_query_engine.py — Silnik zapytań KarminQL v6.0 (PL + aliasy EN)
 ==========================================================================
 Rozszerzenia SQL-owe: WYPISZ GDZIE, ZAKTUALIZUJ GDZIE, złożone warunki,
-JOIN po relacji (POŁĄCZONE JAKO), HAVING (MAJĄCE), POLICZ / POLICZ RÓŻNE,
-UNIKALNE (DISTINCT), operacje zbiorów (ZŁĄCZ / PRZECIĘCIE / RÓŻNICA),
-MIĘDZY (BETWEEN), podzapytania w W / NIE W, WSTAW Z (INSERT … SELECT),
-EKSPORT CSV / IMPORT CSV.
+JOIN po relacji (POŁĄCZONE JAKO), JOIN relacyjny (DOŁĄCZ Z), HAVING (MAJĄCE),
+SCAL (UPSERT), OPISZ BAZĘ, LIKE/PODOBNE, CASE WHEN i wyrażenia w projekcji,
+operacje zbiorów, MIĘDZY, podzapytania, WSTAW Z, EKSPORT/IMPORT CSV.
 """
 
 import csv
@@ -110,6 +109,29 @@ class ImportCsvNode(ASTNode):
     name_column: Optional[str] = None
 
 @dataclass(frozen=True)
+class DescribeDatabaseNode(ASTNode):
+    pass
+
+@dataclass(frozen=True)
+class MergeNode(ASTNode):
+    bubble_name: Optional[str]
+    match_key: Optional[str]
+    match_value: Optional[str]
+    properties: Tuple[Tuple[str, str], ...]
+
+@dataclass(frozen=True)
+class ProjColumn:
+    label: str
+    kind: str = "ref"
+    ref_alias: Optional[str] = None
+    ref_key: Optional[str] = None
+    arith_op: Optional[str] = None
+    arith_left: Optional[Any] = None
+    arith_right: Optional[Any] = None
+    case_parts: Optional[Tuple[Tuple[Any, str], ...]] = None
+    case_else: Optional[str] = None
+
+@dataclass(frozen=True)
 class UpdatePropertyNode(ASTNode): target: str; key: str; value: str
 
 @dataclass(frozen=True)
@@ -140,15 +162,21 @@ class ProjectNode(ASTNode): target: str; keys: List[str]
 
 @dataclass(frozen=True)
 class ProjectWhereNode(ASTNode):
-    keys: List[str]
+    columns: Tuple[ProjColumn, ...]
     cond: CondExpr
     join_relation: Optional[str] = None
     join_target: Optional[str] = None
+    rel_join_alias: Optional[str] = None
+    rel_join_pairs: Tuple[Tuple[str, str], ...] = ()
     distinct: bool = False
     sort_by: Optional[str] = None
     sort_desc: bool = False
     limit: Optional[int] = None
     offset: Optional[int] = None
+
+    @property
+    def keys(self) -> List[str]:
+        return [c.label for c in self.columns]
 
 @dataclass(frozen=True)
 class SearchNode(ASTNode): query: str
@@ -252,6 +280,11 @@ _ALIAS_PHRASES: Tuple[Tuple[str, str], ...] = (
     (r"WITH\s+ENERGY", "ENERGIĄ"),
     (r"SORT\s+BY", "SORTUJ WEDŁUG"),
     (r"GROUP\s+BY", "POGRUPUJ"),
+    (r"DESCRIBE\s+DATABASE", "OPISZ BAZĘ"),
+    (r"DESCRIBE\s+DB", "OPISZ BAZĘ"),
+    (r"MERGE\s+ON", "SCAL PO"),
+    (r"UPSERT\s+ON", "SCAL PO"),
+    (r"JOIN\s+\"([^\"]+)\"\s+ON", r'DOŁĄCZ Z "\1" GDZIE'),
 )
 
 _ALIAS_WORDS: Tuple[Tuple[str, str], ...] = (
@@ -293,6 +326,9 @@ _ALIAS_WORDS: Tuple[Tuple[str, str], ...] = (
     ("AS", "JAKO"),
     ("TO", "Z"),
     ("IN", "W"),
+    ("LIKE", "PODOBNE"),
+    ("MERGE", "SCAL"),
+    ("UPSERT", "SCAL"),
 )
 
 
@@ -354,6 +390,24 @@ def normalize_karminql_aliases(line: str) -> str:
     return _map_outside_quotes(line, mapper)
 
 
+def _like_to_regex(pattern: str) -> str:
+    out: List[str] = []
+    for ch in pattern:
+        if ch == "%":
+            out.append(".*")
+        elif ch == "_":
+            out.append(".")
+        else:
+            out.append(re.escape(ch))
+    return "^" + "".join(out) + "$"
+
+
+def _like_match(value: Any, pattern: str) -> bool:
+    if value is None:
+        return False
+    return re.match(_like_to_regex(pattern), str(value), re.IGNORECASE) is not None
+
+
 # ─── 3. PARSER WARUNKÓW ───────────────────────────────────────────────────
 
 class ConditionParser:
@@ -367,7 +421,7 @@ class ConditionParser:
 
     compare_pattern = re.compile(
         r'^"([^"]+)"\s*('
-        r'!=|>=|<=|=|>|<|ZAWIERA|NIE\s+W|W|'
+        r'!=|>=|<=|=|>|<|ZAWIERA|NIE\s+PODOBNE|NIE\s+LIKE|PODOBNE|LIKE|NIE\s+W|W|'
         r'JEST\s+NIC|NIE\s+JEST\s+NIC'
         r')\s*(.*)$',
         re.IGNORECASE,
@@ -563,6 +617,142 @@ class KarminParser:
     def _parse_keys(self, keys_str: str) -> List[str]:
         return [k.strip().strip('"') for k in keys_str.split(",")]
 
+    def _split_projection_items(self, text: str) -> List[str]:
+        items: List[str] = []
+        depth, start = 0, 0
+        in_quote = False
+        i = 0
+        upper = text.upper()
+        while i < len(text):
+            ch = text[i]
+            if ch == '"':
+                in_quote = not in_quote
+            elif not in_quote:
+                if upper.startswith("CASE", i):
+                    depth += 1
+                if upper.startswith("END", i) and (i + 3 >= len(text) or not text[i + 3].isalnum()):
+                    depth = max(0, depth - 1)
+                if ch == "," and depth == 0:
+                    items.append(text[start:i].strip())
+                    start = i + 1
+            i += 1
+        tail = text[start:].strip()
+        if tail:
+            items.append(tail)
+        return items
+
+    def _parse_case_column(self, text: str, label: Optional[str]) -> ProjColumn:
+        norm = text.strip()
+        norm = re.sub(r"\bGDY\b", "WHEN", norm, flags=re.IGNORECASE)
+        norm = re.sub(r"\bWTEDY\b", "THEN", norm, flags=re.IGNORECASE)
+        norm = re.sub(r"\bINACZEJ\b", "ELSE", norm, flags=re.IGNORECASE)
+        norm = re.sub(r"\bKONIEC\b", "END", norm, flags=re.IGNORECASE)
+        m = re.match(
+            r'^CASE\s+(.+?)\s+ELSE\s+("(?:[^"\\]|\\.)*"|[^\s]+)\s+END$',
+            norm,
+            re.IGNORECASE | re.DOTALL,
+        )
+        if not m:
+            raise SyntaxError(f"Niepoprawne CASE WHEN: {text}")
+        body, else_raw = m.group(1).strip(), m.group(2).strip()
+        parts: List[Tuple[Any, str]] = []
+        rest = body
+        while rest:
+            wm = re.match(r'^WHEN\s+(.+?)\s+THEN\s+("(?:[^"\\]|\\.)*"|[^\s]+)(?:\s+(.*))?$', rest, re.IGNORECASE | re.DOTALL)
+            if not wm:
+                raise SyntaxError(f"Oczekiwano WHEN … THEN … w CASE: {rest}")
+            cond = self.cond_parser.parse(wm.group(1).strip())
+            then_val = wm.group(2).strip().strip('"').strip("'")
+            parts.append((cond, then_val))
+            rest = (wm.group(3) or "").strip()
+        else_val = else_raw.strip('"').strip("'")
+        auto_label = label or "CASE"
+        return ProjColumn(auto_label, "case", case_parts=tuple(parts), case_else=else_val)
+
+    def _parse_arith_column(self, text: str, label: Optional[str]) -> ProjColumn:
+        for op in ("+", "-", "*", "/"):
+            depth, in_quote = 0, False
+            i = 0
+            while i < len(text):
+                ch = text[i]
+                if ch == '"':
+                    in_quote = not in_quote
+                elif not in_quote:
+                    if ch == "(":
+                        depth += 1
+                    elif ch == ")":
+                        depth -= 1
+                    elif ch == op and depth == 0:
+                        left = text[:i].strip()
+                        right = text[i + 1:].strip()
+                        if not left or not right:
+                            break
+                        return ProjColumn(
+                            label or f"{left}{op}{right}",
+                            "arith",
+                            arith_op=op,
+                            arith_left=self._parse_proj_atom(left),
+                            arith_right=self._parse_proj_atom(right),
+                        )
+                i += 1
+        raise SyntaxError(f"Niepoprawne wyrażenie arytmetyczne: {text}")
+
+    def _parse_proj_atom(self, raw: str) -> Any:
+        raw = raw.strip()
+        if raw.startswith('"') and raw.endswith('"'):
+            return ProjColumn(raw.strip('"'), "ref", None, raw.strip('"'))
+        if "." in raw:
+            alias, key = raw.split(".", 1)
+            return ProjColumn(key.strip('"'), "ref", alias.strip('"'), key.strip('"'))
+        if re.match(r'^"([^"]+)"$', raw):
+            key = raw.strip('"')
+            return ProjColumn(key, "ref", None, key)
+        raise SyntaxError(f"Niepoprawny operand wyrażenia: {raw}")
+
+    def _parse_simple_ref(self, text: str) -> ProjColumn:
+        text = text.strip()
+        label: Optional[str] = None
+        if m := re.search(r'\s+(?:AS|JAKO)\s+"([^"]+)"\s*$', text, re.IGNORECASE):
+            label = m.group(1)
+            text = text[:m.start()].strip()
+        if text.upper().startswith("CASE"):
+            return self._parse_case_column(text, label)
+        if re.search(r'[*+\-/]', text) and ('"' in text or "." in text):
+            return self._parse_arith_column(text, label)
+        if text.startswith('"') and text.endswith('"'):
+            inner = text[1:-1]
+            if "." in inner:
+                alias, key = inner.split(".", 1)
+                return ProjColumn(label or key, "ref", alias, key)
+            return ProjColumn(label or inner, "ref", None, inner)
+        if "." in text:
+            alias, key = text.split(".", 1)
+            key = key.strip('"')
+            return ProjColumn(label or key, "ref", alias.strip('"'), key)
+        key = text.strip('"')
+        return ProjColumn(label or key, "ref", None, key)
+
+    def _parse_projection_columns(self, keys_str: str) -> Tuple[ProjColumn, ...]:
+        return tuple(self._parse_simple_ref(item) for item in self._split_projection_items(keys_str))
+
+    def _extract_rel_join(self, conds_str: str) -> Tuple[str, Optional[str], Tuple[Tuple[str, str], ...]]:
+        m = re.search(
+            r'\s+DOŁĄCZ\s+Z\s+"([^"]+)"\s+GDZIE\s+(.+)$',
+            conds_str,
+            re.IGNORECASE,
+        )
+        if not m:
+            return conds_str, None, ()
+        alias = m.group(1)
+        join_body = m.group(2).strip()
+        pairs: List[Tuple[str, str]] = []
+        for part in self._split_top_oraz(join_body):
+            jm = re.match(r'^"?([^"]+)"?\s*=\s*"?([^"]+)"?$', part.strip())
+            if not jm:
+                raise SyntaxError(f"JOIN relacyjny wymaga równości cech: {part}")
+            pairs.append((jm.group(1).strip(), jm.group(2).strip()))
+        return conds_str[:m.start()].strip(), alias, tuple(pairs)
+
     def _parse_prop_pairs(self, text: str) -> List[Tuple[str, str]]:
         pairs: List[Tuple[str, str]] = []
         for m in re.finditer(r'"([^"]+)"\s*(?:->|=)\s*("(?:[^"\\]|\\.)*"|[^,]+)', text):
@@ -588,7 +778,7 @@ class KarminParser:
             raise SyntaxError("Podzapytanie musi zwracać listę wyników (użyj ZNAJDŹ, WYPISZ, SZUKAJ lub ZŁĄCZ)")
         if isinstance(node, (CreateBubbleNode, UpdatePropertyNode, UpdateWhereNode, AddPropertyNode,
                               BulkInjectNode, BulkCreateNode, InsertFromNode,
-                              ExportCsvNode, ImportCsvNode,
+                              ExportCsvNode, ImportCsvNode, MergeNode, DescribeDatabaseNode,
                               DeleteBubbleNode, RemovePropertyNode, ConnectNode, DisconnectNode,
                               ExciteNode, BeginTxNode, CommitTxNode, RollbackTxNode, AssignNode)):
             raise SyntaxError("Podzapytanie nie może modyfikować danych")
@@ -736,6 +926,15 @@ class KarminParser:
         if m := re.match(r'^IMPORT\s+CSV\s+"([^"]+)"(?:\s+KOLUMNA\s+"([^"]+)")?\s*$', line, re.IGNORECASE):
             return ImportCsvNode(m.group(1), m.group(2))
 
+        if re.match(r'^OPISZ\s+BAZĘ\s*$', line, re.IGNORECASE):
+            return DescribeDatabaseNode()
+
+        if m := re.match(r'^SCAL\s+"([^"]+)"\s+Z\s+(.+)$', line, re.IGNORECASE):
+            return MergeNode(m.group(1), None, None, tuple(self._parse_prop_pairs(m.group(2))))
+
+        if m := re.match(r'^SCAL\s+PO\s+"([^"]+)"\s*=\s*(.+?)\s+Z\s+(.+)$', line, re.IGNORECASE):
+            return MergeNode(None, m.group(1), m.group(2).strip(), tuple(self._parse_prop_pairs(m.group(3))))
+
         if match := self.patterns['wstrzyknij_wiele'].match(line):
             return BulkInjectNode(match.group(2), tuple(self._parse_prop_pairs(match.group(1))))
 
@@ -754,12 +953,16 @@ class KarminParser:
             return BulkCreateNode(tuple(entries))
 
         if match := self.wypisz_gdzie_pattern.match(line):
-            keys = self._parse_keys(match.group(1))
+            columns = self._parse_projection_columns(match.group(1))
             join_rel, join_tgt = match.group(2), match.group(3)
             conds_str, limit, offset, sort_by, sort_desc, _, _, _, _, distinct = self._extract_modifiers(match.group(4))
+            conds_str, rel_alias, rel_pairs = self._extract_rel_join(conds_str)
             if re.match(r'^WYPISZ\s+UNIKALNE\s+', line, re.IGNORECASE):
                 distinct = True
-            return ProjectWhereNode(keys, self.cond_parser.parse(conds_str), join_rel, join_tgt, distinct, sort_by, sort_desc, limit, offset)
+            return ProjectWhereNode(
+                columns, self.cond_parser.parse(conds_str), join_rel, join_tgt,
+                rel_alias, rel_pairs, distinct, sort_by, sort_desc, limit, offset,
+            )
 
         if match := self.zaktualizuj_gdzie_pattern.match(line):
             key, value = match.group(1), match.group(2).strip()
@@ -1029,6 +1232,95 @@ class SubstrateAPI:
                 created.append(name)
         return created
 
+    def describe_database(self) -> dict:
+        saved_ns = self.active_ns
+        all_namespaces: List[dict] = []
+        try:
+            for ns_name, ns_data in self.namespaces.items():
+                self.active_ns = ns_name
+                bubbles_out: List[dict] = []
+                prop_index: dict = {}
+                rel_total = 0
+                for name in sorted(ns_data["bubbles"].keys()):
+                    contents = self.get_contents(name)
+                    props = sorted(contents["properties"].keys())
+                    rels = contents["relations"]
+                    rel_total += len(rels)
+                    bubbles_out.append({
+                        "name": name,
+                        "properties": props,
+                        "property_count": len(props),
+                        "relations": rels,
+                    })
+                    for prop, val in contents["properties"].items():
+                        entry = prop_index.setdefault(prop, {"bubbles": 0, "samples": []})
+                        entry["bubbles"] += 1
+                        sval = KarminType.to_str(val)
+                        if len(entry["samples"]) < 3 and sval not in entry["samples"]:
+                            entry["samples"].append(sval)
+                all_namespaces.append({
+                    "name": ns_name,
+                    "bubble_count": len(ns_data["bubbles"]),
+                    "relation_count": rel_total,
+                    "bubbles": bubbles_out,
+                    "properties": prop_index,
+                })
+        finally:
+            self.active_ns = saved_ns
+
+        current = next(n for n in all_namespaces if n["name"] == saved_ns)
+        catalog_rows = []
+        for b in current["bubbles"]:
+            catalog_rows.append({
+                "BĄBEL": b["name"],
+                "CECHY": ", ".join(b["properties"]),
+                "RELACJE": len(b["relations"]),
+            })
+        return {
+            "active_namespace": saved_ns,
+            "namespaces": [n["name"] for n in all_namespaces],
+            "bubble_count": current["bubble_count"],
+            "bubbles": current["bubbles"],
+            "properties": current["properties"],
+            "catalog_rows": catalog_rows,
+            "all_namespaces": all_namespaces,
+        }
+
+    def merge_bubble(self, bubble_name: str, props: List[Tuple[str, str]]) -> Tuple[str, str]:
+        action = "updated" if bubble_name in self._bubble_index else "created"
+        if action == "created":
+            self.create_bubble(bubble_name)
+        for key, value in props:
+            if key in self._bubble_index[bubble_name].bindings:
+                self.update_property(bubble_name, key, value)
+            else:
+                self.add_property(bubble_name, key, value)
+        return bubble_name, action
+
+    def merge_by_key(self, key: str, value_raw: str, props: List[Tuple[str, str]]) -> Tuple[str, str]:
+        val = KarminType.parse(value_raw)
+        val_str = KarminType.to_str(val)
+        candidates = sorted(self._inv_index.get(key, {}).get(val_str, set()))
+        if candidates:
+            name = candidates[0]
+            for pkey, pval in props:
+                if pkey == key:
+                    continue
+                if pkey in self._bubble_index[name].bindings:
+                    self.update_property(name, pkey, pval)
+                else:
+                    self.add_property(name, pkey, pval)
+            return name, "updated"
+        base_name = str(val) if val is not None else f"{key}_nowy"
+        new_name = base_name
+        n = 2
+        while new_name in self._bubble_index:
+            new_name = f"{base_name}_{n}"
+            n += 1
+        all_props = [(key, value_raw)] + [(k, v) for k, v in props if k != key]
+        self.insert_bubble_with_props(new_name, {k: KarminType.parse(v) for k, v in all_props})
+        return new_name, "created"
+
     def add_property(self, bubble_name: str, key: str, value_raw: str):
         bubble = self._get_bubble(bubble_name)
         val = KarminType.parse(value_raw)
@@ -1109,20 +1401,77 @@ class SubstrateAPI:
         return self._bubble_row(bubble_name, keys)
 
     def _bubble_row(self, bubble_name: str, keys: List[str]) -> dict:
-        bubble = self._bubble_index.get(bubble_name)
-        if not bubble: return {k: None for k in keys}
-        results = {}
-        for key in keys:
-            if key.upper() == "BĄBEL":
-                results[key] = bubble_name
-                continue
-            atom_id = bubble.bindings.get(key)
-            if atom_id:
-                atom = self.store.get_atom(atom_id)
-                results[key] = atom.metadata.get('v', atom.E) if atom else None
-            else:
-                results[key] = None
-        return results
+        return self._project_row(bubble_name, None, tuple(
+            ProjColumn(k, "ref", None, k if k.upper() != "BĄBEL" else "BĄBEL") for k in keys
+        ))
+
+    @staticmethod
+    def _split_qualified(prop: str, default_alias: Optional[str]) -> Tuple[Optional[str], str]:
+        if "." in prop:
+            alias, key = prop.split(".", 1)
+            return alias.strip(), key.strip()
+        return default_alias, prop.strip()
+
+    def _get_side_value(self, bubble_name: Optional[str], alias: Optional[str], key: str,
+                        left_name: str, right_name: Optional[str], join_alias: Optional[str]) -> Any:
+        if key.upper() == "BĄBEL":
+            if alias and join_alias and alias == join_alias:
+                return right_name
+            return left_name
+        target = left_name
+        if alias and join_alias and alias == join_alias:
+            target = right_name or ""
+        elif alias and join_alias and alias != join_alias:
+            return None
+        return self._get_property_value(target, key) if target else None
+
+    def _eval_proj_column(self, col: ProjColumn, left_name: str, right_name: Optional[str],
+                          join_alias: Optional[str]) -> Any:
+        if col.kind == "ref":
+            return self._get_side_value(
+                None, col.ref_alias, col.ref_key or col.label,
+                left_name, right_name, join_alias,
+            )
+        if col.kind == "arith":
+            left = self._eval_proj_column(col.arith_left, left_name, right_name, join_alias)
+            right = self._eval_proj_column(col.arith_right, left_name, right_name, join_alias)
+            if left is None or right is None:
+                return None
+            if col.arith_op == "+":
+                return left + right
+            if col.arith_op == "-":
+                return left - right
+            if col.arith_op == "*":
+                return left * right
+            if col.arith_op == "/":
+                return left / right if right != 0 else None
+            return None
+        if col.kind == "case" and col.case_parts:
+            for cond, then_val in col.case_parts:
+                if left_name in self._eval_cond_expr(cond, {}, {left_name}, None):
+                    return KarminType.parse(f'"{then_val}"' if not then_val.replace(".", "").isdigit() else then_val)
+            if col.case_else is not None:
+                return KarminType.parse(
+                    f'"{col.case_else}"' if not str(col.case_else).replace(".", "").isdigit() else col.case_else
+                )
+        return None
+
+    def _project_row(self, left_name: str, right_name: Optional[str],
+                     columns: Tuple[ProjColumn, ...], join_alias: Optional[str] = None) -> dict:
+        return {col.label: self._eval_proj_column(col, left_name, right_name, join_alias) for col in columns}
+
+    def _rel_join_match(self, left_name: str, right_name: str,
+                        pairs: Tuple[Tuple[str, str], ...], join_alias: str) -> bool:
+        if left_name == right_name:
+            return False
+        for left_prop, right_prop in pairs:
+            l_alias, l_key = self._split_qualified(left_prop, None)
+            r_alias, r_key = self._split_qualified(right_prop, join_alias)
+            l_val = self._get_side_value(None, l_alias, l_key, left_name, right_name, join_alias)
+            r_val = self._get_side_value(None, r_alias, r_key, left_name, right_name, join_alias)
+            if l_val != r_val:
+                return False
+        return True
 
     def get_history(self, bubble_name: str, key: str) -> list:
         bubble = self._get_bubble(bubble_name)
@@ -1248,6 +1597,10 @@ class SubstrateAPI:
                 if operator == ">=": return val >= target_val
                 if operator == "<=": return val <= target_val
                 if operator == "ZAWIERA": return str(target_val).lower() in str(val).lower()
+                if operator in ("PODOBNE", "LIKE"):
+                    return _like_match(val, target_val_str)
+                if operator in ("NIE PODOBNE", "NIE LIKE"):
+                    return not _like_match(val, target_val_str)
         except (TypeError, ValueError):
             return False
         return False
@@ -1326,19 +1679,35 @@ class SubstrateAPI:
             rows = rows[:limit]
         return rows
 
-    def project_where(self, keys: List[str], cond: CondExpr, env: dict,
+    def project_where(self, columns: Tuple[ProjColumn, ...], cond: CondExpr, env: dict,
                       join_relation: Optional[str] = None, join_target: Optional[str] = None,
+                      rel_join_alias: Optional[str] = None,
+                      rel_join_pairs: Tuple[Tuple[str, str], ...] = (),
                       distinct: bool = False,
                       sort_by: Optional[str] = None, sort_desc: bool = False,
                       limit: Optional[int] = None, offset: Optional[int] = None,
                       query_runner: Optional[Any] = None) -> Tuple[List[dict], List[str]]:
+        keys = [c.label for c in columns]
         matched = self.evaluate_cond_expr(cond, env, join_relation, join_target, query_runner)
-        rows = [self._bubble_row(name, keys) for name in sorted(matched)]
+        rows: List[dict] = []
+        if rel_join_alias and rel_join_pairs:
+            right_candidates = sorted(self._bubble_index.keys())
+            for left_name in sorted(matched):
+                joined = False
+                for right_name in right_candidates:
+                    if not self._rel_join_match(left_name, right_name, rel_join_pairs, rel_join_alias):
+                        continue
+                    rows.append(self._project_row(left_name, right_name, columns, rel_join_alias))
+                    joined = True
+                if not joined:
+                    rows.append(self._project_row(left_name, None, columns, rel_join_alias))
+        else:
+            rows = [self._project_row(name, None, columns) for name in sorted(matched)]
         if distinct:
             rows = self._dedupe_rows(rows, keys)
         rows = self._apply_row_modifiers(rows, keys, sort_by, sort_desc, limit, offset)
-        if any(k.upper() == "BĄBEL" for k in keys):
-            names = [row["BĄBEL"] for row in rows if row.get("BĄBEL") is not None]
+        if any(c.label.upper() == "BĄBEL" for c in columns):
+            names = [row.get("BĄBEL") for row in rows if row.get("BĄBEL") is not None]
         elif len(keys) == 1:
             names = [row.get(keys[0]) for row in rows]
         else:
@@ -1730,6 +2099,19 @@ class KarminEngine:
             "name_column": node.name_column,
         }
 
+    @visit.register(DescribeDatabaseNode)
+    def _(self, node):
+        data = self.api.describe_database()
+        return {"status": "ok", "action": "DESCRIBE_DB", **data}
+
+    @visit.register(MergeNode)
+    def _(self, node):
+        if node.bubble_name:
+            name, mode = self.api.merge_bubble(node.bubble_name, list(node.properties))
+        else:
+            name, mode = self.api.merge_by_key(node.match_key, node.match_value, list(node.properties))
+        return {"status": "ok", "action": "MERGE", "target": name, "mode": mode}
+
     @visit.register(UpdatePropertyNode)
     def _(self, node):
         self.api.update_property(node.target, node.key, node.value)
@@ -1773,12 +2155,14 @@ class KarminEngine:
     @visit.register(ProjectWhereNode)
     def _(self, node):
         rows, matched = self.api.project_where(
-            node.keys, node.cond, self.env, node.join_relation, node.join_target,
+            node.columns, node.cond, self.env, node.join_relation, node.join_target,
+            node.rel_join_alias, node.rel_join_pairs,
             node.distinct, node.sort_by, node.sort_desc, node.limit, node.offset,
             self._subquery_values)
         return {
             "status": "ok", "action": "PROJECT_WHERE", "columns": node.keys,
             "rows": rows, "matches": matched, "count": len(rows), "distinct": node.distinct,
+            "rel_join": node.rel_join_alias,
         }
 
     @visit.register(ShowHistoryNode)

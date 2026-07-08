@@ -223,6 +223,23 @@ class CynoberClient:
         elif action == "LAMBDA":
             print(f"\n[λ] {w.get('result', '')}")
 
+        elif action == "DESCRIBE_DB":
+            print(f"\n[OPISZ BAZĘ] Przestrzeń: {w.get('active_namespace')} | Bąbli: {w.get('bubble_count')}")
+            rows = w.get("catalog_rows", [])
+            if rows:
+                self._print_table(["BĄBEL", "CECHY", "RELACJE"],
+                                  [[r["BĄBEL"], r["CECHY"], r["RELACJE"]] for r in rows])
+            props = w.get("properties", {})
+            if props:
+                print("\n  Indeks cech:")
+                for pname, meta in sorted(props.items()):
+                    samples = ", ".join(meta.get("samples", [])[:3])
+                    print(f"    {pname}: {meta.get('bubbles', 0)} bąbli (np. {samples})")
+
+        elif action == "MERGE":
+            mode = "zaktualizowano" if w.get("mode") == "updated" else "utworzono"
+            print(f"\n[SCAL] {mode.capitalize()} bąbel '{w.get('target')}'")
+
         elif action == "EXPORT_CSV":
             print(f"\n[EKSPORT CSV] Zapisano {w.get('rows_written', 0)} wierszy → {w.get('file')}")
             cols = w.get("columns", [])
@@ -292,7 +309,7 @@ class CynoberClient:
             tunel += " + QKD"
 
         print("\n" + "=" * 60)
-        print("  CYNOBER DB — KarminQL v5.6 | Klient v1.8.0")
+        print("  CYNOBER DB — KarminQL v6.0 | Klient v1.8.0")
         print(f"  Połączenie: {self.host}:{self.port}  |  Protokół: {PROTO_VERSION}")
         if self.sock and self._crypto_mode:
             print(f"  Aktywny tunel: {tunel}")
@@ -345,6 +362,15 @@ class CynoberClient:
         print("\n[Aliasy angielskie — ten sam silnik, np. CREATE=UTRWAL, SELECT=WYPISZ, FIND=ZNAJDŹ]")
         print("  SELECT \"BĄBEL\", \"RAM\" WHERE \"Typ\" = \"Serwer\"  |  FIND WHERE ... GROUP BY ...")
         print("  CREATE / INSERT INTO / UPDATE / DELETE BUBBLE / CONNECT ... TO ... AS ...")
+        print("  DESCRIBE DATABASE  |  MERGE ON \"Sku\" = \"X\" SET ...  |  JOIN \"Katalog\" ON \"Sku\" = \"Sku\"")
+        print("\n[Katalog i pandas]")
+        print("  OPISZ BAZĘ   — katalog bąbli, cech i relacji w aktywnej przestrzeni")
+        print("  read_karmin(engine, 'WYPISZ … GDZIE …')  — cynober_pandas_bridge → DataFrame")
+        print("\n[Domknięcie SQL v6.0]")
+        print("  SCAL \"Bąbel\" Z \"Cecha\" = Wartość   |   SCAL PO \"Sku\" = \"X\" Z \"RAM\" = 16  (UPSERT)")
+        print("  WYPISZ … GDZIE … DOŁĄCZ Z \"Katalog\" GDZIE \"Sku\" = \"Sku\"  (JOIN relacyjny)")
+        print("  \"Nazwa\" PODOBNE \"Serwer%\"  |  CASE WHEN \"RAM\" > 16 THEN \"High\" ELSE \"Low\" END AS \"Tier\"")
+        print("  \"Cena\" * \"Ilość\" AS \"Suma\"  — wyrażenia arytmetyczne w projekcji")
         print("\n[Silnik λ — mini-Lisp na tym samym Store]")
         print("  Wyrażenia w nawiasach: (define x 10)  (+ x 5)  (lambda (a b) (* a b))")
         print("  (karmin \"ZNAJDŹ GDZIE \\\"Typ\\\" = \\\"Serwer\\\"\")  — zapytanie KarminQL z λ")
