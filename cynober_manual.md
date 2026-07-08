@@ -1,10 +1,10 @@
-# Cynober DB — Podręcznik Użytkownika i Składnia KarminQL (v6.5)
+# Cynober DB — Podręcznik Użytkownika i Składnia KarminQL (v6.6)
 
 Cynober DB to relacyjno-grafowa baza danych na termodynamicznym rdzeniu **KarmazynOS**, z transportem **Cynober-Secure-1.2** i warstwą **HSL** (Holographic Session Links). Trzy autorskie elementy — silnik, baza, protokół — opierają się na jednej zasadzie: **struktura wynika z rezonansu stanu sesji**, a nie z zewnętrznych etykiet (adres, certyfikat, ACL).
 
 | Komponent | Wersja | Plik |
 |-----------|--------|------|
-| KarminQL (silnik zapytań) | v6.5 | `cynober_query_engine.py` |
+| KarminQL (silnik zapytań) | v6.6 | `cynober_query_engine.py` |
 | Most pandas | — | `cynober_pandas_bridge.py` |
 | Klient CLI | v1.8.0 | `Cynober_db.py` |
 | Serwer | — | `cynober_server.py` |
@@ -31,7 +31,7 @@ Cynober DB to relacyjno-grafowa baza danych na termodynamicznym rdzeniu **Karmaz
          └──────────────────┬─────────────────────────┘
                             ▼
                    ┌─────────────────┐
-                   │  KarminEngine   │  KarminQL v6.5
+                   │  KarminEngine   │  KarminQL v6.6
                    └────────┬────────┘
                             ▼
                    ┌─────────────────┐
@@ -604,6 +604,29 @@ WYPISZ "BĄBEL", (WYPISZ "RAM" GDZIE "BĄBEL" W $BĄBEL) JAKO "Self_ram" GDZIE "
 ```
 
 Wyrażenie w nawiasach zwraca pojedynczą wartość: agregat, pierwszy wynik `ZNAJDŹ`, pierwszą komórkę `WYPISZ`. Korelacja z bąblem zewnętrznym przez `$BĄBEL`.
+
+### Funkcje okienkowe i ALL/ANY (v6.6)
+
+**Funkcje okienkowe w `WYPISZ`:**
+
+```
+WYPISZ "BĄBEL", "Typ", "Score",
+  ROW_NUMBER() OVER (PODZIEL NA "Typ" SORTUJ WEDŁUG "Score" MALEJĄCO) JAKO "Rn"
+  GDZIE "Typ" != "NIC"
+
+WYPISZ "BĄBEL", RANK() OVER (SORTUJ WEDŁUG "Score" ROSNĄCO) JAKO "R" GDZIE ...
+```
+
+Obsługiwane: `ROW_NUMBER()`, `RANK()`, `DENSE_RANK()` z klauzulą `OVER (…)`. Opcjonalne `PODZIEL NA "Cecha1", "Cecha2"` (odpowiednik `PARTITION BY`), wymagane `SORTUJ WEDŁUG "Cecha" [MALEJĄCO|ROSNĄCO]`. Aliasy EN: `PARTITION BY`, `ORDER BY`, `DESC`/`ASC`.
+
+**Kwantyfikatory ALL / ANY z podzapytaniem:**
+
+```
+ZNAJDŹ GDZIE "RAM" > WSZYSTKIE (WYPISZ "RAM" GDZIE "RAM" < 1000)
+ZNAJDŹ GDZIE "RAM" > DOWOLNE (WYPISZ "RAM" GDZIE "RAM" < 600)
+```
+
+Aliasy EN: `ALL (…)`, `ANY (…)`. Semantyka SQL: `> WSZYSTKIE` = większe od każdej wartości podzapytania; `> DOWOLNE` = większe od co najmniej jednej.
 
 ### Optymalizacja substratu (v6.1)
 

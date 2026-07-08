@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """
-cynober_query_engine.py — Silnik zapytań KarminQL v6.5 (PL + aliasy EN)
+cynober_query_engine.py — Silnik zapytań KarminQL v6.6 (PL + aliasy EN)
 ==========================================================================
 Rozszerzenia SQL-owe: WYPISZ GDZIE, JOIN relacyjny, CTE, widoki, constraints,
-COALESCE/NULLIF/CAST/CONCAT, EXISTS, DROP CONSTRAINT, funkcje stringowe, podzapytania skalarne.
+COALESCE/NULLIF/CAST/CONCAT, EXISTS, DROP CONSTRAINT, funkcje stringowe, podzapytania skalarne,
+funkcje okienkowe OVER, ALL/ANY.
 """
 
 import csv
@@ -51,6 +52,7 @@ class CondCompare:
     val: str
     val2: Optional[str] = None
     subquery: Optional[Any] = None
+    quantifier: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -185,6 +187,10 @@ class ProjColumn:
     str_start: Optional[Any] = None
     str_len: Optional[Any] = None
     scalar_subquery: Optional[Any] = None
+    win_func: Optional[str] = None
+    win_partition: Optional[Tuple[str, ...]] = None
+    win_order: Optional[Tuple[str, ...]] = None
+    win_desc: bool = False
 
 @dataclass(frozen=True)
 class UpdatePropertyNode(ASTNode): target: str; key: str; value: str
@@ -353,6 +359,9 @@ _ALIAS_PHRASES: Tuple[Tuple[str, str], ...] = (
     (r"DROP\s+CONSTRAINT\s+NOT\s+NULL\s+", "USUŃ WYMAGANIE NIE NULL "),
     (r"DROP\s+CONSTRAINT\s+CHECK\s+", "USUŃ WYMAGANIE SPRAWDŹ "),
     (r"\bEXISTS\b", "ISTNIEJE"),
+    (r"PARTITION\s+BY", "PODZIEL NA"),
+    (r"\bANY\b", "DOWOLNE"),
+    (r"\bALL\b", "WSZYSTKIE"),
 )
 
 _ALIAS_WORDS: Tuple[Tuple[str, str], ...] = (
@@ -563,6 +572,20 @@ class ConditionParser:
             if not self._subquery_parser:
                 raise SyntaxError("Podzapytania nie są dostępne w tym kontekście")
             return CondCompare(m.group(1), op, "", subquery=self._subquery_parser(inner))
+
+        if m := re.match(
+            r'^"([^"]+)"\s*(=|!=|>=|<=|>|<)\s+(WSZYSTKIE|DOWOLNE)\s*\(',
+            text, re.IGNORECASE,
+        ):
+            op = m.group(2)
+            quantifier = "ALL" if m.group(3).upper() == "WSZYSTKIE" else "ANY"
+            paren_start = text.index("(", m.end() - 1)
+            inner = self._unwrap_parens(text[paren_start:])
+            if not self._subquery_parser:
+                raise SyntaxError("Podzapytania nie są dostępne w tym kontekście")
+            return CondCompare(
+                m.group(1), op, "", subquery=self._subquery_parser(inner), quantifier=quantifier,
+            )
 
         m = self.compare_pattern.match(text)
         if not m:
@@ -909,6 +932,48 @@ class KarminParser:
             scalar_subquery=self._parse_subquery_atom(inner),
         )
 
+    _WIN_FUNCS = frozenset({"ROW_NUMBER", "RANK", "DENSE_RANK"})
+
+    def _parse_window_order(self, order_text: str) -> Tuple[Tuple[str, ...], bool]:
+        order_text = order_text.strip()
+        desc = False
+        if m := re.search(r'\s+(MALEJĄCO|DESC)\s*$', order_text, re.IGNORECASE):
+            desc = True
+            order_text = order_text[:m.start()].strip()
+        elif m := re.search(r'\s+(ROSNĄCO|ASC)\s*$', order_text, re.IGNORECASE):
+            order_text = order_text[:m.start()].strip()
+        return tuple(self._parse_keys(order_text)), desc
+
+    def _parse_window_column(self, text: str, label: Optional[str]) -> ProjColumn:
+        m = re.match(
+            r'^(ROW_NUMBER|RANK|DENSE_RANK)\s*\(\s*\)\s+OVER\s*\(\s*(.+)\)\s*$',
+            text, re.IGNORECASE | re.DOTALL,
+        )
+        if not m:
+            raise SyntaxError(f"Niepoprawna funkcja okienkowa: {text}")
+        func_map = {"ROW_NUMBER": "row_number", "RANK": "rank", "DENSE_RANK": "dense_rank"}
+        func = func_map[m.group(1).upper()]
+        body = m.group(2).strip()
+        partition: Optional[Tuple[str, ...]] = None
+        order_part = body
+        if pm := re.match(
+            r'^(?:PODZIEL\s+NA)\s+(.+?)\s+(?:SORTUJ\s+WEDŁUG|ORDER\s+BY)\s+(.+)$',
+            body, re.IGNORECASE | re.DOTALL,
+        ):
+            partition = tuple(self._parse_keys(pm.group(1).strip()))
+            order_part = pm.group(2).strip()
+        elif om := re.match(r'^(?:SORTUJ\s+WEDŁUG|ORDER\s+BY)\s+(.+)$', body, re.IGNORECASE | re.DOTALL):
+            order_part = om.group(1).strip()
+        else:
+            raise SyntaxError(f"Oczekiwano PODZIEL NA … SORTUJ WEDŁUG … w OVER: {body}")
+        win_order, win_desc = self._parse_window_order(order_part)
+        if not win_order:
+            raise SyntaxError("OVER wymaga SORTUJ WEDŁUG …")
+        return ProjColumn(
+            label or m.group(1).upper(), "window",
+            win_func=func, win_partition=partition, win_order=win_order, win_desc=win_desc,
+        )
+
     def _parse_nullif_column(self, text: str, label: Optional[str]) -> ProjColumn:
         m = re.match(r'^NULLIF\s*\((.+)\)\s*$', text, re.IGNORECASE | re.DOTALL)
         if not m:
@@ -941,6 +1006,8 @@ class KarminParser:
         head = text.split("(", 1)[0].strip().upper()
         if head in self._UNARY_STR_FUNCS:
             return self._parse_unary_str_column(text, label)
+        if head in self._WIN_FUNCS and " OVER " in text.upper():
+            return self._parse_window_column(text, label)
         if text.startswith("("):
             return self._parse_scalar_sub_column(text, label)
         if text.upper().startswith("CASE"):
@@ -1982,6 +2049,8 @@ class SubstrateAPI:
 
     def _eval_proj_column(self, col: ProjColumn, left_name: str, join_ctx: dict,
                           scalar_runner: Optional[Any] = None) -> Any:
+        if col.kind == "window":
+            return None
         if col.kind == "literal":
             return col.literal_val
         if col.kind == "scalar_sub" and col.scalar_subquery is not None:
@@ -2213,6 +2282,8 @@ class SubstrateAPI:
             if not query_runner:
                 return False
             target_list = query_runner(cmp.subquery, cmp.key)
+            if cmp.quantifier:
+                return self._eval_quantified_compare(val, operator, cmp.quantifier, target_list)
         elif target_val_str.startswith('$'):
             target_list = env.get(target_val_str, [])
         else:
@@ -2336,6 +2407,69 @@ class SubstrateAPI:
             unique.append(row)
         return unique
 
+    def _apply_window_functions(self, rows: List[dict],
+                                columns: Tuple[ProjColumn, ...]) -> List[dict]:
+        win_cols = [c for c in columns if c.kind == "window"]
+        if not win_cols or not rows:
+            return rows
+        for col in win_cols:
+            if not col.win_order:
+                continue
+            partitions: dict = {}
+            for idx, row in enumerate(rows):
+                pkey = tuple(row.get(k) for k in (col.win_partition or ()))
+                partitions.setdefault(pkey, []).append((idx, row))
+            for part_rows in partitions.values():
+                sorted_part = sorted(
+                    part_rows,
+                    key=lambda t: tuple(self._sort_key_part(t[1].get(k)) for k in col.win_order),
+                    reverse=col.win_desc,
+                )
+                prev_key = None
+                rank = dense_rank = 0
+                for i, (idx, row) in enumerate(sorted_part):
+                    order_key = tuple(row.get(k) for k in col.win_order)
+                    if col.win_func == "row_number":
+                        val = i + 1
+                    elif col.win_func == "rank":
+                        if order_key != prev_key:
+                            rank = i + 1
+                            prev_key = order_key
+                        val = rank
+                    elif col.win_func == "dense_rank":
+                        if order_key != prev_key:
+                            dense_rank += 1
+                            prev_key = order_key
+                        val = dense_rank
+                    else:
+                        val = None
+                    rows[idx][col.label] = val
+        return rows
+
+    @staticmethod
+    def _eval_quantified_compare(val: Any, op: str, quantifier: str, values: List[Any]) -> bool:
+        clean = [v for v in values if v is not None]
+        if not clean:
+            return quantifier == "ALL"
+        try:
+            if quantifier == "ALL":
+                if op == "=": return all(val == v for v in clean)
+                if op == "!=": return all(val != v for v in clean)
+                if op == ">": return all(val > v for v in clean)
+                if op == "<": return all(val < v for v in clean)
+                if op == ">=": return all(val >= v for v in clean)
+                if op == "<=": return all(val <= v for v in clean)
+            if quantifier == "ANY":
+                if op == "=": return any(val == v for v in clean)
+                if op == "!=": return any(val != v for v in clean)
+                if op == ">": return any(val > v for v in clean)
+                if op == "<": return any(val < v for v in clean)
+                if op == ">=": return any(val >= v for v in clean)
+                if op == "<=": return any(val <= v for v in clean)
+        except TypeError:
+            return False
+        return False
+
     def _apply_row_modifiers(self, rows: List[dict], keys: List[str],
                              sort_by: Optional[Tuple[str, ...]], sort_desc: bool,
                              limit: Optional[int], offset: Optional[int]) -> List[dict]:
@@ -2390,6 +2524,7 @@ class SubstrateAPI:
                 self._project_row(left, ctx, columns, scalar_runner)
                 for left, ctx in contexts
             ]
+        rows = self._apply_window_functions(rows, columns)
         if distinct:
             rows = self._dedupe_rows(rows, keys)
         rows = self._apply_row_modifiers(rows, keys, sort_by, sort_desc, limit, offset)
