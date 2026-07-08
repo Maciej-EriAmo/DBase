@@ -1,10 +1,10 @@
-# Cynober DB — Podręcznik Użytkownika i Składnia KarminQL (v6.6)
+# Cynober DB — Podręcznik Użytkownika i Składnia KarminQL (v6.7)
 
 Cynober DB to relacyjno-grafowa baza danych na termodynamicznym rdzeniu **KarmazynOS**, z transportem **Cynober-Secure-1.2** i warstwą **HSL** (Holographic Session Links). Trzy autorskie elementy — silnik, baza, protokół — opierają się na jednej zasadzie: **struktura wynika z rezonansu stanu sesji**, a nie z zewnętrznych etykiet (adres, certyfikat, ACL).
 
 | Komponent | Wersja | Plik |
 |-----------|--------|------|
-| KarminQL (silnik zapytań) | v6.6 | `cynober_query_engine.py` |
+| KarminQL (silnik zapytań) | v6.7 | `cynober_query_engine.py` |
 | Most pandas | — | `cynober_pandas_bridge.py` |
 | Klient CLI | v1.8.0 | `Cynober_db.py` |
 | Serwer | — | `cynober_server.py` |
@@ -31,7 +31,7 @@ Cynober DB to relacyjno-grafowa baza danych na termodynamicznym rdzeniu **Karmaz
          └──────────────────┬─────────────────────────┘
                             ▼
                    ┌─────────────────┐
-                   │  KarminEngine   │  KarminQL v6.6
+                   │  KarminEngine   │  KarminQL v6.7
                    └────────┬────────┘
                             ▼
                    ┌─────────────────┐
@@ -627,6 +627,38 @@ ZNAJDŹ GDZIE "RAM" > DOWOLNE (WYPISZ "RAM" GDZIE "RAM" < 600)
 ```
 
 Aliasy EN: `ALL (…)`, `ANY (…)`. Semantyka SQL: `> WSZYSTKIE` = większe od każdej wartości podzapytania; `> DOWOLNE` = większe od co najmniej jednej.
+
+### Rozszerzone okna, agregaty OVER i ILIKE (v6.7)
+
+**Offset i wartości okienkowe:**
+
+```
+WYPISZ "BĄBEL", "Score",
+  LAG("Score", 1) OVER (PODZIEL NA "Typ" SORTUJ WEDŁUG "Score" ROSNĄCO) JAKO "Prev",
+  LEAD("Score", 1) OVER (PODZIEL NA "Typ" SORTUJ WEDŁUG "Score" ROSNĄCO) JAKO "Next"
+  GDZIE "Typ" = "X"
+
+WYPISZ FIRST_VALUE("Score") OVER (PODZIEL NA "Typ" SORTUJ WEDŁUG "Score" ROSNĄCO) JAKO "First" GDZIE ...
+WYPISZ NTILE(4) OVER (SORTUJ WEDŁUG "Score" ROSNĄCO) JAKO "Bucket" GDZIE ...
+```
+
+**Agregaty okienkowe:**
+
+```
+WYPISZ SUM("Score") OVER (SORTUJ WEDŁUG "Score" ROSNĄCO) JAKO "RunSum" GDZIE ...     — suma bieżąca
+WYPISZ SUM("Score") OVER (PODZIEL NA "Typ") JAKO "PartSum" GDZIE ...                  — suma w partycji
+```
+
+Obsługiwane: `LAG`, `LEAD`, `FIRST_VALUE`, `LAST_VALUE`, `NTILE(n)`, `SUM`/`AVG`/`MIN`/`MAX` (oraz `SUMA`/`ŚREDNIA`). Partycja i sortowanie czytają cechy z bąbla nawet bez kolumny w projekcji.
+
+**ILIKE (bez rozróżniania wielkości liter):**
+
+```
+ZNAJDŹ GDZIE "Nazwa" ILIKE "serwer%"
+ZNAJDŹ GDZIE "Nazwa" NIE ILIKE "plik%"
+```
+
+Alias jawny dla `PODOBNE` / `NIE PODOBNE` (obie formy dopasowują wzorzec `%`/`_` bez rozróżniania wielkości liter).
 
 ### Optymalizacja substratu (v6.1)
 

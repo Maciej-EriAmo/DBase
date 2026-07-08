@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """
-cynober_query_engine.py — Silnik zapytań KarminQL v6.6 (PL + aliasy EN)
+cynober_query_engine.py — Silnik zapytań KarminQL v6.7 (PL + aliasy EN)
 ==========================================================================
 Rozszerzenia SQL-owe: WYPISZ GDZIE, JOIN relacyjny, CTE, widoki, constraints,
 COALESCE/NULLIF/CAST/CONCAT, EXISTS, DROP CONSTRAINT, funkcje stringowe, podzapytania skalarne,
-funkcje okienkowe OVER, ALL/ANY.
+funkcje okienkowe OVER (LAG/LEAD/NTILE/agregaty), ALL/ANY, ILIKE.
 """
 
 import csv
@@ -191,6 +191,9 @@ class ProjColumn:
     win_partition: Optional[Tuple[str, ...]] = None
     win_order: Optional[Tuple[str, ...]] = None
     win_desc: bool = False
+    win_arg: Optional[Any] = None
+    win_offset: int = 1
+    win_ntile: Optional[int] = None
 
 @dataclass(frozen=True)
 class UpdatePropertyNode(ASTNode): target: str; key: str; value: str
@@ -362,6 +365,8 @@ _ALIAS_PHRASES: Tuple[Tuple[str, str], ...] = (
     (r"PARTITION\s+BY", "PODZIEL NA"),
     (r"\bANY\b", "DOWOLNE"),
     (r"\bALL\b", "WSZYSTKIE"),
+    (r"NOT\s+ILIKE", "NIE PODOBNE"),
+    (r"\bILIKE\b", "PODOBNE"),
 )
 
 _ALIAS_WORDS: Tuple[Tuple[str, str], ...] = (
@@ -932,7 +937,13 @@ class KarminParser:
             scalar_subquery=self._parse_subquery_atom(inner),
         )
 
-    _WIN_FUNCS = frozenset({"ROW_NUMBER", "RANK", "DENSE_RANK"})
+    _WIN_FUNCS_RANK = frozenset({"ROW_NUMBER", "RANK", "DENSE_RANK"})
+    _WIN_FUNCS_OFFSET = frozenset({"LAG", "LEAD"})
+    _WIN_FUNCS_VALUE = frozenset({"FIRST_VALUE", "LAST_VALUE"})
+    _WIN_FUNCS_AGG = frozenset({"SUM", "AVG", "MIN", "MAX", "SUMA", "ŚREDNIA"})
+    _WIN_FUNCS = (
+        _WIN_FUNCS_RANK | _WIN_FUNCS_OFFSET | _WIN_FUNCS_VALUE | _WIN_FUNCS_AGG | {"NTILE"}
+    )
 
     def _parse_window_order(self, order_text: str) -> Tuple[Tuple[str, ...], bool]:
         order_text = order_text.strip()
@@ -944,35 +955,104 @@ class KarminParser:
             order_text = order_text[:m.start()].strip()
         return tuple(self._parse_keys(order_text)), desc
 
-    def _parse_window_column(self, text: str, label: Optional[str]) -> ProjColumn:
-        m = re.match(
-            r'^(ROW_NUMBER|RANK|DENSE_RANK)\s*\(\s*\)\s+OVER\s*\(\s*(.+)\)\s*$',
-            text, re.IGNORECASE | re.DOTALL,
-        )
-        if not m:
-            raise SyntaxError(f"Niepoprawna funkcja okienkowa: {text}")
-        func_map = {"ROW_NUMBER": "row_number", "RANK": "rank", "DENSE_RANK": "dense_rank"}
-        func = func_map[m.group(1).upper()]
-        body = m.group(2).strip()
+    def _parse_window_over_body(self, body: str,
+                                order_required: bool = True) -> Tuple[Optional[Tuple[str, ...]], Optional[Tuple[str, ...]], bool]:
+        body = body.strip()
         partition: Optional[Tuple[str, ...]] = None
-        order_part = body
+        order_part: Optional[str] = None
         if pm := re.match(
             r'^(?:PODZIEL\s+NA)\s+(.+?)\s+(?:SORTUJ\s+WEDŁUG|ORDER\s+BY)\s+(.+)$',
             body, re.IGNORECASE | re.DOTALL,
         ):
             partition = tuple(self._parse_keys(pm.group(1).strip()))
             order_part = pm.group(2).strip()
+        elif pm := re.match(r'^(?:PODZIEL\s+NA)\s+(.+)$', body, re.IGNORECASE | re.DOTALL):
+            partition = tuple(self._parse_keys(pm.group(1).strip()))
         elif om := re.match(r'^(?:SORTUJ\s+WEDŁUG|ORDER\s+BY)\s+(.+)$', body, re.IGNORECASE | re.DOTALL):
             order_part = om.group(1).strip()
         else:
-            raise SyntaxError(f"Oczekiwano PODZIEL NA … SORTUJ WEDŁUG … w OVER: {body}")
-        win_order, win_desc = self._parse_window_order(order_part)
-        if not win_order:
+            raise SyntaxError(f"Oczekiwano PODZIEL NA … [SORTUJ WEDŁUG …] w OVER: {body}")
+        if order_part:
+            win_order, win_desc = self._parse_window_order(order_part)
+            return partition, win_order, win_desc
+        if order_required:
             raise SyntaxError("OVER wymaga SORTUJ WEDŁUG …")
-        return ProjColumn(
-            label or m.group(1).upper(), "window",
-            win_func=func, win_partition=partition, win_order=win_order, win_desc=win_desc,
+        return partition, None, False
+
+    def _parse_window_column(self, text: str, label: Optional[str]) -> ProjColumn:
+        agg_map = {
+            "SUM": "sum", "SUMA": "sum", "AVG": "avg", "ŚREDNIA": "avg",
+            "MIN": "min", "MAX": "max",
+        }
+
+        m = re.match(
+            r'^(ROW_NUMBER|RANK|DENSE_RANK)\s*\(\s*\)\s+OVER\s*\(\s*(.+)\)\s*$',
+            text, re.IGNORECASE | re.DOTALL,
         )
+        if m:
+            rank_map = {"ROW_NUMBER": "row_number", "RANK": "rank", "DENSE_RANK": "dense_rank"}
+            partition, win_order, win_desc = self._parse_window_over_body(m.group(2))
+            if not win_order:
+                raise SyntaxError("OVER wymaga SORTUJ WEDŁUG …")
+            return ProjColumn(
+                label or m.group(1).upper(), "window",
+                win_func=rank_map[m.group(1).upper()],
+                win_partition=partition, win_order=win_order, win_desc=win_desc,
+            )
+
+        m = re.match(r'^NTILE\s*\(\s*(\d+)\s*\)\s+OVER\s*\(\s*(.+)\)\s*$', text, re.IGNORECASE | re.DOTALL)
+        if m:
+            partition, win_order, win_desc = self._parse_window_over_body(m.group(2))
+            if not win_order:
+                raise SyntaxError("NTILE wymaga SORTUJ WEDŁUG … w OVER")
+            return ProjColumn(
+                label or "NTILE", "window",
+                win_func="ntile", win_ntile=int(m.group(1)),
+                win_partition=partition, win_order=win_order, win_desc=win_desc,
+            )
+
+        m = re.match(r'^(LAG|LEAD)\s*\(\s*(.+)\)\s+OVER\s*\(\s*(.+)\)\s*$', text, re.IGNORECASE | re.DOTALL)
+        if m:
+            args = self._split_func_args(m.group(2))
+            if not args:
+                raise SyntaxError(f"{m.group(1)} wymaga co najmniej jednego argumentu")
+            offset = 1
+            if len(args) >= 2:
+                offset = int(KarminType.parse(args[1]))
+            partition, win_order, win_desc = self._parse_window_over_body(m.group(3))
+            if not win_order:
+                raise SyntaxError(f"{m.group(1)} wymaga SORTUJ WEDŁUG … w OVER")
+            return ProjColumn(
+                label or m.group(1).upper(), "window",
+                win_func=m.group(1).lower(),
+                win_arg=self._parse_proj_atom(args[0]),
+                win_offset=offset,
+                win_partition=partition, win_order=win_order, win_desc=win_desc,
+            )
+
+        m = re.match(
+            r'^(FIRST_VALUE|LAST_VALUE|SUM|AVG|MIN|MAX|SUMA|ŚREDNIA)\s*\(\s*(.+)\)\s+OVER\s*\(\s*(.+)\)\s*$',
+            text, re.IGNORECASE | re.DOTALL,
+        )
+        if m:
+            fname = m.group(1).upper()
+            if fname in ("FIRST_VALUE", "LAST_VALUE"):
+                func = fname.lower()
+                order_required = True
+            else:
+                func = agg_map[fname]
+                order_required = False
+            partition, win_order, win_desc = self._parse_window_over_body(
+                m.group(3), order_required=order_required,
+            )
+            return ProjColumn(
+                label or m.group(1).upper(), "window",
+                win_func=func,
+                win_arg=self._parse_proj_atom(m.group(2).strip()),
+                win_partition=partition, win_order=win_order, win_desc=win_desc,
+            )
+
+        raise SyntaxError(f"Niepoprawna funkcja okienkowa: {text}")
 
     def _parse_nullif_column(self, text: str, label: Optional[str]) -> ProjColumn:
         m = re.match(r'^NULLIF\s*\((.+)\)\s*$', text, re.IGNORECASE | re.DOTALL)
@@ -1006,7 +1086,7 @@ class KarminParser:
         head = text.split("(", 1)[0].strip().upper()
         if head in self._UNARY_STR_FUNCS:
             return self._parse_unary_str_column(text, label)
-        if head in self._WIN_FUNCS and " OVER " in text.upper():
+        if (head in self._WIN_FUNCS or head == "NTILE") and " OVER " in text.upper():
             return self._parse_window_column(text, label)
         if text.startswith("("):
             return self._parse_scalar_sub_column(text, label)
@@ -2407,28 +2487,64 @@ class SubstrateAPI:
             unique.append(row)
         return unique
 
+    def _win_row_field(self, row: dict, key: str) -> Any:
+        if key in row:
+            return row.get(key)
+        babel = row.get("BĄBEL")
+        if babel:
+            return self._get_property_value(babel, key)
+        return None
+
+    def _win_cell_value(self, row: dict, win_arg: Optional[Any]) -> Any:
+        if win_arg is None or not isinstance(win_arg, ProjColumn):
+            return None
+        if win_arg.kind == "ref":
+            return self._win_row_field(row, win_arg.ref_key or win_arg.label)
+        if win_arg.kind == "literal":
+            return win_arg.literal_val
+        return None
+
+    @staticmethod
+    def _numeric_vals(values: List[Any]) -> List[Union[int, float]]:
+        out: List[Union[int, float]] = []
+        for v in values:
+            if isinstance(v, (int, float)) and not isinstance(v, bool):
+                out.append(v)
+        return out
+
     def _apply_window_functions(self, rows: List[dict],
                                 columns: Tuple[ProjColumn, ...]) -> List[dict]:
         win_cols = [c for c in columns if c.kind == "window"]
         if not win_cols or not rows:
             return rows
         for col in win_cols:
-            if not col.win_order:
-                continue
             partitions: dict = {}
             for idx, row in enumerate(rows):
-                pkey = tuple(row.get(k) for k in (col.win_partition or ()))
+                pkey = tuple(self._win_row_field(row, k) for k in (col.win_partition or ()))
                 partitions.setdefault(pkey, []).append((idx, row))
             for part_rows in partitions.values():
-                sorted_part = sorted(
-                    part_rows,
-                    key=lambda t: tuple(self._sort_key_part(t[1].get(k)) for k in col.win_order),
-                    reverse=col.win_desc,
-                )
+                if col.win_order:
+                    sorted_part = sorted(
+                        part_rows,
+                        key=lambda t: tuple(
+                            self._sort_key_part(self._win_row_field(t[1], k))
+                            for k in col.win_order
+                        ),
+                        reverse=col.win_desc,
+                    )
+                else:
+                    sorted_part = list(part_rows)
                 prev_key = None
                 rank = dense_rank = 0
+                cell_vals = [self._win_cell_value(row, col.win_arg) for _, row in sorted_part]
+                running: List[Union[int, float]] = []
+                run_sum = 0.0
                 for i, (idx, row) in enumerate(sorted_part):
-                    order_key = tuple(row.get(k) for k in col.win_order)
+                    order_key = (
+                        tuple(self._win_row_field(row, k) for k in col.win_order)
+                        if col.win_order else None
+                    )
+                    val: Any = None
                     if col.win_func == "row_number":
                         val = i + 1
                     elif col.win_func == "rank":
@@ -2441,8 +2557,34 @@ class SubstrateAPI:
                             dense_rank += 1
                             prev_key = order_key
                         val = dense_rank
-                    else:
-                        val = None
+                    elif col.win_func == "ntile" and col.win_ntile:
+                        n = col.win_ntile
+                        total = len(sorted_part)
+                        val = (i * n) // total + 1 if total else 1
+                    elif col.win_func == "lag":
+                        j = i - col.win_offset
+                        val = cell_vals[j] if j >= 0 else None
+                    elif col.win_func == "lead":
+                        j = i + col.win_offset
+                        val = cell_vals[j] if j < len(cell_vals) else None
+                    elif col.win_func == "first_value":
+                        val = cell_vals[0] if cell_vals else None
+                    elif col.win_func == "last_value":
+                        val = cell_vals[-1] if cell_vals else None
+                    elif col.win_func in ("sum", "avg", "min", "max"):
+                        cur = cell_vals[i]
+                        if col.win_order:
+                            nums = self._numeric_vals(cell_vals[: i + 1])
+                        else:
+                            nums = self._numeric_vals(cell_vals)
+                        if col.win_func == "sum":
+                            val = sum(nums) if nums else None
+                        elif col.win_func == "avg":
+                            val = (sum(nums) / len(nums)) if nums else None
+                        elif col.win_func == "min":
+                            val = min(nums) if nums else None
+                        elif col.win_func == "max":
+                            val = max(nums) if nums else None
                     rows[idx][col.label] = val
         return rows
 
