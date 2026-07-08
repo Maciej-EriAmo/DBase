@@ -1,10 +1,10 @@
-# Cynober DB — Podręcznik Użytkownika i Składnia KarminQL (v4.8)
+# Cynober DB — Podręcznik Użytkownika i Składnia KarminQL (v5.3)
 
 Cynober DB to relacyjno-grafowa baza danych na termodynamicznym rdzeniu **KarmazynOS**, z transportem **Cynober-Secure-1.2** i warstwą **HSL** (Holographic Session Links). Trzy autorskie elementy — silnik, baza, protokół — opierają się na jednej zasadzie: **struktura wynika z rezonansu stanu sesji**, a nie z zewnętrznych etykiet (adres, certyfikat, ACL).
 
 | Komponent | Wersja | Plik |
 |-----------|--------|------|
-| KarminQL (silnik zapytań) | v4.8 | `cynober_query_engine.py` |
+| KarminQL (silnik zapytań) | v5.3 | `cynober_query_engine.py` |
 | Klient CLI | v1.8.0 | `Cynober_db.py` |
 | Serwer | — | `cynober_server.py` |
 | Protokół transportu | Cynober-Secure-1.2 | `cynober_rpc.py` |
@@ -419,7 +419,11 @@ Bąble i indeksy w jednej przestrzeni nie są widoczne w innej.
 |----------|----------|
 | Tworzenie bąbla | `UTRWAL "Encja_1"` |
 | Dodanie cechy | `WSTRZYKNIJ "Zmienna" = 100 DO "Encja_1"` |
+| Wiele cech naraz | `WSTRZYKNIJ WIELE "RAM" = 8192, "Typ" = "Prod" DO "Encja_1"` |
+| Wiele bąbli | `UTRWAL WIELE "A", "B", "C"` |
+| Bąble z cechami | `UTRWAL WIELE "A" Z "RAM"=100 ORAZ "B" Z "RAM"=200` |
 | Aktualizacja | `ZAKTUALIZUJ "Zmienna" = +50 W "Encja_1"` |
+| Masowa aktualizacja | `ZAKTUALIZUJ "Zmienna" = "Wartość" GDZIE "Typ" = "Serwer"` |
 | Usunięcie cechy | `USUŃ "Zmienna" Z "Encja_1"` |
 | Usunięcie bąbla | `USUŃ BĄBEL "Encja_1"` |
 
@@ -429,17 +433,40 @@ Alternatywna składnia wstrzykiwania: `WSTRZYKNIJ "Klucz" -> "Wartość" DO "Bą
 
 ## 9. KarminQL: Wyszukiwanie i filtrowanie
 
-Operatory: `=`, `!=`, `>`, `<`, `>=`, `<=`, `ZAWIERA`, `W`, `NIE W`.  
-Logika: `ORAZ`, `LUB`.
+Operatory: `=`, `!=`, `>`, `<`, `>=`, `<=`, `ZAWIERA`, `W`, `NIE W`, `JEST NIC`, `NIE JEST NIC`, `MIĘDZY … DO …`.  
+Logika: `ORAZ`, `LUB`, `NIE`, nawiasy `( … )` — dowolna długość łańcucha.
+
+Podzapytania w `W` / `NIE W` (odpowiednik SQL `IN` / `NOT IN`):
+
+```
+ZNAJDŹ GDZIE "BĄBEL" W (ZNAJDŹ GDZIE "Typ" = "Serwer")
+ZNAJDŹ GDZIE "Typ" W (WYPISZ "Typ" GDZIE "RAM" > 500)
+ZNAJDŹ GDZIE "RAM" MIĘDZY 100 DO 500
+```
 
 | Operacja | Przykład |
 |----------|----------|
 | Podgląd | `POKAŻ "Encja_1"` |
-| Projekcja | `WYPISZ "Kolumna1", "Kolumna2" Z "Encja_1"` |
+| Projekcja (jeden bąbel) | `WYPISZ "Kolumna1", "Kolumna2" Z "Encja_1"` |
+| Tabela wyników (SELECT) | `WYPISZ "BĄBEL", "RAM", "Typ" GDZIE "Typ" = "Serwer"` |
+| DISTINCT | `WYPISZ UNIKALNE "Typ" GDZIE "RAM" > 0` lub `... GDZIE ... UNIKALNE` |
 | Wyszukiwanie | `ZNAJDŹ GDZIE "Typ" = "Proces" ORAZ "RAM" > 500` |
+| JOIN po relacji | `ZNAJDŹ POŁĄCZONE JAKO "syn" Z "Dziecko" GDZIE "RAM" > 1000` |
 | Zliczanie | `POLICZ BĄBLE GDZIE "Typ" = "Aplikacja"` |
 | Masowe usuwanie | `USUŃ BĄBLE GDZIE "Zmienna" < 0` |
 | Rezonans (HRR) | `SZUKAJ "koncepcja"` *(wymaga numpy)* |
+
+Klauzula `POŁĄCZONE JAKO "relacja" Z "cel"` ogranicza kandydatów do bąbli wskazujących na cel daną relacją (JOIN 1-hop). Działa z `WYPISZ … GDZIE`, `ZNAJDŹ … GDZIE`, `ZAKTUALIZUJ … GDZIE` i agregacjami.
+
+### Operacje zbiorów (UNION / INTERSECT / EXCEPT)
+
+| SQL | KarminQL | Przykład |
+|-----|----------|----------|
+| UNION | `ZŁĄCZ` | `ZNAJDŹ GDZIE "Typ"="X" ZŁĄCZ ZNAJDŹ GDZIE "Typ"="Y"` |
+| INTERSECT | `PRZECIĘCIE` | `ZNAJDŹ GDZIE "A"=1 PRZECIĘCIE ZNAJDŹ GDZIE "B"=2` |
+| EXCEPT | `RÓŻNICA` | `ZNAJDŹ GDZIE "Typ"="X" RÓŻNICA ZNAJDŹ GDZIE "BĄBEL"="A"` |
+
+Na zmiennych skryptowych: `ZŁĄCZ $lista_a $lista_b`. Działa też z `WYPISZ … GDZIE` (łączenie wierszy). `PRZECIĘCIE` wiąże mocniej niż `ZŁĄCZ` / `RÓŻNICA` (jak w SQL). Modyfikatory `SORTUJ`, `LIMIT`, `PRZESUNIĘCIE` na końcu całego wyrażenia.
 
 ### Zmienne skryptowe
 
@@ -459,7 +486,7 @@ Na końcu zapytań wyszukujących lub agregujących:
 1. `SORTUJ WEDŁUG "Cecha" [MALEJĄCO|ROSNĄCO]`
 2. `LIMIT X`
 3. `PRZESUNIĘCIE Y`
-4. `POGRUPUJ "Cecha"` *(tylko agregacje)*
+4. `POGRUPUJ "Cecha"` lub `POGRUPUJ "Cecha1", "Cecha2"` *(tylko agregacje)*
 
 Przykład:
 
@@ -471,12 +498,18 @@ ZNAJDŹ GDZIE "Typ" = "Plik" SORTUJ WEDŁUG "Rozmiar" MALEJĄCO LIMIT 5
 
 ## 11. Agregacje i grupowanie
 
-Funkcje: `SUMA`, `ŚREDNIA`, `MIN`, `MAX`.
+Funkcje: `SUMA`, `ŚREDNIA`, `MIN`, `MAX`, `POLICZ`, `POLICZ RÓŻNE`.
 
 ```
 SUMA "RAM" GDZIE "Stan" = "Aktywny"
 ŚREDNIA "RAM" GDZIE "Stan" != "NIC" POGRUPUJ "Typ"
+SUMA "RAM" GDZIE "RAM" > 0 POGRUPUJ "Typ", "Region"
+POLICZ "RAM" GDZIE "RAM" > 0
+POLICZ RÓŻNE "Typ" GDZIE "Typ" != "NIC"
+SUMA "RAM" GDZIE "Typ" != "NIC" POGRUPUJ "Typ" MAJĄCE SUMA > 150
 ```
+
+`MAJĄCE` to odpowiednik SQL `HAVING` — filtruje grupy po agregacji.
 
 W kliencie CLI — wizualizacja:
 

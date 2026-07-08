@@ -2,7 +2,7 @@
 
 import unittest
 
-from cynober_query_engine import KarminParser, CreateBubbleNode, ConditionNode, AggregateNode
+from cynober_query_engine import KarminParser, CreateBubbleNode, ConditionNode, AggregateNode, CondCompare, CondAnd
 
 
 class TestKarminParser(unittest.TestCase):
@@ -19,24 +19,26 @@ class TestKarminParser(unittest.TestCase):
         nodes = self.parser.parse('ZNAJDŹ GDZIE "Typ" = "A" ORAZ "RAM" > 10')
         node = nodes[0][2]
         self.assertIsInstance(node, ConditionNode)
-        self.assertEqual(node.logic, "ORAZ")
-        self.assertEqual(node.cond1[0], "Typ")
-        self.assertEqual(node.cond2[0], "RAM")
-        self.assertEqual(node.cond2[1], ">")
+        self.assertIsInstance(node.cond, CondAnd)
+        self.assertIsInstance(node.cond.parts[0], CondCompare)
+        self.assertEqual(node.cond.parts[0].key, "Typ")
+        self.assertEqual(node.cond.parts[1].key, "RAM")
+        self.assertEqual(node.cond.parts[1].op, ">")
 
     def test_parse_gte_operator_not_split(self):
         """>= musi być rozpoznany jako jeden operator, nie > + =."""
         nodes = self.parser.parse('ZNAJDŹ GDZIE "RAM" >= 500')
         node = nodes[0][2]
-        self.assertEqual(node.cond1[1], ">=")
-        self.assertEqual(node.cond1[2], "500")
+        self.assertIsInstance(node.cond, CondCompare)
+        self.assertEqual(node.cond.op, ">=")
+        self.assertEqual(node.cond.val, "500")
 
     def test_parse_aggregate_with_group_by(self):
         nodes = self.parser.parse('SUMA "RAM" GDZIE "Typ" = "Serwer" POGRUPUJ "Typ"')
         node = nodes[0][2]
         self.assertIsInstance(node, AggregateNode)
         self.assertEqual(node.action, "SUMA")
-        self.assertEqual(node.group_by, "Typ")
+        self.assertEqual(node.group_by, ["Typ"])
 
     def test_rejects_unknown_syntax(self):
         with self.assertRaises(SyntaxError):

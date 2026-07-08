@@ -11,7 +11,7 @@ import socket
 import threading
 import time
 import karmazyn_kernel as kernel
-from cynober_query_engine import KarminEngine
+from cynober_lambda_bridge import KarminLambdaBridge
 
 from cynober_rpc import (
     HS_TIMEOUT_SEC,
@@ -31,8 +31,9 @@ from karmazyn_handshake import _CryptoLayer, _recv_frame
 
 class CynoberFacade:
     def __init__(self):
-        self.store = kernel.Store(thermal=True)
-        self.engine = KarminEngine(self.store)
+        self.bridge = KarminLambdaBridge(kernel.Store(thermal=True))
+        self.store = self.bridge.store
+        self.engine = self.bridge.engine
         self._lock = threading.Lock()
 
     def execute(self, query: str) -> list:
@@ -40,6 +41,9 @@ class CynoberFacade:
             return self._execute_unlocked(query)
 
     def _execute_unlocked(self, query: str) -> list:
+        if self.bridge.is_lambda_line(query):
+            return [self.bridge.eval_line(query)]
+
         upper_query = query.strip().upper()
         if upper_query == "STATYSTYKI":
             stats = self.store.stats()

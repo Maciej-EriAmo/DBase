@@ -163,10 +163,35 @@ class CynoberClient:
             if matches:
                 self._print_table(["Nazwa Bąbla"], [[m] for m in matches])
 
+        elif action == "SET_OP":
+            op = w.get("set_op", "?")
+            rows = w.get("rows")
+            if rows is not None:
+                cols = w.get("columns", [])
+                print(f"\n[ZBIÓR:{op}] Wierszy: {w.get('count', len(rows))}")
+                if rows and cols:
+                    self._print_table(cols, [[str(row.get(c, "")) for c in cols] for row in rows])
+            else:
+                matches = w.get("matches", [])
+                print(f"\n[ZBIÓR:{op}] Znaleziono obiektów: {len(matches)}")
+                if matches:
+                    self._print_table(["Nazwa Bąbla"], [[m] for m in matches])
+
         elif action == "PROJECT":
             data = w.get("data", {})
             print(f"\n[PROJEKCJA] Bąbel: {w.get('target')}")
             self._print_table(["Cecha", "Wartość"], [[k, str(v)] for k, v in data.items()])
+
+        elif action == "PROJECT_WHERE":
+            cols = w.get("columns", [])
+            rows = w.get("rows", [])
+            tag = " [UNIKALNE]" if w.get("distinct") else ""
+            print(f"\n[PROJEKCJA GDZIE{tag}] Wierszy: {w.get('count', len(rows))}")
+            if rows and cols:
+                self._print_table(cols, [[str(row.get(c, "")) for c in cols] for row in rows])
+
+        elif action == "UPDATE_WHERE":
+            print(f"\n[AKTUALIZACJA GDZIE] Zaktualizowano cechę '{w.get('key')}': {w.get('updated_count')} bąbli")
 
         elif action == "SHOW":
             props = w.get("data", {}).get("properties", {})
@@ -180,8 +205,10 @@ class CynoberClient:
         elif action.startswith("AGGREGATE_"):
             res = w.get("result")
             if isinstance(res, dict):
-                print(f"\n[{action}] Grupowanie po: '{w.get('group_by')}'")
-                self._print_table([w.get("group_by", "Grupa"), "Wynik"], [[k, str(v)] for k, v in res.items()])
+                gb = w.get("group_by")
+                gb_label = ", ".join(gb) if isinstance(gb, list) else (gb or "Grupa")
+                print(f"\n[{action}] Grupowanie po: {gb_label}")
+                self._print_table([gb_label, "Wynik"], [[k, str(v)] for k, v in res.items()])
             else:
                 print(f"\n[{action}] Globalnie dla '{w.get('key')}': {res}")
 
@@ -192,6 +219,24 @@ class CynoberClient:
         
         elif action == "ASSIGN":
             print(f" > [ZMIENNA]: Utworzono {w.get('variable')} (elementów: {len(w.get('value', []))})")
+
+        elif action == "LAMBDA":
+            print(f"\n[λ] {w.get('result', '')}")
+
+        elif action == "EXPORT_CSV":
+            print(f"\n[EKSPORT CSV] Zapisano {w.get('rows_written', 0)} wierszy → {w.get('file')}")
+            cols = w.get("columns", [])
+            if cols:
+                print(f"  Kolumny: {', '.join(cols)}")
+
+        elif action == "IMPORT_CSV":
+            print(f"\n[IMPORT CSV] Wczytano {w.get('count', 0)} bąbli z {w.get('file')}")
+            created = w.get("created", [])
+            if created:
+                preview = ", ".join(created[:8])
+                if len(created) > 8:
+                    preview += ", …"
+                print(f"  Utworzono: {preview}")
 
         else:
             target = w.get("target", w.get("count", w.get("deleted_count", "")))
@@ -224,7 +269,8 @@ class CynoberClient:
         try:
             import plotly.express as px
             import pandas as pd
-            x_label = last_result.get("group_by", "Grupa")
+            gb = last_result.get("group_by")
+            x_label = ", ".join(gb) if isinstance(gb, list) else last_result.get("group_by", "Grupa")
             y_label = last_result.get("key", "Wartość")
             action = last_result.get("action")
             df = pd.DataFrame(list(data.items()), columns=[x_label, y_label])
@@ -246,7 +292,7 @@ class CynoberClient:
             tunel += " + QKD"
 
         print("\n" + "=" * 60)
-        print("  CYNOBER DB — KarminQL v4.8 | Klient v1.8.0")
+        print("  CYNOBER DB — KarminQL v5.6 | Klient v1.8.0")
         print(f"  Połączenie: {self.host}:{self.port}  |  Protokół: {PROTO_VERSION}")
         if self.sock and self._crypto_mode:
             print(f"  Aktywny tunel: {tunel}")
@@ -291,18 +337,39 @@ class CynoberClient:
         print("  UTRWAL \"Bąbel\"")
         print("  USUŃ BĄBEL \"Bąbel\"")
         print("  WSTRZYKNIJ \"Cecha\" = Wartość DO \"Bąbel\"")
+        print("  WSTRZYKNIJ WIELE \"C1\" = 1, \"C2\" = 2 DO \"Bąbel\"   (bulk INSERT cech)")
+        print("  UTRWAL WIELE \"A\", \"B\", \"C\"   |   UTRWAL WIELE \"A\" Z \"RAM\"=1 ORAZ \"B\" Z \"RAM\"=2")
+        print("  WSTAW Z (WYPISZ \"Sku\", \"RAM\" GDZIE ...)   |   WSTAW Z (ZNAJDŹ GDZIE ...)  (INSERT SELECT)")
+        print("  EKSPORT CSV \"plik.csv\" Z (WYPISZ \"BĄBEL\", \"RAM\" GDZIE ...)")
+        print("  IMPORT CSV \"plik.csv\" [KOLUMNA \"BĄBEL\"]   — pierwsza kolumna = nazwa bąbla")
+        print("\n[Aliasy angielskie — ten sam silnik, np. CREATE=UTRWAL, SELECT=WYPISZ, FIND=ZNAJDŹ]")
+        print("  SELECT \"BĄBEL\", \"RAM\" WHERE \"Typ\" = \"Serwer\"  |  FIND WHERE ... GROUP BY ...")
+        print("  CREATE / INSERT INTO / UPDATE / DELETE BUBBLE / CONNECT ... TO ... AS ...")
+        print("\n[Silnik λ — mini-Lisp na tym samym Store]")
+        print("  Wyrażenia w nawiasach: (define x 10)  (+ x 5)  (lambda (a b) (* a b))")
+        print("  (karmin \"ZNAJDŹ GDZIE \\\"Typ\\\" = \\\"Serwer\\\"\")  — zapytanie KarminQL z λ")
         print("  ZAKTUALIZUJ \"Cecha\" = +50 W \"Bąbel\"   (względna aktualizacja liczb)")
+        print("  ZAKTUALIZUJ \"Cecha\" = Wartość GDZIE ...  (masowy UPDATE)")
         print("  USUŃ \"Cecha\" Z \"Bąbel\"")
 
         print("\n[Podgląd i wyszukiwanie]")
         print("  POKAŻ \"Bąbel\"")
         print("  WYPISZ \"C1\", \"C2\" Z \"Bąbel\"")
+        print("  WYPISZ \"BĄBEL\", \"C1\" GDZIE \"Cecha\" = Wartość   (tabela wyników)")
+        print("  WYPISZ UNIKALNE \"C1\" GDZIE ...  |  ... GDZIE ... UNIKALNE   (DISTINCT)")
         print("  HISTORIA \"Cecha\" W \"Bąbel\"")
         print("  SZUKAJ \"fraza\"              (rezonans HRR — wymaga numpy)")
-        print("  ZNAJDŹ GDZIE \"Cecha\" = Wartość [ORAZ|LUB \"Cecha2\" > 10]")
+        print("  ZNAJDŹ GDZIE \"Cecha\" = Wartość [ORAZ|LUB ...]  (łańcuchy, NIE, nawiasy)")
+        print("  ZNAJDŹ POŁĄCZONE JAKO \"rel\" Z \"Cel\" GDZIE ...   (JOIN 1-hop)")
+        print("  ZNAJDŹ ... ZŁĄCZ ZNAJDŹ ...   (UNION)")
+        print("  ZNAJDŹ ... PRZECIĘCIE ZNAJDŹ ...   (INTERSECT)")
+        print("  ZNAJDŹ ... RÓŻNICA ZNAJDŹ ...   (EXCEPT)")
+        print("  ZŁĄCZ|PRZECIĘCIE|RÓŻNICA $a $b   (na zmiennych skryptowych)")
         print("  POLICZ BĄBLE GDZIE ...")
         print("  USUŃ BĄBLE GDZIE ...")
-        print("  Operatory: = != > < >= <= ZAWIERA W NIE W")
+        print("  Operatory: = != > < >= <= ZAWIERA W NIE W JEST NIC NIE JEST NIC MIĘDZY")
+        print("  Podzapytanie: \"BĄBEL\" W (ZNAJDŹ GDZIE \"Typ\" = \"Serwer\")")
+        print("  Podzapytanie kolumny: \"Typ\" W (WYPISZ \"Typ\" GDZIE \"RAM\" > 500)")
 
         print("\n[Zmienne skryptowe]")
         print("  NIECH $zmienna = ZNAJDŹ GDZIE \"Typ\" = \"Serwer\"")
@@ -312,7 +379,8 @@ class CynoberClient:
         print("  SORTUJ WEDŁUG \"Cecha\" [MALEJĄCO|ROSNĄCO]  |  LIMIT n  |  PRZESUNIĘCIE n")
 
         print("\n[Agregacje]")
-        print("  SUMA|ŚREDNIA|MIN|MAX \"Cecha\" GDZIE ... [POGRUPUJ \"Cecha\"]")
+        print("  SUMA|ŚREDNIA|MIN|MAX|POLICZ|POLICZ RÓŻNE \"Cecha\" GDZIE ...")
+        print("  ... POGRUPUJ \"Cecha1\", \"Cecha2\" [MAJĄCE SUMA > 1000]   (HAVING)")
         print("  WYKRES SUMA \"RAM\" GDZIE \"Typ\" != \"NIC\" POGRUPUJ \"Typ\"")
 
         print("\n[Graf i propagacja ciepła]")
