@@ -246,14 +246,32 @@ class CynoberClient:
             if cols:
                 print(f"  Kolumny: {', '.join(cols)}")
 
+        elif action == "CREATE_VIEW":
+            print(f"\n[WIDOK] Zapisano widok '{w.get('view')}'")
+
+        elif action == "QUERY_VIEW":
+            cols = w.get("columns", [])
+            rows = w.get("rows", [])
+            print(f"\n[WIDOK: {w.get('view')}] Wierszy: {w.get('count', len(rows))}")
+            if rows and cols:
+                self._print_table(cols, [[str(row.get(c, "")) for c in cols] for row in rows])
+
+        elif action in ("REQUIRE_UNIQUE", "REQUIRE_NOT_NULL"):
+            kind = "UNIKALNE" if action == "REQUIRE_UNIQUE" else "NIE NULL"
+            print(f"\n[WYMAGAJ] {kind} na cechę '{w.get('key')}'")
+
         elif action == "IMPORT_CSV":
-            print(f"\n[IMPORT CSV] Wczytano {w.get('count', 0)} bąbli z {w.get('file')}")
             created = w.get("created", [])
+            updated = w.get("updated", [])
+            print(
+                f"\n[IMPORT CSV] Utworzono {len(created)}, zaktualizowano {len(updated)} "
+                f"(razem {w.get('count', 0)}) z {w.get('file')}"
+            )
             if created:
                 preview = ", ".join(created[:8])
                 if len(created) > 8:
                     preview += ", …"
-                print(f"  Utworzono: {preview}")
+                print(f"  Nowe: {preview}")
 
         else:
             target = w.get("target", w.get("count", w.get("deleted_count", "")))
@@ -309,7 +327,7 @@ class CynoberClient:
             tunel += " + QKD"
 
         print("\n" + "=" * 60)
-        print("  CYNOBER DB — KarminQL v6.1 | Klient v1.8.0")
+        print("  CYNOBER DB — KarminQL v6.2 | Klient v1.8.0")
         print(f"  Połączenie: {self.host}:{self.port}  |  Protokół: {PROTO_VERSION}")
         if self.sock and self._crypto_mode:
             print(f"  Aktywny tunel: {tunel}")
@@ -373,6 +391,11 @@ class CynoberClient:
         print("  \"Nazwa\" PODOBNE \"Serwer%\"  |  CASE WHEN … THEN … ELSE … END AS \"Tier\"")
         print("  \"Cena\" * \"Ilość\" AS \"Suma\"  — wyrażenia arytmetyczne w projekcji")
         print("  examples/analyst_demo.py  — demo pandas + JOIN")
+        print("\n[KarminQL v6.2]")
+        print("  Z $x JAKO (ZNAJDŹ …)  |  WITH $x AS (…)  — CTE przed głównym zapytaniem")
+        print("  UTRWAL WIDOK \"v\" JAKO (WYPISZ …)  |  WYPISZ Z WIDOKU \"v\"")
+        print("  WYMAGAJ UNIKALNE \"Sku\"  |  WYMAGAJ NIE NULL \"Sku\"")
+        print("  IMPORT CSV \"f.csv\" SCAL PO \"Sku\"  — UPSERT z pliku")
         print("\n[Ściągawka SQL → KarminQL]")
         print("  SELECT … WHERE     → WYPISZ … GDZIE …     |  INSERT INTO    → WSTRZYKNIJ … DO …")
         print("  UPDATE … WHERE     → ZAKTUALIZUJ … GDZIE  |  DELETE         → USUŃ BĄBLE GDZIE …")

@@ -1,11 +1,9 @@
 #!/usr/bin/env python3
 """
-cynober_query_engine.py — Silnik zapytań KarminQL v6.1 (PL + aliasy EN)
+cynober_query_engine.py — Silnik zapytań KarminQL v6.2 (PL + aliasy EN)
 ==========================================================================
-Rozszerzenia SQL-owe: WYPISZ GDZIE, ZAKTUALIZUJ GDZIE, złożone warunki,
-JOIN po relacji (POŁĄCZONE JAKO), JOIN relacyjny (DOŁĄCZ Z), HAVING (MAJĄCE),
-SCAL (UPSERT), OPISZ BAZĘ, LIKE/PODOBNE, CASE WHEN i wyrażenia w projekcji,
-operacje zbiorów, MIĘDZY, podzapytania, WSTAW Z, EKSPORT/IMPORT CSV.
+Rozszerzenia SQL-owe: WYPISZ GDZIE, JOIN relacyjny, SCAL/UPSERT, CTE (Z … JAKO),
+widoki (UTRWAL WIDOK), constraints (WYMAGAJ UNIKALNE/NIE NULL), IMPORT CSV SCAL.
 """
 
 import csv
@@ -107,6 +105,24 @@ class ExportCsvNode(ASTNode):
 class ImportCsvNode(ASTNode):
     path: str
     name_column: Optional[str] = None
+    upsert_key: Optional[str] = None
+
+@dataclass(frozen=True)
+class CreateViewNode(ASTNode):
+    name: str
+    subquery: ASTNode
+
+@dataclass(frozen=True)
+class QueryViewNode(ASTNode):
+    name: str
+
+@dataclass(frozen=True)
+class RequireUniqueNode(ASTNode):
+    key: str
+
+@dataclass(frozen=True)
+class RequireNotNullNode(ASTNode):
+    key: str
 
 @dataclass(frozen=True)
 class DescribeDatabaseNode(ASTNode):
@@ -293,6 +309,12 @@ _ALIAS_PHRASES: Tuple[Tuple[str, str], ...] = (
     (r"UPSERT\s+ON", "SCAL PO"),
     (r"LEFT\s+JOIN\s+\"([^\"]+)\"\s+ON", r'LEWY DOŁĄCZ Z "\1" GDZIE'),
     (r"JOIN\s+\"([^\"]+)\"\s+ON", r'DOŁĄCZ Z "\1" GDZIE'),
+    (r"CREATE\s+VIEW\s+\"([^\"]+)\"\s+AS", r'UTRWAL WIDOK "\1" JAKO'),
+    (r"CREATE\s+VIEW", "UTRWAL WIDOK"),
+    (r"WITH\s+\$([a-zA-Z0-9_]+)\s+AS", r"Z $\1 JAKO"),
+    (r"IMPORT\s+CSV\s+\"([^\"]+)\"\s+UPSERT\s+ON", r'IMPORT CSV "\1" SCAL PO'),
+    (r"REQUIRE\s+UNIQUE", "WYMAGAJ UNIKALNE"),
+    (r"REQUIRE\s+NOT\s+NULL", "WYMAGAJ NIE NULL"),
 )
 
 _ALIAS_WORDS: Tuple[Tuple[str, str], ...] = (
@@ -829,6 +851,7 @@ class KarminParser:
         if isinstance(node, (CreateBubbleNode, UpdatePropertyNode, UpdateWhereNode, AddPropertyNode,
                               BulkInjectNode, BulkCreateNode, InsertFromNode,
                               ExportCsvNode, ImportCsvNode, MergeNode, DescribeDatabaseNode,
+                              CreateViewNode, QueryViewNode, RequireUniqueNode, RequireNotNullNode,
                               DeleteBubbleNode, RemovePropertyNode, ConnectNode, DisconnectNode,
                               ExciteNode, BeginTxNode, CommitTxNode, RollbackTxNode, AssignNode)):
             raise SyntaxError("Podzapytanie nie może modyfikować danych")
@@ -973,8 +996,27 @@ class KarminParser:
             inner = self.cond_parser._unwrap_parens(rest)
             return ExportCsvNode(m.group(1), self._parse_insert_subquery(inner))
 
-        if m := re.match(r'^IMPORT\s+CSV\s+"([^"]+)"(?:\s+KOLUMNA\s+"([^"]+)")?\s*$', line, re.IGNORECASE):
-            return ImportCsvNode(m.group(1), m.group(2))
+        if m := re.match(
+            r'^IMPORT\s+CSV\s+"([^"]+)"(?:\s+KOLUMNA\s+"([^"]+)")?(?:\s+SCAL\s+PO\s+"([^"]+)")?\s*$',
+            line, re.IGNORECASE,
+        ):
+            return ImportCsvNode(m.group(1), m.group(2), m.group(3))
+
+        if m := re.match(r'^UTRWAL\s+WIDOK\s+"([^"]+)"\s+JAKO\s+', line, re.IGNORECASE):
+            rest = line[m.end():].strip()
+            if not rest.startswith("("):
+                raise SyntaxError('Oczekiwano UTRWAL WIDOK "nazwa" JAKO (podzapytanie)')
+            inner, _ = self._read_paren_expr(rest)
+            return CreateViewNode(m.group(1), self._parse_subquery_atom(inner))
+
+        if m := re.match(r'^WYPISZ\s+Z\s+WIDOKU\s+"([^"]+)"\s*$', line, re.IGNORECASE):
+            return QueryViewNode(m.group(1))
+
+        if m := re.match(r'^WYMAGAJ\s+UNIKALNE\s+"([^"]+)"\s*$', line, re.IGNORECASE):
+            return RequireUniqueNode(m.group(1))
+
+        if m := re.match(r'^WYMAGAJ\s+NIE\s+NULL\s+"([^"]+)"\s*$', line, re.IGNORECASE):
+            return RequireNotNullNode(m.group(1))
 
         if re.match(r'^OPISZ\s+BAZĘ\s*$', line, re.IGNORECASE):
             return DescribeDatabaseNode()
@@ -1069,6 +1111,15 @@ class KarminParser:
         return None
 
     def _parse_line(self, line: str) -> Optional[ASTNode]:
+        if m := re.match(r'^Z\s+\$([a-zA-Z0-9_]+)\s+JAKO\s+', line, re.IGNORECASE):
+            var_name = m.group(1)
+            rest = line[m.end():].strip()
+            if not rest.startswith("("):
+                raise SyntaxError(f"Oczekiwano Z ${var_name} JAKO (podzapytanie)")
+            inner, _ = self._read_paren_expr(rest)
+            expr_node = self._parse_subquery_atom(inner)
+            return AssignNode(var_name, expr_node)
+
         if match := self.assign_pattern.match(line):
             var_name = match.group(1)
             expr_str = match.group(2)
@@ -1096,7 +1147,12 @@ class BubbleAlreadyExistsError(Exception): pass
 class SubstrateAPI:
     def __init__(self, store):
         self.store = store
-        self.namespaces = {"DEFAULT": {"bubbles": {}, "inv_index": {}, "atom_index": {}}}
+        self.namespaces = {
+            "DEFAULT": {
+                "bubbles": {}, "inv_index": {}, "atom_index": {},
+                "views": {}, "constraints": {"unique": set(), "not_null": set()},
+            },
+        }
         self.active_ns = "DEFAULT"
         self._backup_state = None
 
@@ -1109,9 +1165,22 @@ class SubstrateAPI:
     @property
     def _atom_index(self): return self.namespaces[self.active_ns]["atom_index"]
 
+    @property
+    def _views(self): return self.namespaces[self.active_ns]["views"]
+
+    @property
+    def _constraints(self): return self.namespaces[self.active_ns]["constraints"]
+
+    def _ns_shell(self) -> dict:
+        return {
+            "bubbles": {}, "inv_index": {}, "atom_index": {},
+            "views": {}, "constraints": {"unique": set(), "not_null": set()},
+        }
+
     def create_namespace(self, name: str):
-        if name in self.namespaces: raise ValueError(f"Przestrzeń '{name}' już istnieje.")
-        self.namespaces[name] = {"bubbles": {}, "inv_index": {}, "atom_index": {}}
+        if name in self.namespaces:
+            raise ValueError(f"Przestrzeń '{name}' już istnieje.")
+        self.namespaces[name] = self._ns_shell()
 
     def use_namespace(self, name: str):
         if name not in self.namespaces: raise ValueError(f"Przestrzeń '{name}' nie istnieje. Utrwal ją najpierw.")
@@ -1130,6 +1199,11 @@ class SubstrateAPI:
             "inv_index": {k: {v: s.copy() for v, s in vals.items()}
                           for k, vals in self._inv_index.items()},
             "atom_index": {aid: s.copy() for aid, s in self._atom_index.items()},
+            "views": dict(self._views),
+            "constraints": {
+                "unique": set(self._constraints["unique"]),
+                "not_null": set(self._constraints["not_null"]),
+            },
         }
 
     def commit_transaction(self):
@@ -1161,6 +1235,8 @@ class SubstrateAPI:
         self.store.bubbles[:] = bs["bubbles"]
         self.namespaces[self.active_ns]["inv_index"] = bs["inv_index"]
         self.namespaces[self.active_ns]["atom_index"] = bs["atom_index"]
+        self.namespaces[self.active_ns]["views"] = bs["views"]
+        self.namespaces[self.active_ns]["constraints"] = bs["constraints"]
         self.commit_transaction()
 
     def _get_bubble(self, name: str):
@@ -1188,6 +1264,32 @@ class SubstrateAPI:
                 self._atom_index[atom_id].discard(bubble_name)
                 if not self._atom_index[atom_id]:
                     del self._atom_index[atom_id]
+
+    def require_unique(self, key: str) -> None:
+        self._constraints["unique"].add(key)
+
+    def require_not_null(self, key: str) -> None:
+        self._constraints["not_null"].add(key)
+
+    def save_view(self, name: str, subquery: ASTNode) -> None:
+        self._views[name] = subquery
+
+    def get_view(self, name: str) -> ASTNode:
+        if name not in self._views:
+            raise ValueError(f"Widok '{name}' nie istnieje w przestrzeni '{self.active_ns}'.")
+        return self._views[name]
+
+    def _check_constraints(self, bubble_name: str, key: str, value: Any) -> None:
+        if key in self._constraints["not_null"] and value is None:
+            raise ValueError(f"Naruszenie NIE NULL: cecha '{key}' nie może być pusta")
+        if key in self._constraints["unique"] and value is not None:
+            val_str = KarminType.to_str(value)
+            bucket = self._inv_index.get(key, {}).get(val_str, set())
+            others = set(bucket) - {bubble_name}
+            if others:
+                raise ValueError(
+                    f"Naruszenie UNIKALNE na '{key}': wartość {val_str!r} już w {sorted(others)}"
+                )
 
     def _indexed_equals(self, cmp: CondCompare, universe: Set[str]) -> Optional[Set[str]]:
         if cmp.subquery is not None or str(cmp.val).startswith("$"):
@@ -1291,10 +1393,12 @@ class SubstrateAPI:
                 writer.writerow({c: "" if row.get(c) is None else row.get(c) for c in columns})
         return len(rows)
 
-    def import_csv(self, path: str, name_column: Optional[str] = None) -> List[str]:
+    def import_csv(self, path: str, name_column: Optional[str] = None,
+                   upsert_key: Optional[str] = None) -> Tuple[List[str], List[str]]:
         if not os.path.isfile(path):
             raise FileNotFoundError(f"Plik CSV nie istnieje: {path}")
         created: List[str] = []
+        updated: List[str] = []
         with open(path, "r", encoding="utf-8-sig", newline="") as fh:
             reader = csv.DictReader(fh)
             if not reader.fieldnames:
@@ -1303,19 +1407,38 @@ class SubstrateAPI:
             name_key = name_column or fields[0]
             if name_key not in fields:
                 raise ValueError(f"Kolumna nazwy '{name_key}' nie występuje w CSV ({', '.join(fields)})")
-            prop_keys = [f for f in fields if f != name_key]
+            merge_key = upsert_key or name_key
+            if merge_key not in fields:
+                raise ValueError(f"Kolumna SCAL '{merge_key}' nie występuje w CSV ({', '.join(fields)})")
             for row in reader:
-                name = (row.get(name_key) or "").strip()
-                if not name:
-                    continue
-                props = {}
-                for k in prop_keys:
-                    val = self._parse_csv_value(row.get(k, ""))
-                    if val is not None:
-                        props[k] = val
-                self.insert_bubble_with_props(name, props)
-                created.append(name)
-        return created
+                if upsert_key:
+                    merge_val = (row.get(merge_key) or "").strip()
+                    if not merge_val:
+                        continue
+                    props = {}
+                    for k in fields:
+                        if k == merge_key:
+                            continue
+                        val = self._parse_csv_value(row.get(k, ""))
+                        if val is not None:
+                            props[k] = val
+                    raw_pairs = [(k, self._value_raw(v)) for k, v in props.items()]
+                    name, mode = self.merge_by_key(merge_key, self._value_raw(merge_val), raw_pairs)
+                    (updated if mode == "updated" else created).append(name)
+                else:
+                    name = (row.get(name_key) or "").strip()
+                    if not name:
+                        continue
+                    props = {}
+                    for k in fields:
+                        if k == name_key:
+                            continue
+                        val = self._parse_csv_value(row.get(k, ""))
+                        if val is not None:
+                            props[k] = val
+                    self.insert_bubble_with_props(name, props)
+                    created.append(name)
+        return created, updated
 
     def describe_database(self) -> dict:
         saved_ns = self.active_ns
@@ -1361,6 +1484,11 @@ class SubstrateAPI:
                 "CECHY": ", ".join(b["properties"]),
                 "RELACJE": len(b["relations"]),
             })
+        constraints = {
+            "unique": sorted(self.namespaces[saved_ns]["constraints"]["unique"]),
+            "not_null": sorted(self.namespaces[saved_ns]["constraints"]["not_null"]),
+        }
+        views = sorted(self.namespaces[saved_ns]["views"].keys())
         return {
             "active_namespace": saved_ns,
             "namespaces": [n["name"] for n in all_namespaces],
@@ -1368,6 +1496,8 @@ class SubstrateAPI:
             "bubbles": current["bubbles"],
             "properties": current["properties"],
             "catalog_rows": catalog_rows,
+            "views": views,
+            "constraints": constraints,
             "all_namespaces": all_namespaces,
         }
 
@@ -1409,6 +1539,7 @@ class SubstrateAPI:
     def add_property(self, bubble_name: str, key: str, value_raw: str):
         bubble = self._get_bubble(bubble_name)
         val = KarminType.parse(value_raw)
+        self._check_constraints(bubble_name, key, val)
         atom = self.store.atom_new(S=key, E=KarminType.to_str(val), value=KarminType.to_str(val))
         atom.metadata.update({'timestamp': int(time.time() * 1000), 'v': val})
         bubble.bind(key, atom)
@@ -1431,6 +1562,7 @@ class SubstrateAPI:
         new_val = KarminType.parse(value_raw)
         if isinstance(new_val, (int, float)) and isinstance(old_val, (int, float)) and str(value_raw).startswith(("+", "-")):
             new_val = old_val + new_val
+        self._check_constraints(bubble_name, key, new_val)
 
         atom = self.store.atom_new(S=key, E=KarminType.to_str(new_val), value=KarminType.to_str(new_val))
         atom.metadata.update({'timestamp': int(time.time() * 1000), 'v': new_val})
@@ -2234,12 +2366,37 @@ class KarminEngine:
 
     @visit.register(ImportCsvNode)
     def _(self, node):
-        created = self.api.import_csv(node.path, node.name_column)
+        created, updated = self.api.import_csv(node.path, node.name_column, node.upsert_key)
         return {
             "status": "ok", "action": "IMPORT_CSV", "file": node.path,
-            "created": created, "count": len(created),
-            "name_column": node.name_column,
+            "created": created, "updated": updated,
+            "count": len(created) + len(updated),
+            "name_column": node.name_column, "upsert_key": node.upsert_key,
         }
+
+    @visit.register(CreateViewNode)
+    def _(self, node):
+        self.api.save_view(node.name, node.subquery)
+        return {"status": "ok", "action": "CREATE_VIEW", "view": node.name}
+
+    @visit.register(QueryViewNode)
+    def _(self, node):
+        sub = self.api.get_view(node.name)
+        res = sub.accept(self)
+        res = dict(res)
+        res["action"] = "QUERY_VIEW"
+        res["view"] = node.name
+        return res
+
+    @visit.register(RequireUniqueNode)
+    def _(self, node):
+        self.api.require_unique(node.key)
+        return {"status": "ok", "action": "REQUIRE_UNIQUE", "key": node.key}
+
+    @visit.register(RequireNotNullNode)
+    def _(self, node):
+        self.api.require_not_null(node.key)
+        return {"status": "ok", "action": "REQUIRE_NOT_NULL", "key": node.key}
 
     @visit.register(DescribeDatabaseNode)
     def _(self, node):
