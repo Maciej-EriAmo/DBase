@@ -327,7 +327,7 @@ class CynoberClient:
             tunel += " + QKD"
 
         print("\n" + "=" * 60)
-        print("  CYNOBER DB — KarminQL v6.4 | Klient v1.8.0")
+        print("  CYNOBER DB — KarminQL v6.5 | Klient v1.8.0")
         print(f"  Połączenie: {self.host}:{self.port}  |  Protokół: {PROTO_VERSION}")
         if self.sock and self._crypto_mode:
             print(f"  Aktywny tunel: {tunel}")
@@ -405,6 +405,9 @@ class CynoberClient:
         print("  ISTNIEJE (ZNAJDŹ …)  |  NIE ISTNIEJE (…)  |  EXISTS / NOT EXISTS")
         print("  CAST(\"Qty\" AS INT)  |  CONCAT(\"A\", \"-\", \"B\")")
         print("  USUŃ WYMAGANIE UNIKALNE \"Sku\"  |  DROP CONSTRAINT …")
+        print("\n[KarminQL v6.5]")
+        print("  TRIM / UPPER / LOWER / LENGTH / SUBSTRING  — funkcje stringowe w WYPISZ")
+        print("  (SUMA \"RAM\" GDZIE …) JAKO \"X\"  — podzapytanie skalarne w projekcji")
         print("\n[Ściągawka SQL → KarminQL]")
         print("  SELECT … WHERE     → WYPISZ … GDZIE …     |  INSERT INTO    → WSTRZYKNIJ … DO …")
         print("  UPDATE … WHERE     → ZAKTUALIZUJ … GDZIE  |  DELETE         → USUŃ BĄBLE GDZIE …")

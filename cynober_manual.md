@@ -1,10 +1,10 @@
-# Cynober DB — Podręcznik Użytkownika i Składnia KarminQL (v6.4)
+# Cynober DB — Podręcznik Użytkownika i Składnia KarminQL (v6.5)
 
 Cynober DB to relacyjno-grafowa baza danych na termodynamicznym rdzeniu **KarmazynOS**, z transportem **Cynober-Secure-1.2** i warstwą **HSL** (Holographic Session Links). Trzy autorskie elementy — silnik, baza, protokół — opierają się na jednej zasadzie: **struktura wynika z rezonansu stanu sesji**, a nie z zewnętrznych etykiet (adres, certyfikat, ACL).
 
 | Komponent | Wersja | Plik |
 |-----------|--------|------|
-| KarminQL (silnik zapytań) | v6.4 | `cynober_query_engine.py` |
+| KarminQL (silnik zapytań) | v6.5 | `cynober_query_engine.py` |
 | Most pandas | — | `cynober_pandas_bridge.py` |
 | Klient CLI | v1.8.0 | `Cynober_db.py` |
 | Serwer | — | `cynober_server.py` |
@@ -31,7 +31,7 @@ Cynober DB to relacyjno-grafowa baza danych na termodynamicznym rdzeniu **Karmaz
          └──────────────────┬─────────────────────────┘
                             ▼
                    ┌─────────────────┐
-                   │  KarminEngine   │  KarminQL v6.4
+                   │  KarminEngine   │  KarminQL v6.5
                    └────────┬────────┘
                             ▼
                    ┌─────────────────┐
@@ -584,6 +584,26 @@ USUŃ WYMAGANIE SPRAWDŹ "RAM"
 ```
 
 Aliasy EN: `DROP CONSTRAINT UNIQUE "Sku"`, `DROP CONSTRAINT NOT NULL "Sku"`, `DROP CONSTRAINT CHECK "RAM"`.
+
+### Funkcje stringowe i podzapytania skalarne (v6.5)
+
+**Funkcje stringowe w projekcji:**
+
+```
+WYPISZ TRIM("Nazwa") JAKO "Czyste", UPPER("Kod") JAKO "Wielkie", LOWER("Kod") JAKO "Male" GDZIE ...
+WYPISZ LENGTH("Kod") JAKO "Len", SUBSTRING("Kod", 2, 3) JAKO "Frag" GDZIE ...
+```
+
+Obsługiwane: `TRIM`, `LTRIM`, `RTRIM`, `UPPER`, `LOWER`, `LENGTH`, `SUBSTRING(tekst, start [, długość])` — indeks `SUBSTRING` od 1 (jak w SQL).
+
+**Podzapytania skalarne w `WYPISZ`:**
+
+```
+WYPISZ "BĄBEL", (SUMA "RAM" GDZIE "Typ" = "Serwer") JAKO "Suma_srv" GDZIE "Typ" = "Serwer"
+WYPISZ "BĄBEL", (WYPISZ "RAM" GDZIE "BĄBEL" W $BĄBEL) JAKO "Self_ram" GDZIE "Typ" != "NIC"
+```
+
+Wyrażenie w nawiasach zwraca pojedynczą wartość: agregat, pierwszy wynik `ZNAJDŹ`, pierwszą komórkę `WYPISZ`. Korelacja z bąblem zewnętrznym przez `$BĄBEL`.
 
 ### Optymalizacja substratu (v6.1)
 

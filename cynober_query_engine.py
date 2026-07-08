@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-cynober_query_engine.py — Silnik zapytań KarminQL v6.4 (PL + aliasy EN)
+cynober_query_engine.py — Silnik zapytań KarminQL v6.5 (PL + aliasy EN)
 ==========================================================================
 Rozszerzenia SQL-owe: WYPISZ GDZIE, JOIN relacyjny, CTE, widoki, constraints,
-COALESCE/NULLIF/CAST/CONCAT, EXISTS, DROP CONSTRAINT.
+COALESCE/NULLIF/CAST/CONCAT, EXISTS, DROP CONSTRAINT, funkcje stringowe, podzapytania skalarne.
 """
 
 import csv
@@ -180,6 +180,11 @@ class ProjColumn:
     cast_inner: Optional[Any] = None
     cast_type: Optional[str] = None
     concat_args: Optional[Tuple[Any, ...]] = None
+    str_func: Optional[str] = None
+    str_inner: Optional[Any] = None
+    str_start: Optional[Any] = None
+    str_len: Optional[Any] = None
+    scalar_subquery: Optional[Any] = None
 
 @dataclass(frozen=True)
 class UpdatePropertyNode(ASTNode): target: str; key: str; value: str
@@ -864,6 +869,46 @@ class KarminParser:
             raise SyntaxError("CONCAT wymaga co najmniej jednego argumentu")
         return ProjColumn(label or "CONCAT", "concat", concat_args=args)
 
+    _UNARY_STR_FUNCS = frozenset({"TRIM", "LTRIM", "RTRIM", "UPPER", "LOWER", "LENGTH"})
+
+    def _parse_unary_str_column(self, text: str, label: Optional[str]) -> ProjColumn:
+        m = re.match(r'^([A-Za-z_]+)\s*\((.+)\)\s*$', text, re.IGNORECASE | re.DOTALL)
+        if not m:
+            raise SyntaxError(f"Niepoprawna funkcja stringowa: {text}")
+        name = m.group(1).upper()
+        if name not in self._UNARY_STR_FUNCS:
+            raise SyntaxError(f"Nieznana funkcja stringowa: {name}")
+        args = self._split_func_args(m.group(2))
+        if len(args) != 1:
+            raise SyntaxError(f"{name} wymaga dokładnie jednego argumentu")
+        return ProjColumn(
+            label or name, "str_func",
+            str_func=name.lower(),
+            str_inner=self._parse_proj_atom(args[0]),
+        )
+
+    def _parse_substring_column(self, text: str, label: Optional[str]) -> ProjColumn:
+        m = re.match(r'^SUBSTRING\s*\((.+)\)\s*$', text, re.IGNORECASE | re.DOTALL)
+        if not m:
+            raise SyntaxError(f"Niepoprawne SUBSTRING: {text}")
+        args = self._split_func_args(m.group(1))
+        if len(args) < 2 or len(args) > 3:
+            raise SyntaxError("SUBSTRING wymaga 2 lub 3 argumentów (tekst, start [, długość])")
+        return ProjColumn(
+            label or "SUBSTRING", "str_func",
+            str_func="substring",
+            str_inner=self._parse_proj_atom(args[0]),
+            str_start=self._parse_proj_atom(args[1]),
+            str_len=self._parse_proj_atom(args[2]) if len(args) == 3 else None,
+        )
+
+    def _parse_scalar_sub_column(self, text: str, label: Optional[str]) -> ProjColumn:
+        inner = self.cond_parser._unwrap_parens(text.strip())
+        return ProjColumn(
+            label or "scalar", "scalar_sub",
+            scalar_subquery=self._parse_subquery_atom(inner),
+        )
+
     def _parse_nullif_column(self, text: str, label: Optional[str]) -> ProjColumn:
         m = re.match(r'^NULLIF\s*\((.+)\)\s*$', text, re.IGNORECASE | re.DOTALL)
         if not m:
@@ -891,6 +936,13 @@ class KarminParser:
             return self._parse_cast_column(text, label)
         if text.upper().startswith("CONCAT"):
             return self._parse_concat_column(text, label)
+        if text.upper().startswith("SUBSTRING"):
+            return self._parse_substring_column(text, label)
+        head = text.split("(", 1)[0].strip().upper()
+        if head in self._UNARY_STR_FUNCS:
+            return self._parse_unary_str_column(text, label)
+        if text.startswith("("):
+            return self._parse_scalar_sub_column(text, label)
         if text.upper().startswith("CASE"):
             return self._parse_case_column(text, label)
         if re.search(r'[*+\-/]', text) and ('"' in text or "." in text):
@@ -981,6 +1033,58 @@ class KarminParser:
 
     def _split_top_oraz(self, text: str) -> List[str]:
         return ConditionParser()._split_top(text, "ORAZ")
+
+    def _split_at_top_gdzie(self, text: str) -> Tuple[str, str]:
+        kw = " GDZIE "
+        depth_paren, depth_case = 0, 0
+        in_quote = False
+        upper = text.upper()
+        kw_len = len(kw)
+        first_idx = -1
+        i = 0
+        while i < len(text):
+            ch = text[i]
+            if ch == '"':
+                in_quote = not in_quote
+            elif not in_quote:
+                if upper.startswith("CASE", i):
+                    depth_case += 1
+                if upper.startswith("END", i) and (i + 3 >= len(text) or not text[i + 3].isalnum()):
+                    depth_case = max(0, depth_case - 1)
+                if ch == "(":
+                    depth_paren += 1
+                elif ch == ")":
+                    depth_paren -= 1
+                elif depth_paren == 0 and depth_case == 0 and upper[i:i + kw_len] == kw.upper():
+                    if first_idx < 0:
+                        first_idx = i
+            i += 1
+        if first_idx < 0:
+            raise SyntaxError(f"Oczekiwano GDZIE w zapytaniu WYPISZ: {text}")
+        return text[:first_idx].strip(), text[first_idx + kw_len:].strip()
+
+    def _parse_wypisz_gdzie_line(self, line: str) -> Optional[ProjectWhereNode]:
+        if not re.match(r'^WYPISZ\s+', line, re.IGNORECASE):
+            return None
+        distinct = bool(re.match(r'^WYPISZ\s+UNIKALNE\s+', line, re.IGNORECASE))
+        body = re.sub(r'^WYPISZ\s+(?:UNIKALNE\s+)?', '', line, flags=re.IGNORECASE).strip()
+        head, tail = self._split_at_top_gdzie(body)
+        join_rel = join_tgt = None
+        if jm := re.search(
+            r'\s+POŁĄCZONE\s+JAKO\s+"([^"]+)"\s+Z\s+"([^"]+)"\s*$',
+            head, re.IGNORECASE,
+        ):
+            join_rel, join_tgt = jm.group(1), jm.group(2)
+            head = head[:jm.start()].strip()
+        columns = self._parse_projection_columns(head)
+        conds_str, limit, offset, sort_by, sort_desc, _, _, _, _, distinct_mod = (
+            self._extract_modifiers(tail)
+        )
+        conds_str, rel_joins = self._extract_all_rel_joins(conds_str)
+        return ProjectWhereNode(
+            columns, self.cond_parser.parse(conds_str), join_rel, join_tgt,
+            rel_joins, distinct or distinct_mod, sort_by, sort_desc, limit, offset,
+        )
 
     def _parse_subquery_atom(self, text: str) -> ASTNode:
         text = text.strip()
@@ -1213,17 +1317,8 @@ class KarminParser:
                     entries.append((name, ()))
             return BulkCreateNode(tuple(entries))
 
-        if match := self.wypisz_gdzie_pattern.match(line):
-            columns = self._parse_projection_columns(match.group(1))
-            join_rel, join_tgt = match.group(2), match.group(3)
-            conds_str, limit, offset, sort_by, sort_desc, _, _, _, _, distinct = self._extract_modifiers(match.group(4))
-            conds_str, rel_joins = self._extract_all_rel_joins(conds_str)
-            if re.match(r'^WYPISZ\s+UNIKALNE\s+', line, re.IGNORECASE):
-                distinct = True
-            return ProjectWhereNode(
-                columns, self.cond_parser.parse(conds_str), join_rel, join_tgt,
-                rel_joins, distinct, sort_by, sort_desc, limit, offset,
-            )
+        if node := self._parse_wypisz_gdzie_line(line):
+            return node
 
         if match := self.zaktualizuj_gdzie_pattern.match(line):
             key, value = match.group(1), match.group(2).strip()
@@ -1867,35 +1962,81 @@ class SubstrateAPI:
             return bool(val)
         raise ValueError(f"Nieznany typ CAST: {cast_type}")
 
-    def _eval_proj_column(self, col: ProjColumn, left_name: str, join_ctx: dict) -> Any:
+    @staticmethod
+    def _substring_slice(text: str, start: Any, length: Optional[Any] = None) -> str:
+        if start is None:
+            return ""
+        try:
+            pos = int(start) - 1
+        except (TypeError, ValueError):
+            return ""
+        if pos < 0:
+            pos = 0
+        if length is None:
+            return text[pos:]
+        try:
+            n = int(length)
+        except (TypeError, ValueError):
+            return ""
+        return text[pos:pos + n]
+
+    def _eval_proj_column(self, col: ProjColumn, left_name: str, join_ctx: dict,
+                          scalar_runner: Optional[Any] = None) -> Any:
         if col.kind == "literal":
             return col.literal_val
+        if col.kind == "scalar_sub" and col.scalar_subquery is not None:
+            if not scalar_runner:
+                return None
+            return scalar_runner(col.scalar_subquery, left_name, join_ctx)
+        if col.kind == "str_func" and col.str_inner is not None:
+            inner = self._eval_proj_column(col.str_inner, left_name, join_ctx, scalar_runner)
+            if col.str_func == "length":
+                return 0 if inner is None else len(str(inner))
+            if inner is None:
+                return None
+            s = str(inner)
+            if col.str_func == "trim":
+                return s.strip()
+            if col.str_func == "ltrim":
+                return s.lstrip()
+            if col.str_func == "rtrim":
+                return s.rstrip()
+            if col.str_func == "upper":
+                return s.upper()
+            if col.str_func == "lower":
+                return s.lower()
+            if col.str_func == "substring":
+                start = self._eval_proj_column(col.str_start, left_name, join_ctx, scalar_runner)
+                length = (self._eval_proj_column(col.str_len, left_name, join_ctx, scalar_runner)
+                          if col.str_len is not None else None)
+                return self._substring_slice(s, start, length)
+            return None
         if col.kind == "cast" and col.cast_inner is not None:
-            inner = self._eval_proj_column(col.cast_inner, left_name, join_ctx)
+            inner = self._eval_proj_column(col.cast_inner, left_name, join_ctx, scalar_runner)
             return self._apply_cast(inner, col.cast_type or "TEXT")
         if col.kind == "concat" and col.concat_args:
             parts = []
             for arg in col.concat_args:
-                val = self._eval_proj_column(arg, left_name, join_ctx)
+                val = self._eval_proj_column(arg, left_name, join_ctx, scalar_runner)
                 parts.append("" if val is None else str(val))
             return "".join(parts)
         if col.kind == "ref":
             return self._value_from_ctx(col.ref_alias, col.ref_key or col.label, left_name, join_ctx)
         if col.kind == "coalesce" and col.coalesce_args:
             for arg in col.coalesce_args:
-                val = self._eval_proj_column(arg, left_name, join_ctx)
+                val = self._eval_proj_column(arg, left_name, join_ctx, scalar_runner)
                 if val is not None:
                     return val
             return None
         if col.kind == "nullif":
-            left = self._eval_proj_column(col.nullif_left, left_name, join_ctx)
-            right = self._eval_proj_column(col.nullif_right, left_name, join_ctx)
+            left = self._eval_proj_column(col.nullif_left, left_name, join_ctx, scalar_runner)
+            right = self._eval_proj_column(col.nullif_right, left_name, join_ctx, scalar_runner)
             if left == right:
                 return None
             return left
         if col.kind == "arith":
-            left = self._eval_proj_column(col.arith_left, left_name, join_ctx)
-            right = self._eval_proj_column(col.arith_right, left_name, join_ctx)
+            left = self._eval_proj_column(col.arith_left, left_name, join_ctx, scalar_runner)
+            right = self._eval_proj_column(col.arith_right, left_name, join_ctx, scalar_runner)
             if left is None or right is None:
                 return None
             if col.arith_op == "+":
@@ -1920,8 +2061,12 @@ class SubstrateAPI:
         return None
 
     def _project_row(self, left_name: str, join_ctx: dict,
-                     columns: Tuple[ProjColumn, ...]) -> dict:
-        return {col.label: self._eval_proj_column(col, left_name, join_ctx) for col in columns}
+                     columns: Tuple[ProjColumn, ...],
+                     scalar_runner: Optional[Any] = None) -> dict:
+        return {
+            col.label: self._eval_proj_column(col, left_name, join_ctx, scalar_runner)
+            for col in columns
+        }
 
     def _join_pair_values(self, left_name: str, right_name: str, join_ctx: dict,
                           l_prop: str, r_prop: str, join_alias: str) -> Tuple[Any, Any]:
@@ -2212,12 +2357,16 @@ class SubstrateAPI:
                       limit: Optional[int] = None, offset: Optional[int] = None,
                       query_runner: Optional[Any] = None,
                       exists_runner: Optional[Any] = None,
-                      join_filter_fn: Optional[Any] = None) -> Tuple[List[dict], List[str]]:
+                      join_filter_fn: Optional[Any] = None,
+                      scalar_runner: Optional[Any] = None) -> Tuple[List[dict], List[str]]:
         keys = [c.label for c in columns]
         matched = self.evaluate_cond_expr(
             cond, env, join_relation, join_target, query_runner, exists_runner)
         if not rel_joins:
-            rows = [self._project_row(name, {}, columns) for name in sorted(matched)]
+            rows = [
+                self._project_row(name, {}, columns, scalar_runner)
+                for name in sorted(matched)
+            ]
         else:
             contexts: List[Tuple[str, dict]] = [(n, {}) for n in sorted(matched)]
             for spec in rel_joins:
@@ -2237,7 +2386,10 @@ class SubstrateAPI:
                     elif spec.left_outer:
                         next_ctx.append((left_name, ctx))
                 contexts = next_ctx
-            rows = [self._project_row(left, ctx, columns) for left, ctx in contexts]
+            rows = [
+                self._project_row(left, ctx, columns, scalar_runner)
+                for left, ctx in contexts
+            ]
         if distinct:
             rows = self._dedupe_rows(rows, keys)
         rows = self._apply_row_modifiers(rows, keys, sort_by, sort_desc, limit, offset)
@@ -2380,6 +2532,43 @@ class KarminEngine:
             if action == "PROJECT_WHERE":
                 return res.get("count", 0) > 0
             return False
+        finally:
+            self.env = saved_env
+            self._subquery_cache = saved_cache
+
+    def _scalar_subquery_value(self, node: ASTNode, outer_bubble: str,
+                               join_ctx: Optional[dict] = None) -> Any:
+        saved_env = dict(self.env)
+        saved_cache = dict(self._subquery_cache)
+        self.env = dict(self.env)
+        self.env["$BĄBEL"] = [outer_bubble]
+        self._subquery_cache = {}
+        try:
+            res = node.accept(self)
+            action = res.get("action", "")
+            if action.startswith("AGGREGATE_"):
+                result = res.get("result")
+                if isinstance(result, dict):
+                    return next(iter(result.values()), None)
+                return result
+            if action == "FIND_WHERE":
+                matches = res.get("matches", [])
+                return matches[0] if matches else None
+            if action == "PROJECT_WHERE":
+                rows = res.get("rows", [])
+                cols = res.get("columns", [])
+                if rows and cols:
+                    return rows[0].get(cols[0])
+                return None
+            if action == "COUNT_WHERE":
+                return res.get("count", 0)
+            if action == "SEARCH":
+                matches = res.get("matches", [])
+                return matches[0] if matches else None
+            if action == "FIND_REL":
+                matches = res.get("matches", [])
+                return matches[0] if matches else None
+            return None
         finally:
             self.env = saved_env
             self._subquery_cache = saved_cache
@@ -2761,6 +2950,7 @@ class KarminEngine:
             node.rel_joins,
             node.distinct, node.sort_by, node.sort_desc, node.limit, node.offset,
             self._subquery_values, self._exists_check, self._resolve_join_filter,
+            self._scalar_subquery_value,
         )
         return {
             "status": "ok", "action": "PROJECT_WHERE", "columns": node.keys,
