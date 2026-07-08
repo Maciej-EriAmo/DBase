@@ -14,6 +14,7 @@ Cynober DB to relacyjno-grafowa baza danych na termodynamicznym rdzeniu **Karmaz
 | Ring-LWE (HSS KEM) | v1.0 | `karmazyn_hss.py` |
 | Jądro KarmazynOS | v1.0.0 | `karmazyn_kernel.py` |
 | Specyfikacja HSL (paper) | v1.1.0 | `HSL_Paper_v1_1_0_EN.md` |
+| GameStore (adapter aplikacyjny) | — | `game_store.py` |
 
 ---
 
@@ -56,6 +57,7 @@ Cynober DB to relacyjno-grafowa baza danych na termodynamicznym rdzeniu **Karmaz
 * **Silnik zapytań** (`cynober_query_engine.py`) — parser i executor KarminQL.
 * **Jądro** (`karmazyn_kernel.py` → `karmazyn_substrate.py` → `karmazyn_atom.py`) — atomy z temperaturą, bąble, reach-GC.
 * **Trwałość** (`karmazyn_store.py`, `karmazyn_kafd.py`) — format pliku `.kafd`.
+* **GameStore** (`game_store.py`) — cienki adapter nad KarminQL/RPC: NPC, questy, wyszukiwanie pamięci, termodynamika.
 
 > **Uwaga:** Serwer **nie** udostępnia HTTP. Transport to wyłącznie TCP z protokołem Karmazyn (HSS + HSL).
 
@@ -196,6 +198,70 @@ store = kernel.Store(thermal=True)
 engine = KarminEngine(store)
 results = engine.execute('UTRWAL "Test"\nWSTRZYKNIJ "X" = 1 DO "Test"')
 ```
+
+### Praca analityczna (pandas)
+
+Most `cynober_pandas_bridge.read_karmin()` wykonuje zapytanie i zwraca `pandas.DataFrame` — przydatne w pipeline'ach analitycznych i raportach.
+
+```bash
+python examples/analyst_demo.py
+```
+
+```python
+import karmazyn_kernel as kernel
+from cynober_query_engine import KarminEngine
+from cynober_pandas_bridge import read_karmin
+
+engine = KarminEngine(kernel.Store(thermal=True))
+engine.execute('UTRWAL "Zam" ...')  # dane startowe
+df = read_karmin(engine, 'WYPISZ "BĄBEL", "Qty" GDZIE "Qty" > 0')
+```
+
+### Pamięć gry (GameStore)
+
+`game_store.py` opakowuje KarminQL w API pod gry i prototypy narracyjne. Dwa backendy:
+
+| Backend | Użycie |
+|---------|--------|
+| `connect_local()` | Testy, dev bez serwera (in-process `KarminEngine`) |
+| `connect_rpc(host, port)` | Produkcja demo — jedna sesja TCP = izolowany świat (v7.0) |
+
+```bash
+python cynober_server.py                              # terminal 1
+python examples/game_memory_demo.py                     # przez RPC (profil ~/.karmazyn_client.json)
+python examples/game_memory_demo.py --local           # bez serwera
+python examples/game_memory_demo.py --host IP --port 8080
+```
+
+Główne metody `GameStore`:
+
+| Metoda | Opis |
+|--------|------|
+| `seed_demo_world()` | NPC, gracz, quest, relacje, JSON w cechach |
+| `find_npcs()` / `find_players()` | Filtrowanie po roli |
+| `npc_stats_table()` | Projekcja JSON (`JSON_WARTOŚĆ`) |
+| `quest_givers(quest)` | Graf: `ZNAJDŹ POŁĄCZONE JAKO …` |
+| `search_memory(query)` | Tekst narracji: `ZNAJDŹ` + `ILIKE` na `Pamięć` / `Opis` / `Tytuł` |
+| `search_resonance(query)` | HRR: `SZUKAJ` — najlepiej na krótkich etykietach atomów (`Klucz`) |
+| `excite(bubble, energy)` | `WZBUDŹ` — podbija temperaturę atomów |
+| `tick(cycles)` | Cykle termodynamiczne (serwer: `TICK`; lokalnie: emulacja w `LocalBackend`) |
+| `stats()` | `STATYSTYKI` (na serwerze: `session_isolated`, `session_label`) |
+
+Przykład integracji w aplikacji:
+
+```python
+from game_store import connect_rpc, connect_local
+
+store = connect_rpc("127.0.0.1", 8080)
+try:
+    store.seed_demo_world()
+    print(store.find_npcs())           # ['Gandalf']
+    print(store.search_memory("smok")) # ['Gandalf', 'Quest_Smok']
+finally:
+    store.close()
+```
+
+> **Uwaga:** `search_memory()` szuka w tekście cech (ILIKE). `search_resonance()` używa HRR na `E` atomu — dobrze działa na krótkich etykietach, słabiej na długich opisach narracyjnych.
 
 ---
 
@@ -375,10 +441,10 @@ Dostępne tylko przez tunel (klient lub RPC), obsługiwane w `cynober_server.py`
 
 | Polecenie | Opis |
 |-----------|------|
-| `STATYSTYKI` | Liczba atomów (hot/cold/reaped) i bąbli |
+| `STATYSTYKI` | Atomy (hot/cold/reaped), bąble; v7.0: `session_isolated`, `session_label`, `active_sessions` |
 | `TICK [n]` | `n` cykli termodynamicznych (domyślnie 1) |
-| `ZAPISZ [ścieżka]` | Zapis do `.kafd` (domyślnie `zrzut_cynober.kafd`) |
-| `WCZYTAJ [ścieżka]` | Wczytanie z `.kafd` (domyślnie `zrzut_cynober.kafd`) |
+| `ZAPISZ [ścieżka]` | Zapis do `.kafd` (domyślnie `zrzut_cynober.kafd`) — stan **tej sesji** |
+| `WCZYTAJ [ścieżka]` | Wczytanie z `.kafd` (domyślnie `zrzut_cynober.kafd`) — stan **tej sesji** |
 
 Przykład sesji:
 
@@ -860,7 +926,7 @@ Skrypt **wieloliniowy** (więcej niż jedna komenda, bez wiodącego `BEGIN`) jes
 
 ## 14. Testy
 
-Projekt zawiera testy w katalogu `tests/` (stan na Cynober-Secure-1.2, w tym `test_client_config.py`). Część wymaga uruchomionego serwera w procesie testowym (harness w `test_server_rpc.py`).
+Projekt zawiera **249 testów** w katalogu `tests/` (stan na serwer v7.0 + KarminQL v6.9). Część wymaga uruchomionego serwera w procesie testowym (harness w `test_server_rpc.py`).
 
 ### Uruchomienie wszystkich testów
 
@@ -879,6 +945,9 @@ python -m unittest tests.test_server_rpc -v
 python -m unittest tests.test_cynober_rpc -v
 python -m unittest tests.test_hss_handshake -v
 python -m unittest tests.test_client_config -v
+python -m unittest tests.test_game_store -v
+python -m unittest tests.test_v69 -v
+python -m unittest tests.test_v70 -v
 ```
 
 ### Co jest testowane
@@ -888,21 +957,26 @@ python -m unittest tests.test_client_config -v
 | `tests/test_kernel.py` | `Store`: atomy/bąble, statystyki, tick/settle |
 | `tests/test_parser.py` | Parser KarminQL, operatory `>=`/`<=`, błędy składni |
 | `tests/test_karminql.py` | CRUD, wyszukiwanie, agregacje, transakcje, przestrzenie, graf |
+| `tests/test_sql_closure.py` | Domknięcie SQL v6.0 (JOIN, LIKE, CASE, OPISZ BAZĘ) |
+| `tests/test_v62.py` … `tests/test_v69.py` | Rozszerzenia KarminQL v6.2–v6.9 (CTE, okna, JSON, EXPLAIN…) |
 | `tests/test_hss_handshake.py` | Ring-LWE KEM: init/respond/finalize, odrzucenie złego tokena |
 | `tests/test_cynober_rpc.py` | Kodeki RPC, caps 1.2, PSK, anty-replay, wybór trybu hss |
 | `tests/test_hsl_session.py` | Φ², PrismMask, HSL link, AAD, QKD seed, kolaps przy złym kluczu |
-| `tests/test_server_rpc.py` | Tunel TCP end-to-end: HSS+HSL, PSK, QKD, legacy 1.0, izolacja sesji |
+| `tests/test_server_rpc.py` | Tunel TCP end-to-end: HSS+HSL, PSK, QKD, legacy 1.0 |
 | `tests/test_v70.py` | Izolacja Store per połączenie RPC (v7.0) |
+| `tests/test_game_store.py` | GameStore: lokalnie + RPC, izolacja światów między sesjami |
 | `tests/test_client_config.py` | Profile połączeń, argv/env, zapis JSON |
+| `tests/test_rate_limit.py` | Limity połączeń i zapytań na serwerze |
 | `tests/rpc_client.py` | Pomocniczy klient RPC dla testów integracyjnych |
 
 ### Czego testy **nie** obejmują (na razie)
 
 * Prawdziwy adapter QKD / sprzęt kwantowy (tylko `KARM_QKD_SEED`).
 * TLS / certyfikaty X.509.
-* `WCZYTAJ` z pliku po stronie serwera (tylko `ZAPISZ` przez RPC).
+* `WCZYTAJ` przez RPC end-to-end (implementacja w serwerze jest; brak dedykowanych testów integracyjnych).
 * Wizualizacja `WYKRES` (plotly).
 * Uwierzytelnienie użytkownika (konta, ACL poza PSK sieci).
+* Trwałe, współdzielone światy na serwerze (planowane v7.1).
 
 ### Dodawanie nowych testów
 
@@ -929,40 +1003,77 @@ assert r[-1]["action"] == "ADD_PROP"
 
 ```
 DBase/
+├── README.md                  ← szybki start i status projektu
 ├── cynober_manual.md          ← ten podręcznik
 ├── HSL_Paper_v1_1_0_EN.md     ← specyfikacja HSL (teoria)
-├── cynober_server.py          ← serwer TCP
-├── Cynober_db.py              ← klient CLI
+├── cynober_server.py          ← serwer TCP v7.0 (izolacja sesji)
+├── Cynober_db.py              ← klient CLI v1.8.0
+├── game_store.py              ← adapter aplikacyjny (gry / RPC)
 ├── cynober_konfigurator.py    ← kreator profili połączenia
 ├── cynober_client_config.py   ← wczytywanie ~/.karmazyn_client.json
+├── cynober_pandas_bridge.py   ← read_karmin() → DataFrame
+├── cynober_lambda_bridge.py   ← most lambda na serwerze
 ├── cynober_rate_limit.py      ← limity połączeń i zapytań (serwer)
 ├── cynober_firewall.py        ← generator skryptu zapory Windows
 ├── scripts/cynober_firewall_windows.ps1
 ├── cynober_rpc.py             ← Cynober-Secure-1.2 (handshake + HSL + RPC)
-├── cynober_query_engine.py    ← KarminQL v4.8
+├── cynober_query_engine.py    ← KarminQL v6.9
 ├── karmazyn_kernel.py         ← publiczna fasada jądra
 ├── karmazyn_atom.py           ← model atomu + FSM temperatury
 ├── karmazyn_substrate.py      ← Store + reach-GC
 ├── karmazyn_hss.py            ← Ring-LWE KEM (post-quantum handshake)
 ├── karmazyn_hsl.py            ← HSL: Φ², PrismMask, QKD seed, AAD
-├── karmazyn_hrr.py            ← operacje wektorowe (opcjonalne)
+├── karmazyn_hrr.py            ← operacje wektorowe HRR (opcjonalne)
 ├── karmazyn_handshake.py      ← KSH-1.2: transport i szyfrowanie ramek
 ├── karmazyn_store.py          ← serializacja dokumentów
 ├── karmazyn_kafd.py           ← format binarny KAFD v2.0
 ├── karmazyn_proca.py          ← deduplikacja semantyczna
 ├── karmazyn_atomstore.py      ← kontrakt AtomStore
+├── examples/
+│   ├── analyst_demo.py        ← pandas + JOIN (analityka)
+│   └── game_memory_demo.py    ← pamięć gry przez RPC / --local
 ├── requirements.txt           ← zależności opcjonalne
-├── tests/                     ← 71 testów (kernel, KarminQL, HSS, HSL, RPC)
-│   ├── test_kernel.py
-│   ├── test_parser.py
-│   ├── test_karminql.py
-│   ├── test_hss_handshake.py
-│   ├── test_cynober_rpc.py
-│   ├── test_hsl_session.py
-│   ├── test_server_rpc.py
+├── tests/                     ← 249 testów
+│   ├── test_kernel.py … test_karminql.py
+│   ├── test_sql_closure.py, test_v62.py … test_v69.py
+│   ├── test_v70.py, test_game_store.py
+│   ├── test_hss_handshake.py, test_hsl_session.py
+│   ├── test_cynober_rpc.py, test_server_rpc.py
+│   ├── test_client_config.py, test_rate_limit.py
 │   └── rpc_client.py
 └── baza_test.kafd             ← przykładowy zrzut
 ```
+
+---
+
+## 16. Stan projektu i ograniczenia
+
+### Faza użytkowa — co jest gotowe
+
+| Obszar | Opis |
+|--------|------|
+| **Silnik** | KarminQL v6.9 — bogaty dialekt zapytań, transakcje, JSON, EXPLAIN, indeksy |
+| **Sieć** | Tunel HSS + HSL, profile klienta, rate limit, izolacja sesji v7.0 |
+| **Analityka** | pandas, CSV, `.kafd`, `examples/analyst_demo.py` |
+| **Aplikacje** | `GameStore` + demo gry przez RPC lub lokalnie |
+| **Jakość** | 249 testów jednostkowych i integracyjnych |
+
+### Ograniczenia (prototyp → produkcja)
+
+| Ograniczenie | Wpływ |
+|--------------|-------|
+| Sesja = efemeryczna baza | Rozłączenie kasuje stan (chyba że `ZAPISZ` w tej sesji) |
+| Brak współdzielonych światów | Zespół nie ma jednej wspólnej bazy na serwerze |
+| PSK/QKD = hasło sieci | Brak kont użytkowników i ról |
+| Brak HTTP/ODBC | Integracja tylko przez własny klient TCP / Python |
+| HSS N=15 | Prototyp kryptograficzny; podnieść parametry przed ekspozycją na internet |
+
+### Planowany kierunek (v7.1+)
+
+1. **Trwałe, nazwane światy** na serwerze — współdzielone bazy, wznowienie po reconnect
+2. **Auth per użytkownik** — tokeny, role, audyt
+3. **Operacje** — metryki, backup/restore przetestowany E2E, dokumentacja wdrożeniowa
+4. **Hardening** — HSS N=256, adapter QKD, opcjonalny TLS overlay
 
 ### Pliki tożsamości węzła (poza repozytorium)
 
