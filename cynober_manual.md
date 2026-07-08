@@ -1,10 +1,10 @@
-# Cynober DB — Podręcznik Użytkownika i Składnia KarminQL (v6.7)
+# Cynober DB — Podręcznik Użytkownika i Składnia KarminQL (v6.8)
 
 Cynober DB to relacyjno-grafowa baza danych na termodynamicznym rdzeniu **KarmazynOS**, z transportem **Cynober-Secure-1.2** i warstwą **HSL** (Holographic Session Links). Trzy autorskie elementy — silnik, baza, protokół — opierają się na jednej zasadzie: **struktura wynika z rezonansu stanu sesji**, a nie z zewnętrznych etykiet (adres, certyfikat, ACL).
 
 | Komponent | Wersja | Plik |
 |-----------|--------|------|
-| KarminQL (silnik zapytań) | v6.7 | `cynober_query_engine.py` |
+| KarminQL (silnik zapytań) | v6.8 | `cynober_query_engine.py` |
 | Most pandas | — | `cynober_pandas_bridge.py` |
 | Klient CLI | v1.8.0 | `Cynober_db.py` |
 | Serwer | — | `cynober_server.py` |
@@ -31,7 +31,7 @@ Cynober DB to relacyjno-grafowa baza danych na termodynamicznym rdzeniu **Karmaz
          └──────────────────┬─────────────────────────┘
                             ▼
                    ┌─────────────────┐
-                   │  KarminEngine   │  KarminQL v6.7
+                   │  KarminEngine   │  KarminQL v6.8
                    └────────┬────────┘
                             ▼
                    ┌─────────────────┐
@@ -659,6 +659,45 @@ ZNAJDŹ GDZIE "Nazwa" NIE ILIKE "plik%"
 ```
 
 Alias jawny dla `PODOBNE` / `NIE PODOBNE` (obie formy dopasowują wzorzec `%`/`_` bez rozróżniania wielkości liter).
+
+### COUNT OVER, ramki okien i PRZEMIANUJ (v6.8)
+
+**COUNT w oknie:**
+
+```
+WYPISZ COUNT(*) OVER (PODZIEL NA "Typ") JAKO "Cnt" GDZIE ...
+WYPISZ COUNT("Score") OVER (SORTUJ WEDŁUG "Score" ROSNĄCO) JAKO "Run" GDZIE ...
+```
+
+**Ramka `WIERSZE MIĘDZY` (alias: `ROWS BETWEEN`):**
+
+```
+SUM("Score") OVER (
+  SORTUJ WEDŁUG "Score" ROSNĄCO
+  WIERSZE MIĘDZY 1 POPRZEDZAJĄCE A 1 NASTĘPUJĄCE
+) JAKO "WinSum"
+```
+
+Granice: `NIESKOŃCZONA POPRZEDZAJĄCE`, `BIEŻĄCY WIERSZ`, `N NASTĘPUJĄCE` / `N POPRZEDZAJĄCE`, `NIESKOŃCZONA NASTĘPUJĄCE`.
+
+**REGEXP (wyrażenia regularne POSIX):**
+
+```
+ZNAJDŹ GDZIE "Kod" PASUJE DO "^item_\\d+"
+ZNAJDŹ GDZIE "Kod" ~ "^other$"
+ZNAJDŹ GDZIE "Kod" NIE PASUJE DO "test"
+```
+
+Aliasy EN: `REGEXP`, `~`, `NOT REGEXP`, `!~`.
+
+**Zmiana nazw (DDL):**
+
+```
+PRZEMIANUJ BĄBEL "Stary" NA "Nowy"
+PRZEMIANUJ CECHĘ "Sku" NA "SKU" W "Bąbel"
+```
+
+Aliasy EN: `RENAME BUBBLE "A" TO "B"`, `RENAME COLUMN "x" TO "y" IN "Bubble"`. Aktualizuje też relacje wskazujące na przemianowany bąbel.
 
 ### Optymalizacja substratu (v6.1)
 

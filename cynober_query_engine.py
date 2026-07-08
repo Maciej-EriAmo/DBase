@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """
-cynober_query_engine.py — Silnik zapytań KarminQL v6.7 (PL + aliasy EN)
+cynober_query_engine.py — Silnik zapytań KarminQL v6.8 (PL + aliasy EN)
 ==========================================================================
 Rozszerzenia SQL-owe: WYPISZ GDZIE, JOIN relacyjny, CTE, widoki, constraints,
 COALESCE/NULLIF/CAST/CONCAT, EXISTS, DROP CONSTRAINT, funkcje stringowe, podzapytania skalarne,
-funkcje okienkowe OVER (LAG/LEAD/NTILE/agregaty), ALL/ANY, ILIKE.
+funkcje okienkowe OVER, ALL/ANY, ILIKE, COUNT OVER, ROWS BETWEEN, REGEXP, PRZEMIANUJ.
 """
 
 import csv
@@ -194,6 +194,19 @@ class ProjColumn:
     win_arg: Optional[Any] = None
     win_offset: int = 1
     win_ntile: Optional[int] = None
+    win_frame_start: Optional[Any] = None
+    win_frame_end: Optional[Any] = None
+
+@dataclass(frozen=True)
+class RenameBubbleNode(ASTNode):
+    old_name: str
+    new_name: str
+
+@dataclass(frozen=True)
+class RenamePropertyNode(ASTNode):
+    bubble: str
+    old_key: str
+    new_key: str
 
 @dataclass(frozen=True)
 class UpdatePropertyNode(ASTNode): target: str; key: str; value: str
@@ -367,6 +380,15 @@ _ALIAS_PHRASES: Tuple[Tuple[str, str], ...] = (
     (r"\bALL\b", "WSZYSTKIE"),
     (r"NOT\s+ILIKE", "NIE PODOBNE"),
     (r"\bILIKE\b", "PODOBNE"),
+    (r"ROWS\s+BETWEEN", "WIERSZE MIĘDZY"),
+    (r"UNBOUNDED\s+PRECEDING", "NIESKOŃCZONA POPRZEDZAJĄCE"),
+    (r"UNBOUNDED\s+FOLLOWING", "NIESKOŃCZONA NASTĘPUJĄCE"),
+    (r"CURRENT\s+ROW", "BIEŻĄCY WIERSZ"),
+    (r'RENAME\s+BUBBLE\s+"([^"]+)"\s+TO\s+"([^"]+)"', r'PRZEMIANUJ BĄBEL "\1" NA "\2"'),
+    (r'RENAME\s+COLUMN\s+"([^"]+)"\s+TO\s+"([^"]+)"\s+IN\s+"([^"]+)"',
+     r'PRZEMIANUJ CECHĘ "\1" NA "\2" W "\3"'),
+    (r"NOT\s+REGEXP", "NIE PASUJE DO"),
+    (r"\bREGEXP\b", "PASUJE DO"),
 )
 
 _ALIAS_WORDS: Tuple[Tuple[str, str], ...] = (
@@ -444,6 +466,11 @@ def _apply_phrase_aliases(segment: str) -> str:
     s = segment
     for pattern, repl in _ALIAS_PHRASES:
         s = re.sub(pattern, repl, s, flags=re.IGNORECASE)
+    return s
+
+
+def _apply_word_aliases(segment: str) -> str:
+    s = segment
     for word, repl in _ALIAS_WORDS:
         s = re.sub(rf"\b{re.escape(word)}\b", repl, s, flags=re.IGNORECASE)
     return s
@@ -451,10 +478,12 @@ def _apply_phrase_aliases(segment: str) -> str:
 
 def normalize_karminql_aliases(line: str) -> str:
     """Angielskie słowa kluczowe → polski kanon KarminQL (poza cudzysłowami)."""
+    line = _apply_phrase_aliases(line)
+
     def mapper(seg: str, *, quoted: bool) -> str:
         if quoted:
             return seg
-        s = _apply_phrase_aliases(seg)
+        s = _apply_word_aliases(seg)
         def _between_and_to_do(m: re.Match) -> str:
             head = m.group(1)
             if re.search(r"\bDO\b", head, re.IGNORECASE):
@@ -490,6 +519,15 @@ def _like_match(value: Any, pattern: str) -> bool:
     return re.match(_like_to_regex(pattern), str(value), re.IGNORECASE) is not None
 
 
+def _regexp_match(value: Any, pattern: str) -> bool:
+    if value is None:
+        return False
+    try:
+        return re.search(pattern, str(value)) is not None
+    except re.error:
+        return False
+
+
 # ─── 3. PARSER WARUNKÓW ───────────────────────────────────────────────────
 
 class ConditionParser:
@@ -503,7 +541,9 @@ class ConditionParser:
 
     compare_pattern = re.compile(
         r'^"([^"]+)"\s*('
-        r'!=|>=|<=|=|>|<|ZAWIERA|NIE\s+PODOBNE|NIE\s+LIKE|PODOBNE|LIKE|NIE\s+W|W|'
+        r'!=|>=|<=|=|>|<|ZAWIERA|NIE\s+PODOBNE|NIE\s+ILIKE|NIE\s+LIKE|'
+        r'PODOBNE|ILIKE|LIKE|NIE\s+PASUJE\s+DO|NIE\s+REGEXP|!~|'
+        r'PASUJE\s+DO|REGEXP|~|NIE\s+W|W|'
         r'JEST\s+NIC|NIE\s+JEST\s+NIC'
         r')\s*(.*)$',
         re.IGNORECASE,
@@ -940,23 +980,49 @@ class KarminParser:
     _WIN_FUNCS_RANK = frozenset({"ROW_NUMBER", "RANK", "DENSE_RANK"})
     _WIN_FUNCS_OFFSET = frozenset({"LAG", "LEAD"})
     _WIN_FUNCS_VALUE = frozenset({"FIRST_VALUE", "LAST_VALUE"})
-    _WIN_FUNCS_AGG = frozenset({"SUM", "AVG", "MIN", "MAX", "SUMA", "ŚREDNIA"})
+    _WIN_FUNCS_AGG = frozenset({"SUM", "AVG", "MIN", "MAX", "SUMA", "ŚREDNIA", "COUNT", "POLICZ"})
     _WIN_FUNCS = (
         _WIN_FUNCS_RANK | _WIN_FUNCS_OFFSET | _WIN_FUNCS_VALUE | _WIN_FUNCS_AGG | {"NTILE"}
     )
 
-    def _parse_window_order(self, order_text: str) -> Tuple[Tuple[str, ...], bool]:
+    def _parse_window_frame_bound(self, raw: str) -> Any:
+        raw = raw.strip().upper()
+        if raw in ("NIESKOŃCZONA POPRZEDZAJĄCE", "UNBOUNDED PRECEDING"):
+            return "unbounded_preceding"
+        if raw in ("NIESKOŃCZONA NASTĘPUJĄCE", "UNBOUNDED FOLLOWING"):
+            return "unbounded_following"
+        if raw in ("BIEŻĄCY WIERSZ", "BIEŻĄCY", "CURRENT ROW"):
+            return "current_row"
+        m = re.match(r'^(\d+)\s+(?:PRECEDING|POPRZEDZAJĄCE)$', raw, re.IGNORECASE)
+        if m:
+            return -int(m.group(1))
+        m = re.match(r'^(\d+)\s+(?:FOLLOWING|NASTĘPUJĄCE)$', raw, re.IGNORECASE)
+        if m:
+            return int(m.group(1))
+        raise SyntaxError(f"Niepoprawna granica ramki okna: {raw}")
+
+    def _parse_window_order(self, order_text: str) -> Tuple[Tuple[str, ...], bool, Optional[Any], Optional[Any]]:
         order_text = order_text.strip()
+        frame_start = frame_end = None
+        if m := re.search(
+            r'\s+WIERSZE\s+MIĘDZY\s+(.+?)\s+A\s+(.+?)\s*$',
+            order_text, re.IGNORECASE,
+        ):
+            frame_start = self._parse_window_frame_bound(m.group(1))
+            frame_end = self._parse_window_frame_bound(m.group(2))
+            order_text = order_text[:m.start()].strip()
         desc = False
         if m := re.search(r'\s+(MALEJĄCO|DESC)\s*$', order_text, re.IGNORECASE):
             desc = True
             order_text = order_text[:m.start()].strip()
         elif m := re.search(r'\s+(ROSNĄCO|ASC)\s*$', order_text, re.IGNORECASE):
             order_text = order_text[:m.start()].strip()
-        return tuple(self._parse_keys(order_text)), desc
+        return tuple(self._parse_keys(order_text)), desc, frame_start, frame_end
 
     def _parse_window_over_body(self, body: str,
-                                order_required: bool = True) -> Tuple[Optional[Tuple[str, ...]], Optional[Tuple[str, ...]], bool]:
+                                order_required: bool = True) -> Tuple[
+        Optional[Tuple[str, ...]], Optional[Tuple[str, ...]], bool, Optional[Any], Optional[Any],
+    ]:
         body = body.strip()
         partition: Optional[Tuple[str, ...]] = None
         order_part: Optional[str] = None
@@ -973,11 +1039,26 @@ class KarminParser:
         else:
             raise SyntaxError(f"Oczekiwano PODZIEL NA … [SORTUJ WEDŁUG …] w OVER: {body}")
         if order_part:
-            win_order, win_desc = self._parse_window_order(order_part)
-            return partition, win_order, win_desc
+            win_order, win_desc, frame_start, frame_end = self._parse_window_order(order_part)
+            return partition, win_order, win_desc, frame_start, frame_end
         if order_required:
             raise SyntaxError("OVER wymaga SORTUJ WEDŁUG …")
-        return partition, None, False
+        return partition, None, False, None, None
+
+    def _window_proj(self, label: str, func: str, body: str, order_required: bool,
+                     win_arg: Optional[Any] = None, win_offset: int = 1,
+                     win_ntile: Optional[int] = None) -> ProjColumn:
+        partition, win_order, win_desc, frame_start, frame_end = self._parse_window_over_body(
+            body, order_required=order_required,
+        )
+        if order_required and not win_order:
+            raise SyntaxError("OVER wymaga SORTUJ WEDŁUG …")
+        return ProjColumn(
+            label, "window",
+            win_func=func, win_arg=win_arg, win_offset=win_offset, win_ntile=win_ntile,
+            win_partition=partition, win_order=win_order, win_desc=win_desc,
+            win_frame_start=frame_start, win_frame_end=frame_end,
+        )
 
     def _parse_window_column(self, text: str, label: Optional[str]) -> ProjColumn:
         agg_map = {
@@ -991,24 +1072,14 @@ class KarminParser:
         )
         if m:
             rank_map = {"ROW_NUMBER": "row_number", "RANK": "rank", "DENSE_RANK": "dense_rank"}
-            partition, win_order, win_desc = self._parse_window_over_body(m.group(2))
-            if not win_order:
-                raise SyntaxError("OVER wymaga SORTUJ WEDŁUG …")
-            return ProjColumn(
-                label or m.group(1).upper(), "window",
-                win_func=rank_map[m.group(1).upper()],
-                win_partition=partition, win_order=win_order, win_desc=win_desc,
+            return self._window_proj(
+                label or m.group(1).upper(), rank_map[m.group(1).upper()], m.group(2), True,
             )
 
         m = re.match(r'^NTILE\s*\(\s*(\d+)\s*\)\s+OVER\s*\(\s*(.+)\)\s*$', text, re.IGNORECASE | re.DOTALL)
         if m:
-            partition, win_order, win_desc = self._parse_window_over_body(m.group(2))
-            if not win_order:
-                raise SyntaxError("NTILE wymaga SORTUJ WEDŁUG … w OVER")
-            return ProjColumn(
-                label or "NTILE", "window",
-                win_func="ntile", win_ntile=int(m.group(1)),
-                win_partition=partition, win_order=win_order, win_desc=win_desc,
+            return self._window_proj(
+                label or "NTILE", "ntile", m.group(2), True, win_ntile=int(m.group(1)),
             )
 
         m = re.match(r'^(LAG|LEAD)\s*\(\s*(.+)\)\s+OVER\s*\(\s*(.+)\)\s*$', text, re.IGNORECASE | re.DOTALL)
@@ -1016,18 +1087,20 @@ class KarminParser:
             args = self._split_func_args(m.group(2))
             if not args:
                 raise SyntaxError(f"{m.group(1)} wymaga co najmniej jednego argumentu")
-            offset = 1
-            if len(args) >= 2:
-                offset = int(KarminType.parse(args[1]))
-            partition, win_order, win_desc = self._parse_window_over_body(m.group(3))
-            if not win_order:
-                raise SyntaxError(f"{m.group(1)} wymaga SORTUJ WEDŁUG … w OVER")
-            return ProjColumn(
-                label or m.group(1).upper(), "window",
-                win_func=m.group(1).lower(),
-                win_arg=self._parse_proj_atom(args[0]),
-                win_offset=offset,
-                win_partition=partition, win_order=win_order, win_desc=win_desc,
+            offset = int(KarminType.parse(args[1])) if len(args) >= 2 else 1
+            return self._window_proj(
+                label or m.group(1).upper(), m.group(1).lower(), m.group(3), True,
+                win_arg=self._parse_proj_atom(args[0]), win_offset=offset,
+            )
+
+        m = re.match(
+            r'^(COUNT|POLICZ)\s*\(\s*(\*|"[^"]+")\s*\)\s+OVER\s*\(\s*(.+)\)\s*$',
+            text, re.IGNORECASE | re.DOTALL,
+        )
+        if m:
+            win_arg = None if m.group(2).strip() == "*" else self._parse_proj_atom(m.group(2).strip())
+            return self._window_proj(
+                label or m.group(1).upper(), "count", m.group(3), False, win_arg=win_arg,
             )
 
         m = re.match(
@@ -1037,19 +1110,12 @@ class KarminParser:
         if m:
             fname = m.group(1).upper()
             if fname in ("FIRST_VALUE", "LAST_VALUE"):
-                func = fname.lower()
-                order_required = True
+                func, order_required = fname.lower(), True
             else:
-                func = agg_map[fname]
-                order_required = False
-            partition, win_order, win_desc = self._parse_window_over_body(
-                m.group(3), order_required=order_required,
-            )
-            return ProjColumn(
-                label or m.group(1).upper(), "window",
-                win_func=func,
+                func, order_required = agg_map[fname], False
+            return self._window_proj(
+                label or m.group(1).upper(), func, m.group(3), order_required,
                 win_arg=self._parse_proj_atom(m.group(2).strip()),
-                win_partition=partition, win_order=win_order, win_desc=win_desc,
             )
 
         raise SyntaxError(f"Niepoprawna funkcja okienkowa: {text}")
@@ -1250,7 +1316,7 @@ class KarminParser:
                               ExportCsvNode, ImportCsvNode, MergeNode, DescribeDatabaseNode,
                               CreateViewNode, QueryViewNode, DeleteViewNode,
                               RequireUniqueNode, RequireNotNullNode, RequireCheckNode,
-                              DeleteConstraintNode,
+                              DeleteConstraintNode, RenameBubbleNode, RenamePropertyNode,
                               DeleteBubbleNode, RemovePropertyNode, ConnectNode, DisconnectNode,
                               ExciteNode, BeginTxNode, CommitTxNode, RollbackTxNode, AssignNode)):
             raise SyntaxError("Podzapytanie nie może modyfikować danych")
@@ -1437,6 +1503,15 @@ class KarminParser:
         ):
             kind = re.sub(r"\s+", " ", m.group(1).upper()).strip()
             return DeleteConstraintNode(kind, m.group(2))
+
+        if m := re.match(r'^PRZEMIANUJ\s+BĄBEL\s+"([^"]+)"\s+NA\s+"([^"]+)"\s*$', line, re.IGNORECASE):
+            return RenameBubbleNode(m.group(1), m.group(2))
+
+        if m := re.match(
+            r'^PRZEMIANUJ\s+CECHĘ\s+"([^"]+)"\s+NA\s+"([^"]+)"\s+W\s+"([^"]+)"\s*$',
+            line, re.IGNORECASE,
+        ):
+            return RenamePropertyNode(m.group(3), m.group(1), m.group(2))
 
         if re.match(r'^OPISZ\s+BAZĘ\s*$', line, re.IGNORECASE):
             return DescribeDatabaseNode()
@@ -2043,6 +2118,37 @@ class SubstrateAPI:
         self.store.unset_root(bubble)
         del self._bubble_index[bubble_name]
 
+    def rename_bubble(self, old_name: str, new_name: str):
+        if new_name in self._bubble_index:
+            raise BubbleAlreadyExistsError(f"Bąbel '{new_name}' już istnieje w '{self.active_ns}'.")
+        bubble = self._get_bubble(old_name)
+        bubble.label = new_name
+        self._bubble_index[new_name] = bubble
+        del self._bubble_index[old_name]
+        for other_name, other in list(self._bubble_index.items()):
+            if other_name == new_name:
+                continue
+            for key in list(other.bindings.keys()):
+                if key.startswith("rel:") and key.endswith(f":{old_name}"):
+                    parts = key.split(":", 2)
+                    atom_id = other.bindings.pop(key)
+                    other.bindings[f"rel:{parts[1]}:{new_name}"] = atom_id
+
+    def rename_property(self, bubble_name: str, old_key: str, new_key: str):
+        bubble = self._get_bubble(bubble_name)
+        if old_key not in bubble.bindings:
+            raise KeyError(f"Brak cechy '{old_key}'")
+        if new_key in bubble.bindings and not new_key.startswith("hist:"):
+            raise KeyError(f"Cecha '{new_key}' już istnieje w '{bubble_name}'")
+        atom_id = bubble.bindings.pop(old_key)
+        atom = self.store.get_atom(atom_id)
+        if atom and not old_key.startswith("rel:"):
+            self._update_index(bubble_name, old_key, atom.metadata.get('v'), add=False)
+            bubble.bindings[new_key] = atom_id
+            self._update_index(bubble_name, new_key, atom.metadata.get('v'), add=True)
+        else:
+            bubble.bindings[new_key] = atom_id
+
     def get_contents(self, bubble_name: str) -> dict:
         bubble = self._get_bubble(bubble_name)
         props, rels = {}, []
@@ -2391,10 +2497,14 @@ class SubstrateAPI:
                 if operator == ">=": return val >= target_val
                 if operator == "<=": return val <= target_val
                 if operator == "ZAWIERA": return str(target_val).lower() in str(val).lower()
-                if operator in ("PODOBNE", "LIKE"):
+                if operator in ("PODOBNE", "LIKE", "ILIKE"):
                     return _like_match(val, target_val_str)
-                if operator in ("NIE PODOBNE", "NIE LIKE"):
+                if operator in ("NIE PODOBNE", "NIE LIKE", "NIE ILIKE"):
                     return not _like_match(val, target_val_str)
+                if operator in ("PASUJE DO", "REGEXP", "~"):
+                    return _regexp_match(val, target_val_str)
+                if operator in ("NIE PASUJE DO", "NIE REGEXP", "!~"):
+                    return not _regexp_match(val, target_val_str)
         except (TypeError, ValueError):
             return False
         return False
@@ -2512,6 +2622,28 @@ class SubstrateAPI:
                 out.append(v)
         return out
 
+    @staticmethod
+    def _frame_bound_index(bound: Any, i: int, n: int) -> int:
+        if bound == "unbounded_preceding":
+            return 0
+        if bound == "unbounded_following":
+            return max(0, n - 1)
+        if bound == "current_row":
+            return i
+        if isinstance(bound, int):
+            return max(0, min(n - 1, i + bound))
+        return i
+
+    def _frame_indices(self, i: int, n: int, frame_start: Optional[Any],
+                       frame_end: Optional[Any], has_order: bool) -> List[int]:
+        if frame_start is None and frame_end is None:
+            return list(range(0, i + 1)) if has_order else list(range(n))
+        si = self._frame_bound_index(frame_start or "unbounded_preceding", i, n)
+        ei = self._frame_bound_index(frame_end or "current_row", i, n)
+        if si > ei:
+            si, ei = ei, si
+        return list(range(si, ei + 1))
+
     def _apply_window_functions(self, rows: List[dict],
                                 columns: Tuple[ProjColumn, ...]) -> List[dict]:
         win_cols = [c for c in columns if c.kind == "window"]
@@ -2537,13 +2669,17 @@ class SubstrateAPI:
                 prev_key = None
                 rank = dense_rank = 0
                 cell_vals = [self._win_cell_value(row, col.win_arg) for _, row in sorted_part]
-                running: List[Union[int, float]] = []
-                run_sum = 0.0
+                n_part = len(sorted_part)
+                has_order = bool(col.win_order)
                 for i, (idx, row) in enumerate(sorted_part):
                     order_key = (
                         tuple(self._win_row_field(row, k) for k in col.win_order)
                         if col.win_order else None
                     )
+                    frame_idxs = self._frame_indices(
+                        i, n_part, col.win_frame_start, col.win_frame_end, has_order,
+                    )
+                    frame_vals = [cell_vals[j] for j in frame_idxs]
                     val: Any = None
                     if col.win_func == "row_number":
                         val = i + 1
@@ -2558,9 +2694,8 @@ class SubstrateAPI:
                             prev_key = order_key
                         val = dense_rank
                     elif col.win_func == "ntile" and col.win_ntile:
-                        n = col.win_ntile
-                        total = len(sorted_part)
-                        val = (i * n) // total + 1 if total else 1
+                        buckets = col.win_ntile
+                        val = (i * buckets) // n_part + 1 if n_part else 1
                     elif col.win_func == "lag":
                         j = i - col.win_offset
                         val = cell_vals[j] if j >= 0 else None
@@ -2568,15 +2703,16 @@ class SubstrateAPI:
                         j = i + col.win_offset
                         val = cell_vals[j] if j < len(cell_vals) else None
                     elif col.win_func == "first_value":
-                        val = cell_vals[0] if cell_vals else None
+                        val = frame_vals[0] if frame_vals else None
                     elif col.win_func == "last_value":
-                        val = cell_vals[-1] if cell_vals else None
-                    elif col.win_func in ("sum", "avg", "min", "max"):
-                        cur = cell_vals[i]
-                        if col.win_order:
-                            nums = self._numeric_vals(cell_vals[: i + 1])
+                        val = frame_vals[-1] if frame_vals else None
+                    elif col.win_func == "count":
+                        if col.win_arg is None:
+                            val = len(frame_idxs)
                         else:
-                            nums = self._numeric_vals(cell_vals)
+                            val = sum(1 for v in frame_vals if v is not None)
+                    elif col.win_func in ("sum", "avg", "min", "max"):
+                        nums = self._numeric_vals(frame_vals)
                         if col.win_func == "sum":
                             val = sum(nums) if nums else None
                         elif col.win_func == "avg":
@@ -3159,6 +3295,22 @@ class KarminEngine:
     def _(self, node):
         self.api.drop_constraint(node.kind, node.key)
         return {"status": "ok", "action": "DROP_CONSTRAINT", "kind": node.kind, "key": node.key}
+
+    @visit.register(RenameBubbleNode)
+    def _(self, node):
+        self.api.rename_bubble(node.old_name, node.new_name)
+        return {
+            "status": "ok", "action": "RENAME_BUBBLE",
+            "old_name": node.old_name, "new_name": node.new_name,
+        }
+
+    @visit.register(RenamePropertyNode)
+    def _(self, node):
+        self.api.rename_property(node.bubble, node.old_key, node.new_key)
+        return {
+            "status": "ok", "action": "RENAME_PROPERTY",
+            "bubble": node.bubble, "old_key": node.old_key, "new_key": node.new_key,
+        }
 
     @visit.register(DescribeDatabaseNode)
     def _(self, node):

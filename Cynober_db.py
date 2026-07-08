@@ -327,7 +327,7 @@ class CynoberClient:
             tunel += " + QKD"
 
         print("\n" + "=" * 60)
-        print("  CYNOBER DB — KarminQL v6.7 | Klient v1.8.0")
+        print("  CYNOBER DB — KarminQL v6.8 | Klient v1.8.0")
         print(f"  Połączenie: {self.host}:{self.port}  |  Protokół: {PROTO_VERSION}")
         if self.sock and self._crypto_mode:
             print(f"  Aktywny tunel: {tunel}")
@@ -414,6 +414,10 @@ class CynoberClient:
         print("\n[KarminQL v6.7]")
         print("  LAG / LEAD / FIRST_VALUE / NTILE / SUM() OVER …")
         print("  \"Nazwa\" ILIKE \"serwer%\"  |  NIE ILIKE …")
+        print("\n[KarminQL v6.8]")
+        print("  COUNT(*) OVER …  |  WIERSZE MIĘDZY … (ROWS BETWEEN)")
+        print("  \"Kod\" PASUJE DO \"^x\"  |  REGEXP / ~")
+        print("  PRZEMIANUJ BĄBEL / CECHĘ …  |  RENAME BUBBLE / COLUMN …")
         print("\n[Ściągawka SQL → KarminQL]")
         print("  SELECT … WHERE     → WYPISZ … GDZIE …     |  INSERT INTO    → WSTRZYKNIJ … DO …")
         print("  UPDATE … WHERE     → ZAKTUALIZUJ … GDZIE  |  DELETE         → USUŃ BĄBLE GDZIE …")
