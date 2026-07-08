@@ -1,10 +1,10 @@
-# Cynober DB — Podręcznik Użytkownika i Składnia KarminQL (v6.2)
+# Cynober DB — Podręcznik Użytkownika i Składnia KarminQL (v6.3)
 
 Cynober DB to relacyjno-grafowa baza danych na termodynamicznym rdzeniu **KarmazynOS**, z transportem **Cynober-Secure-1.2** i warstwą **HSL** (Holographic Session Links). Trzy autorskie elementy — silnik, baza, protokół — opierają się na jednej zasadzie: **struktura wynika z rezonansu stanu sesji**, a nie z zewnętrznych etykiet (adres, certyfikat, ACL).
 
 | Komponent | Wersja | Plik |
 |-----------|--------|------|
-| KarminQL (silnik zapytań) | v6.2 | `cynober_query_engine.py` |
+| KarminQL (silnik zapytań) | v6.3 | `cynober_query_engine.py` |
 | Most pandas | — | `cynober_pandas_bridge.py` |
 | Klient CLI | v1.8.0 | `Cynober_db.py` |
 | Serwer | — | `cynober_server.py` |
@@ -31,7 +31,7 @@ Cynober DB to relacyjno-grafowa baza danych na termodynamicznym rdzeniu **Karmaz
          └──────────────────┬─────────────────────────┘
                             ▼
                    ┌─────────────────┐
-                   │  KarminEngine   │  KarminQL v6.2
+                   │  KarminEngine   │  KarminQL v6.3
                    └────────┬────────┘
                             ▼
                    ┌─────────────────┐
@@ -524,6 +524,38 @@ WYMAGAJ NIE NULL "Sku"
 IMPORT CSV "dane.csv" SCAL PO "Sku"
 ```
 
+### Wyrażenia NULL, widoki i CHECK (v6.3)
+
+**COALESCE / NULLIF w projekcji:**
+
+```
+WYPISZ COALESCE("RAM", 0) JAKO "RAM_eff", NULLIF("Sku", "") JAKO "Sku_clean" GDZIE ...
+```
+
+**Usuwanie widoku:**
+
+```
+USUŃ WIDOK "Aktywne"
+```
+
+Angielski alias: `DROP VIEW "Aktywne"`.
+
+**CHECK constraint (warunek na cechę):**
+
+```
+WYMAGAJ SPRAWDŹ "RAM" > 0
+WYMAGAJ SPRAWDŹ GDZIE "Cena" >= 0
+```
+
+Angielski alias: `REQUIRE CHECK "RAM" > 0`. Naruszenie przy `WSTRZYKNIJ` / `ZAKTUALIZUJ` zwraca błąd `SPRAWDŹ`.
+
+**Sortowanie wielokolumnowe:**
+
+```
+WYPISZ "BĄBEL", "Grp", "Score" GDZIE ... SORTUJ WEDŁUG "Grp", "Score" MALEJĄCO
+ZNAJDŹ GDZIE ... SORTUJ WEDŁUG "A", "B" ROSNĄCO
+```
+
 ### Optymalizacja substratu (v6.1)
 
 Silnik utrzymuje w przestrzeni nazw:
@@ -558,7 +590,7 @@ Zmienne obowiązują w obrębie jednego wywołania `execute()` (jednej ramki RPC
 
 Na końcu zapytań wyszukujących lub agregujących:
 
-1. `SORTUJ WEDŁUG "Cecha" [MALEJĄCO|ROSNĄCO]`
+1. `SORTUJ WEDŁUG "Cecha" [MALEJĄCO|ROSNĄCO]` lub `SORTUJ WEDŁUG "Cecha1", "Cecha2" [MALEJĄCO|ROSNĄCO]`
 2. `LIMIT X`
 3. `PRZESUNIĘCIE Y`
 4. `POGRUPUJ "Cecha"` lub `POGRUPUJ "Cecha1", "Cecha2"` *(tylko agregacje)*

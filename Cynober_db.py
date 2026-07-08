@@ -327,7 +327,7 @@ class CynoberClient:
             tunel += " + QKD"
 
         print("\n" + "=" * 60)
-        print("  CYNOBER DB — KarminQL v6.2 | Klient v1.8.0")
+        print("  CYNOBER DB — KarminQL v6.3 | Klient v1.8.0")
         print(f"  Połączenie: {self.host}:{self.port}  |  Protokół: {PROTO_VERSION}")
         if self.sock and self._crypto_mode:
             print(f"  Aktywny tunel: {tunel}")
@@ -396,6 +396,11 @@ class CynoberClient:
         print("  UTRWAL WIDOK \"v\" JAKO (WYPISZ …)  |  WYPISZ Z WIDOKU \"v\"")
         print("  WYMAGAJ UNIKALNE \"Sku\"  |  WYMAGAJ NIE NULL \"Sku\"")
         print("  IMPORT CSV \"f.csv\" SCAL PO \"Sku\"  — UPSERT z pliku")
+        print("\n[KarminQL v6.3]")
+        print("  COALESCE(\"A\", 0)  |  NULLIF(\"A\", \"B\")  — wyrażenia w projekcji")
+        print("  USUŃ WIDOK \"v\"  |  DROP VIEW \"v\"")
+        print("  WYMAGAJ SPRAWDŹ \"RAM\" > 0  |  REQUIRE CHECK …")
+        print("  SORTUJ WEDŁUG \"A\", \"B\" MALEJĄCO  — sortowanie wielokolumnowe")
         print("\n[Ściągawka SQL → KarminQL]")
         print("  SELECT … WHERE     → WYPISZ … GDZIE …     |  INSERT INTO    → WSTRZYKNIJ … DO …")
         print("  UPDATE … WHERE     → ZAKTUALIZUJ … GDZIE  |  DELETE         → USUŃ BĄBLE GDZIE …")

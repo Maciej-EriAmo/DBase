@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-cynober_query_engine.py — Silnik zapytań KarminQL v6.2 (PL + aliasy EN)
+cynober_query_engine.py — Silnik zapytań KarminQL v6.3 (PL + aliasy EN)
 ==========================================================================
 Rozszerzenia SQL-owe: WYPISZ GDZIE, JOIN relacyjny, SCAL/UPSERT, CTE (Z … JAKO),
-widoki (UTRWAL WIDOK), constraints (WYMAGAJ UNIKALNE/NIE NULL), IMPORT CSV SCAL.
+widoki, constraints (UNIKALNE/NIE NULL/SPRAWDŹ), COALESCE/NULLIF, multi-SORT, DROP VIEW.
 """
 
 import csv
@@ -125,6 +125,15 @@ class RequireNotNullNode(ASTNode):
     key: str
 
 @dataclass(frozen=True)
+class RequireCheckNode(ASTNode):
+    key: str
+    cond: CondExpr
+
+@dataclass(frozen=True)
+class DeleteViewNode(ASTNode):
+    name: str
+
+@dataclass(frozen=True)
 class DescribeDatabaseNode(ASTNode):
     pass
 
@@ -154,6 +163,10 @@ class ProjColumn:
     arith_right: Optional[Any] = None
     case_parts: Optional[Tuple[Tuple[Any, str], ...]] = None
     case_else: Optional[str] = None
+    literal_val: Optional[Any] = None
+    coalesce_args: Optional[Tuple[Any, ...]] = None
+    nullif_left: Optional[Any] = None
+    nullif_right: Optional[Any] = None
 
 @dataclass(frozen=True)
 class UpdatePropertyNode(ASTNode): target: str; key: str; value: str
@@ -192,7 +205,7 @@ class ProjectWhereNode(ASTNode):
     join_target: Optional[str] = None
     rel_joins: Tuple[RelJoinSpec, ...] = ()
     distinct: bool = False
-    sort_by: Optional[str] = None
+    sort_by: Optional[Tuple[str, ...]] = None
     sort_desc: bool = False
     limit: Optional[int] = None
     offset: Optional[int] = None
@@ -209,7 +222,7 @@ class FindRelationNode(ASTNode):
     relation: str
     target: str
     cond: Optional[CondExpr] = None
-    sort_by: Optional[str] = None
+    sort_by: Optional[Tuple[str, ...]] = None
     sort_desc: bool = False
     limit: Optional[int] = None
     offset: Optional[int] = None
@@ -226,7 +239,7 @@ class ConditionNode(ASTNode):
     cond: CondExpr
     join_relation: Optional[str] = None
     join_target: Optional[str] = None
-    sort_by: Optional[str] = None
+    sort_by: Optional[Tuple[str, ...]] = None
     sort_desc: bool = False
     limit: Optional[int] = None
     offset: Optional[int] = None
@@ -238,7 +251,7 @@ class AggregateNode(ASTNode):
     cond: CondExpr
     join_relation: Optional[str] = None
     join_target: Optional[str] = None
-    sort_by: Optional[str] = None
+    sort_by: Optional[Tuple[str, ...]] = None
     sort_desc: bool = False
     limit: Optional[int] = None
     offset: Optional[int] = None
@@ -268,7 +281,7 @@ class SetOpNode(ASTNode):
     op: str
     left: ASTNode
     right: ASTNode
-    sort_by: Optional[str] = None
+    sort_by: Optional[Tuple[str, ...]] = None
     sort_desc: bool = False
     limit: Optional[int] = None
     offset: Optional[int] = None
@@ -315,6 +328,8 @@ _ALIAS_PHRASES: Tuple[Tuple[str, str], ...] = (
     (r"IMPORT\s+CSV\s+\"([^\"]+)\"\s+UPSERT\s+ON", r'IMPORT CSV "\1" SCAL PO'),
     (r"REQUIRE\s+UNIQUE", "WYMAGAJ UNIKALNE"),
     (r"REQUIRE\s+NOT\s+NULL", "WYMAGAJ NIE NULL"),
+    (r"REQUIRE\s+CHECK", "WYMAGAJ SPRAWDŹ"),
+    (r"DROP\s+VIEW", "USUŃ WIDOK"),
 )
 
 _ALIAS_WORDS: Tuple[Tuple[str, str], ...] = (
@@ -647,9 +662,20 @@ class KarminParser:
     def _parse_keys(self, keys_str: str) -> List[str]:
         return [k.strip().strip('"') for k in keys_str.split(",")]
 
+    def _extract_check_key(self, cond: CondExpr) -> str:
+        if isinstance(cond, CondCompare):
+            return cond.key
+        if isinstance(cond, CondAnd) and cond.parts:
+            return self._extract_check_key(cond.parts[0])
+        if isinstance(cond, CondOr) and cond.parts:
+            return self._extract_check_key(cond.parts[0])
+        if isinstance(cond, CondNot):
+            return self._extract_check_key(cond.inner)
+        raise SyntaxError("WYMAGAJ SPRAWDŹ wymaga warunku porównania na cechę, np. \"RAM\" > 0")
+
     def _split_projection_items(self, text: str) -> List[str]:
         items: List[str] = []
-        depth, start = 0, 0
+        depth_paren, depth_case, start = 0, 0, 0
         in_quote = False
         i = 0
         upper = text.upper()
@@ -659,10 +685,14 @@ class KarminParser:
                 in_quote = not in_quote
             elif not in_quote:
                 if upper.startswith("CASE", i):
-                    depth += 1
+                    depth_case += 1
                 if upper.startswith("END", i) and (i + 3 >= len(text) or not text[i + 3].isalnum()):
-                    depth = max(0, depth - 1)
-                if ch == "," and depth == 0:
+                    depth_case = max(0, depth_case - 1)
+                if ch == "(":
+                    depth_paren += 1
+                elif ch == ")":
+                    depth_paren -= 1
+                elif ch == "," and depth_paren == 0 and depth_case == 0:
                     items.append(text[start:i].strip())
                     start = i + 1
             i += 1
@@ -670,6 +700,28 @@ class KarminParser:
         if tail:
             items.append(tail)
         return items
+
+    def _split_func_args(self, text: str) -> List[str]:
+        args: List[str] = []
+        depth, start, in_quote = 0, 0, False
+        i = 0
+        while i < len(text):
+            ch = text[i]
+            if ch == '"':
+                in_quote = not in_quote
+            elif not in_quote:
+                if ch == "(":
+                    depth += 1
+                elif ch == ")":
+                    depth -= 1
+                elif ch == "," and depth == 0:
+                    args.append(text[start:i].strip())
+                    start = i + 1
+            i += 1
+        tail = text[start:].strip()
+        if tail:
+            args.append(tail)
+        return args
 
     def _parse_case_column(self, text: str, label: Optional[str]) -> ProjColumn:
         norm = text.strip()
@@ -729,6 +781,10 @@ class KarminParser:
 
     def _parse_proj_atom(self, raw: str) -> Any:
         raw = raw.strip()
+        if raw.upper() in ("NIC", "NULL"):
+            return ProjColumn("NULL", "literal", literal_val=None)
+        if re.match(r'^-?\d+(\.\d+)?$', raw):
+            return ProjColumn(raw, "literal", literal_val=KarminType.parse(raw))
         if raw.startswith('"') and raw.endswith('"'):
             return ProjColumn(raw.strip('"'), "ref", None, raw.strip('"'))
         if "." in raw:
@@ -739,12 +795,38 @@ class KarminParser:
             return ProjColumn(key, "ref", None, key)
         raise SyntaxError(f"Niepoprawny operand wyrażenia: {raw}")
 
+    def _parse_coalesce_column(self, text: str, label: Optional[str]) -> ProjColumn:
+        m = re.match(r'^COALESCE\s*\((.+)\)\s*$', text, re.IGNORECASE | re.DOTALL)
+        if not m:
+            raise SyntaxError(f"Niepoprawne COALESCE: {text}")
+        args = tuple(self._parse_proj_atom(a) for a in self._split_func_args(m.group(1)))
+        if not args:
+            raise SyntaxError("COALESCE wymaga co najmniej jednego argumentu")
+        return ProjColumn(label or "COALESCE", "coalesce", coalesce_args=args)
+
+    def _parse_nullif_column(self, text: str, label: Optional[str]) -> ProjColumn:
+        m = re.match(r'^NULLIF\s*\((.+)\)\s*$', text, re.IGNORECASE | re.DOTALL)
+        if not m:
+            raise SyntaxError(f"Niepoprawne NULLIF: {text}")
+        parts = self._split_func_args(m.group(1))
+        if len(parts) != 2:
+            raise SyntaxError("NULLIF wymaga dokładnie dwóch argumentów")
+        return ProjColumn(
+            label or "NULLIF", "nullif",
+            nullif_left=self._parse_proj_atom(parts[0]),
+            nullif_right=self._parse_proj_atom(parts[1]),
+        )
+
     def _parse_simple_ref(self, text: str) -> ProjColumn:
         text = text.strip()
         label: Optional[str] = None
         if m := re.search(r'\s+(?:AS|JAKO)\s+"([^"]+)"\s*$', text, re.IGNORECASE):
             label = m.group(1)
             text = text[:m.start()].strip()
+        if text.upper().startswith("COALESCE"):
+            return self._parse_coalesce_column(text, label)
+        if text.upper().startswith("NULLIF"):
+            return self._parse_nullif_column(text, label)
         if text.upper().startswith("CASE"):
             return self._parse_case_column(text, label)
         if re.search(r'[*+\-/]', text) and ('"' in text or "." in text):
@@ -851,7 +933,8 @@ class KarminParser:
         if isinstance(node, (CreateBubbleNode, UpdatePropertyNode, UpdateWhereNode, AddPropertyNode,
                               BulkInjectNode, BulkCreateNode, InsertFromNode,
                               ExportCsvNode, ImportCsvNode, MergeNode, DescribeDatabaseNode,
-                              CreateViewNode, QueryViewNode, RequireUniqueNode, RequireNotNullNode,
+                              CreateViewNode, QueryViewNode, DeleteViewNode,
+                              RequireUniqueNode, RequireNotNullNode, RequireCheckNode,
                               DeleteBubbleNode, RemovePropertyNode, ConnectNode, DisconnectNode,
                               ExciteNode, BeginTxNode, CommitTxNode, RollbackTxNode, AssignNode)):
             raise SyntaxError("Podzapytanie nie może modyfikować danych")
@@ -863,7 +946,7 @@ class KarminParser:
             raise SyntaxError("WSTAW Z wymaga podzapytania ZNAJDŹ lub WYPISZ (nie USUŃ/POLICZ)")
         return node
 
-    def _extract_modifiers(self, conds_str: str) -> Tuple[str, Optional[int], Optional[int], Optional[str], bool, Optional[str], Optional[str], Optional[str], Optional[str], bool]:
+    def _extract_modifiers(self, conds_str: str) -> Tuple[str, Optional[int], Optional[int], Optional[Tuple[str, ...]], bool, Optional[str], Optional[str], Optional[str], Optional[str], bool]:
         limit, offset, sort_by, sort_desc = None, None, None, False
         group_by, having_action, having_op, having_val = None, None, None, None
         distinct = False
@@ -887,8 +970,11 @@ class KarminParser:
         if m := re.search(r'\s+PRZESUNIĘCIE\s+(\d+)', conds_str, re.IGNORECASE):
             offset = int(m.group(1))
             conds_str = conds_str[:m.start()] + conds_str[m.end():]
-        if m := re.search(r'\s+SORTUJ\s+WEDŁUG\s+"([^"]+)"(?:\s+(ROSNĄCO|MALEJĄCO))?', conds_str, re.IGNORECASE):
-            sort_by = m.group(1)
+        if m := re.search(
+            r'\s+SORTUJ\s+WEDŁUG\s+((?:"[^"]+")(?:\s*,\s*"[^"]+")*)(?:\s+(ROSNĄCO|MALEJĄCO))?',
+            conds_str, re.IGNORECASE,
+        ):
+            sort_by = tuple(self._parse_keys(m.group(1)))
             sort_desc = bool(m.group(2) and m.group(2).upper() == "MALEJĄCO")
             conds_str = conds_str[:m.start()] + conds_str[m.end():]
         return conds_str.strip(), limit, offset, sort_by, sort_desc, group_by, having_action, having_op, having_val, distinct
@@ -918,7 +1004,7 @@ class KarminParser:
         parts.append(text[start:].strip())
         return [p for p in parts if p]
 
-    def _extract_trailing_modifiers(self, line: str) -> Tuple[str, Optional[str], bool, Optional[int], Optional[int]]:
+    def _extract_trailing_modifiers(self, line: str) -> Tuple[str, Optional[Tuple[str, ...]], bool, Optional[int], Optional[int]]:
         sort_by, sort_desc, limit, offset = None, False, None, None
         if m := re.search(r'\s+LIMIT\s+(\d+)\s*$', line, re.IGNORECASE):
             limit = int(m.group(1))
@@ -926,8 +1012,11 @@ class KarminParser:
         if m := re.search(r'\s+PRZESUNIĘCIE\s+(\d+)\s*$', line, re.IGNORECASE):
             offset = int(m.group(1))
             line = line[:m.start()] + line[m.end():]
-        if m := re.search(r'\s+SORTUJ\s+WEDŁUG\s+"([^"]+)"(?:\s+(ROSNĄCO|MALEJĄCO))?\s*$', line, re.IGNORECASE):
-            sort_by = m.group(1)
+        if m := re.search(
+            r'\s+SORTUJ\s+WEDŁUG\s+((?:"[^"]+")(?:\s*,\s*"[^"]+")*)(?:\s+(ROSNĄCO|MALEJĄCO))?\s*$',
+            line, re.IGNORECASE,
+        ):
+            sort_by = tuple(self._parse_keys(m.group(1)))
             sort_desc = bool(m.group(2) and m.group(2).upper() == "MALEJĄCO")
             line = line[:m.start()] + line[m.end():]
         return line.strip(), sort_by, sort_desc, limit, offset
@@ -1012,11 +1101,19 @@ class KarminParser:
         if m := re.match(r'^WYPISZ\s+Z\s+WIDOKU\s+"([^"]+)"\s*$', line, re.IGNORECASE):
             return QueryViewNode(m.group(1))
 
+        if m := re.match(r'^USUŃ\s+WIDOK\s+"([^"]+)"\s*$', line, re.IGNORECASE):
+            return DeleteViewNode(m.group(1))
+
         if m := re.match(r'^WYMAGAJ\s+UNIKALNE\s+"([^"]+)"\s*$', line, re.IGNORECASE):
             return RequireUniqueNode(m.group(1))
 
         if m := re.match(r'^WYMAGAJ\s+NIE\s+NULL\s+"([^"]+)"\s*$', line, re.IGNORECASE):
             return RequireNotNullNode(m.group(1))
+
+        if m := re.match(r'^WYMAGAJ\s+SPRAWDŹ(?:\s+GDZIE)?\s+(.+)$', line, re.IGNORECASE):
+            cond = self.cond_parser.parse(m.group(1).strip())
+            key = self._extract_check_key(cond)
+            return RequireCheckNode(key, cond)
 
         if re.match(r'^OPISZ\s+BAZĘ\s*$', line, re.IGNORECASE):
             return DescribeDatabaseNode()
@@ -1150,7 +1247,7 @@ class SubstrateAPI:
         self.namespaces = {
             "DEFAULT": {
                 "bubbles": {}, "inv_index": {}, "atom_index": {},
-                "views": {}, "constraints": {"unique": set(), "not_null": set()},
+                "views": {}, "constraints": {"unique": set(), "not_null": set(), "check": {}},
             },
         }
         self.active_ns = "DEFAULT"
@@ -1174,7 +1271,7 @@ class SubstrateAPI:
     def _ns_shell(self) -> dict:
         return {
             "bubbles": {}, "inv_index": {}, "atom_index": {},
-            "views": {}, "constraints": {"unique": set(), "not_null": set()},
+            "views": {}, "constraints": {"unique": set(), "not_null": set(), "check": {}},
         }
 
     def create_namespace(self, name: str):
@@ -1203,6 +1300,7 @@ class SubstrateAPI:
             "constraints": {
                 "unique": set(self._constraints["unique"]),
                 "not_null": set(self._constraints["not_null"]),
+                "check": dict(self._constraints["check"]),
             },
         }
 
@@ -1271,8 +1369,16 @@ class SubstrateAPI:
     def require_not_null(self, key: str) -> None:
         self._constraints["not_null"].add(key)
 
+    def require_check(self, key: str, cond: CondExpr) -> None:
+        self._constraints["check"][key] = cond
+
     def save_view(self, name: str, subquery: ASTNode) -> None:
         self._views[name] = subquery
+
+    def delete_view(self, name: str) -> None:
+        if name not in self._views:
+            raise ValueError(f"Widok '{name}' nie istnieje w przestrzeni '{self.active_ns}'.")
+        del self._views[name]
 
     def get_view(self, name: str) -> ASTNode:
         if name not in self._views:
@@ -1290,6 +1396,11 @@ class SubstrateAPI:
                 raise ValueError(
                     f"Naruszenie UNIKALNE na '{key}': wartość {val_str!r} już w {sorted(others)}"
                 )
+        if key in self._constraints["check"]:
+            cond = self._constraints["check"][key]
+            overrides = {key: value}
+            if bubble_name not in self._eval_cond_expr(cond, {}, {bubble_name}, None, overrides):
+                raise ValueError(f"Naruszenie SPRAWDŹ na '{key}': warunek niespełniony dla bąbla '{bubble_name}'")
 
     def _indexed_equals(self, cmp: CondCompare, universe: Set[str]) -> Optional[Set[str]]:
         if cmp.subquery is not None or str(cmp.val).startswith("$"):
@@ -1487,6 +1598,7 @@ class SubstrateAPI:
         constraints = {
             "unique": sorted(self.namespaces[saved_ns]["constraints"]["unique"]),
             "not_null": sorted(self.namespaces[saved_ns]["constraints"]["not_null"]),
+            "check": sorted(self.namespaces[saved_ns]["constraints"]["check"].keys()),
         }
         views = sorted(self.namespaces[saved_ns]["views"].keys())
         return {
@@ -1652,8 +1764,22 @@ class SubstrateAPI:
         return self._get_property_value(target, key)
 
     def _eval_proj_column(self, col: ProjColumn, left_name: str, join_ctx: dict) -> Any:
+        if col.kind == "literal":
+            return col.literal_val
         if col.kind == "ref":
             return self._value_from_ctx(col.ref_alias, col.ref_key or col.label, left_name, join_ctx)
+        if col.kind == "coalesce" and col.coalesce_args:
+            for arg in col.coalesce_args:
+                val = self._eval_proj_column(arg, left_name, join_ctx)
+                if val is not None:
+                    return val
+            return None
+        if col.kind == "nullif":
+            left = self._eval_proj_column(col.nullif_left, left_name, join_ctx)
+            right = self._eval_proj_column(col.nullif_right, left_name, join_ctx)
+            if left == right:
+                return None
+            return left
         if col.kind == "arith":
             left = self._eval_proj_column(col.arith_left, left_name, join_ctx)
             right = self._eval_proj_column(col.arith_right, left_name, join_ctx)
@@ -1809,8 +1935,12 @@ class SubstrateAPI:
         return atom.metadata.get('v', KarminType.parse(atom.E))
 
     def _eval_compare(self, bubble_name: str, cmp: CondCompare, env: dict,
-                      query_runner: Optional[Any] = None) -> bool:
-        val = self._get_property_value(bubble_name, cmp.key)
+                      query_runner: Optional[Any] = None,
+                      property_overrides: Optional[dict] = None) -> bool:
+        if property_overrides and cmp.key in property_overrides:
+            val = property_overrides[cmp.key]
+        else:
+            val = self._get_property_value(bubble_name, cmp.key)
         operator = cmp.op
         target_val_str = cmp.val
 
@@ -1869,15 +1999,20 @@ class SubstrateAPI:
         return sorted(matched)
 
     def _eval_cond_expr(self, expr: CondExpr, env: dict, universe: Set[str],
-                        query_runner: Optional[Any] = None) -> Set[str]:
+                        query_runner: Optional[Any] = None,
+                        property_overrides: Optional[dict] = None) -> Set[str]:
         if isinstance(expr, CondCompare):
+            if property_overrides:
+                return {name for name in universe if self._eval_compare(
+                    name, expr, env, query_runner, property_overrides)}
             indexed = self._indexed_equals(expr, universe)
             if indexed is not None:
                 return indexed
-            return {name for name in universe if self._eval_compare(name, expr, env, query_runner)}
+            return {name for name in universe if self._eval_compare(
+                name, expr, env, query_runner, property_overrides)}
         if isinstance(expr, CondNot):
             all_in = set(universe)
-            inner = self._eval_cond_expr(expr.inner, env, universe, query_runner)
+            inner = self._eval_cond_expr(expr.inner, env, universe, query_runner, property_overrides)
             return all_in - inner
         if isinstance(expr, CondAnd):
             if not expr.parts:
@@ -1887,28 +2022,34 @@ class SubstrateAPI:
             for part in expr.parts:
                 if result is not None:
                     current = result
-                if isinstance(part, CondCompare):
+                if isinstance(part, CondCompare) and not property_overrides:
                     indexed = self._indexed_equals(part, current)
                     if indexed is not None:
                         result = indexed
                         continue
-                result = self._eval_cond_expr(part, env, current, query_runner)
+                result = self._eval_cond_expr(part, env, current, query_runner, property_overrides)
             return result or set()
         if isinstance(expr, CondOr):
             result: Set[str] = set()
             for part in expr.parts:
-                result |= self._eval_cond_expr(part, env, universe, query_runner)
+                result |= self._eval_cond_expr(part, env, universe, query_runner, property_overrides)
             return result
         raise TypeError(f"Nieznany węzeł warunku: {type(expr)}")
 
-    def process_modifiers(self, matched_bubbles: List[str], sort_by: Optional[str], sort_desc: bool, limit: Optional[int], offset: Optional[int]) -> List[str]:
+    @staticmethod
+    def _sort_key_part(val: Any) -> tuple:
+        if isinstance(val, (int, float)):
+            return (1, val)
+        if isinstance(val, bool):
+            return (2, val)
+        if val is None:
+            return (0, "")
+        return (3, str(val))
+
+    def process_modifiers(self, matched_bubbles: List[str], sort_by: Optional[Tuple[str, ...]], sort_desc: bool, limit: Optional[int], offset: Optional[int]) -> List[str]:
         if sort_by:
             def get_sort_val(b_name):
-                val = self._get_property_value(b_name, sort_by)
-                if isinstance(val, (int, float)): return (1, val)
-                if isinstance(val, bool): return (2, val)
-                if val is None: return (0, "")
-                return (3, str(val))
+                return tuple(self._sort_key_part(self._get_property_value(b_name, k)) for k in sort_by)
             matched_bubbles.sort(key=get_sort_val, reverse=sort_desc)
         else:
             matched_bubbles.sort()
@@ -1929,15 +2070,11 @@ class SubstrateAPI:
         return unique
 
     def _apply_row_modifiers(self, rows: List[dict], keys: List[str],
-                             sort_by: Optional[str], sort_desc: bool,
+                             sort_by: Optional[Tuple[str, ...]], sort_desc: bool,
                              limit: Optional[int], offset: Optional[int]) -> List[dict]:
         if sort_by:
             def row_sort_key(row: dict):
-                val = row.get(sort_by)
-                if isinstance(val, (int, float)): return (1, val)
-                if isinstance(val, bool): return (2, val)
-                if val is None: return (0, "")
-                return (3, str(val))
+                return tuple(self._sort_key_part(row.get(k)) for k in sort_by)
             rows.sort(key=row_sort_key, reverse=sort_desc)
         if offset:
             rows = rows[offset:]
@@ -1949,7 +2086,7 @@ class SubstrateAPI:
                       join_relation: Optional[str] = None, join_target: Optional[str] = None,
                       rel_joins: Tuple[RelJoinSpec, ...] = (),
                       distinct: bool = False,
-                      sort_by: Optional[str] = None, sort_desc: bool = False,
+                      sort_by: Optional[Tuple[str, ...]] = None, sort_desc: bool = False,
                       limit: Optional[int] = None, offset: Optional[int] = None,
                       query_runner: Optional[Any] = None,
                       join_filter_fn: Optional[Any] = None) -> Tuple[List[dict], List[str]]:
@@ -2388,6 +2525,11 @@ class KarminEngine:
         res["view"] = node.name
         return res
 
+    @visit.register(DeleteViewNode)
+    def _(self, node):
+        self.api.delete_view(node.name)
+        return {"status": "ok", "action": "DELETE_VIEW", "view": node.name}
+
     @visit.register(RequireUniqueNode)
     def _(self, node):
         self.api.require_unique(node.key)
@@ -2397,6 +2539,11 @@ class KarminEngine:
     def _(self, node):
         self.api.require_not_null(node.key)
         return {"status": "ok", "action": "REQUIRE_NOT_NULL", "key": node.key}
+
+    @visit.register(RequireCheckNode)
+    def _(self, node):
+        self.api.require_check(node.key, node.cond)
+        return {"status": "ok", "action": "REQUIRE_CHECK", "key": node.key}
 
     @visit.register(DescribeDatabaseNode)
     def _(self, node):
