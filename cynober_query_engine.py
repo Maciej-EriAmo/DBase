@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
 """
-cynober_query_engine.py — Silnik zapytań KarminQL v6.8 (PL + aliasy EN)
+cynober_query_engine.py — Silnik zapytań KarminQL v6.9 (PL + aliasy EN)
 ==========================================================================
 Rozszerzenia SQL-owe: WYPISZ GDZIE, JOIN relacyjny, CTE, widoki, constraints,
 COALESCE/NULLIF/CAST/CONCAT, EXISTS, DROP CONSTRAINT, funkcje stringowe, podzapytania skalarne,
-funkcje okienkowe OVER, ALL/ANY, ILIKE, COUNT OVER, ROWS BETWEEN, REGEXP, PRZEMIANUJ.
+funkcje okienkowe OVER, ALL/ANY, ILIKE, COUNT OVER, ROWS/RANGE BETWEEN, REGEXP, PRZEMIANUJ,
+CREATE/DROP INDEX, EXPLAIN, JSON paths.
 """
 
 import csv
+import json
 import os
 import re
 import time
@@ -25,6 +27,11 @@ class KarminType:
         if s.upper() in ("PRAWDA", "TRUE"): return True
         if s.upper() in ("FAŁSZ", "FALSE"): return False
         if s.upper() in ("NIC", "NULL"): return None
+        if (s.startswith("{") and s.endswith("}")) or (s.startswith("[") and s.endswith("]")):
+            try:
+                return json.loads(s)
+            except json.JSONDecodeError:
+                pass
         try:
             if "." in s: return float(s)
             return int(s)
@@ -33,10 +40,59 @@ class KarminType:
 
     @staticmethod
     def to_str(val: Any) -> str:
+        if isinstance(val, (dict, list)):
+            return json.dumps(val, ensure_ascii=False, sort_keys=True)
         if val is True: return "PRAWDA"
         if val is False: return "FAŁSZ"
         if val is None: return "NIC"
         return str(val)
+
+
+def _json_parse(val: Any) -> Any:
+    if isinstance(val, (dict, list)):
+        return val
+    if isinstance(val, str):
+        s = val.strip()
+        if s.startswith("{") or s.startswith("["):
+            try:
+                return json.loads(s)
+            except json.JSONDecodeError:
+                pass
+    return val
+
+
+def _json_path_get(data: Any, path: str) -> Any:
+    if data is None:
+        return None
+    path = (path or "$").strip()
+    if path in ("$", ""):
+        return data
+    if not path.startswith("$"):
+        path = "$." + path.lstrip(".")
+    cur: Any = data
+    for token in path[2:].split(".") if path.startswith("$.") else path[1:].split("."):
+        if not token:
+            continue
+        while cur is not None and "[" in token:
+            key, rest = token.split("[", 1)
+            if key:
+                if not isinstance(cur, dict):
+                    return None
+                cur = cur.get(key)
+            idx_s, token = rest.split("]", 1)
+            try:
+                idx = int(idx_s)
+            except ValueError:
+                return None
+            if not isinstance(cur, list) or idx < 0 or idx >= len(cur):
+                return None
+            cur = cur[idx]
+        if token:
+            if isinstance(cur, dict):
+                cur = cur.get(token)
+            else:
+                return None
+    return cur
 
 
 # ─── 2. DRZEWO AST ──────────────────────────────────────────────────────
@@ -146,6 +202,18 @@ class DeleteConstraintNode(ASTNode):
     key: str
 
 @dataclass(frozen=True)
+class CreateIndexNode(ASTNode):
+    key: str
+
+@dataclass(frozen=True)
+class DropIndexNode(ASTNode):
+    key: str
+
+@dataclass(frozen=True)
+class ExplainNode(ASTNode):
+    subquery: ASTNode
+
+@dataclass(frozen=True)
 class DescribeDatabaseNode(ASTNode):
     pass
 
@@ -196,6 +264,8 @@ class ProjColumn:
     win_ntile: Optional[int] = None
     win_frame_start: Optional[Any] = None
     win_frame_end: Optional[Any] = None
+    win_frame_kind: str = "rows"
+    json_path: Optional[str] = None
 
 @dataclass(frozen=True)
 class RenameBubbleNode(ASTNode):
@@ -389,6 +459,11 @@ _ALIAS_PHRASES: Tuple[Tuple[str, str], ...] = (
      r'PRZEMIANUJ CECHĘ "\1" NA "\2" W "\3"'),
     (r"NOT\s+REGEXP", "NIE PASUJE DO"),
     (r"\bREGEXP\b", "PASUJE DO"),
+    (r"CREATE\s+INDEX\s+ON", "UTWÓRZ INDEKS NA"),
+    (r"DROP\s+INDEX\s+ON", "USUŃ INDEKS NA"),
+    (r"\bEXPLAIN\b", "WYJAŚNIJ"),
+    (r"RANGE\s+BETWEEN", "ZAKRES MIĘDZY"),
+    (r"JSON_VALUE", "JSON_WARTOŚĆ"),
 )
 
 _ALIAS_WORDS: Tuple[Tuple[str, str], ...] = (
@@ -955,6 +1030,24 @@ class KarminParser:
             str_inner=self._parse_proj_atom(args[0]),
         )
 
+    def _parse_json_value_column(self, text: str, label: Optional[str]) -> ProjColumn:
+        m = re.match(
+            r'^JSON_(?:WARTOŚĆ|VALUE)\s*\(\s*(.+)\)\s*$',
+            text, re.IGNORECASE | re.DOTALL,
+        )
+        if not m:
+            raise SyntaxError(f"Niepoprawne JSON_WARTOŚĆ: {text}")
+        args = self._split_func_args(m.group(1))
+        if len(args) == 1:
+            inner = self._parse_proj_atom(args[0])
+            path = "$"
+        elif len(args) == 2:
+            inner = self._parse_proj_atom(args[0])
+            path = args[1].strip().strip('"').strip("'")
+        else:
+            raise SyntaxError("JSON_WARTOŚĆ wymaga 1 lub 2 argumentów (cecha [, ścieżka])")
+        return ProjColumn(label or "JSON", "json", str_inner=inner, json_path=path)
+
     def _parse_substring_column(self, text: str, label: Optional[str]) -> ProjColumn:
         m = re.match(r'^SUBSTRING\s*\((.+)\)\s*$', text, re.IGNORECASE | re.DOTALL)
         if not m:
@@ -1001,10 +1094,21 @@ class KarminParser:
             return int(m.group(1))
         raise SyntaxError(f"Niepoprawna granica ramki okna: {raw}")
 
-    def _parse_window_order(self, order_text: str) -> Tuple[Tuple[str, ...], bool, Optional[Any], Optional[Any]]:
+    def _parse_window_order(self, order_text: str) -> Tuple[
+        Tuple[str, ...], bool, Optional[Any], Optional[Any], str,
+    ]:
         order_text = order_text.strip()
         frame_start = frame_end = None
+        frame_kind = "rows"
         if m := re.search(
+            r'\s+ZAKRES\s+MIĘDZY\s+(.+?)\s+A\s+(.+?)\s*$',
+            order_text, re.IGNORECASE,
+        ):
+            frame_kind = "range"
+            frame_start = self._parse_window_frame_bound(m.group(1))
+            frame_end = self._parse_window_frame_bound(m.group(2))
+            order_text = order_text[:m.start()].strip()
+        elif m := re.search(
             r'\s+WIERSZE\s+MIĘDZY\s+(.+?)\s+A\s+(.+?)\s*$',
             order_text, re.IGNORECASE,
         ):
@@ -1017,11 +1121,12 @@ class KarminParser:
             order_text = order_text[:m.start()].strip()
         elif m := re.search(r'\s+(ROSNĄCO|ASC)\s*$', order_text, re.IGNORECASE):
             order_text = order_text[:m.start()].strip()
-        return tuple(self._parse_keys(order_text)), desc, frame_start, frame_end
+        return tuple(self._parse_keys(order_text)), desc, frame_start, frame_end, frame_kind
 
     def _parse_window_over_body(self, body: str,
                                 order_required: bool = True) -> Tuple[
-        Optional[Tuple[str, ...]], Optional[Tuple[str, ...]], bool, Optional[Any], Optional[Any],
+        Optional[Tuple[str, ...]], Optional[Tuple[str, ...]], bool,
+        Optional[Any], Optional[Any], str,
     ]:
         body = body.strip()
         partition: Optional[Tuple[str, ...]] = None
@@ -1039,17 +1144,17 @@ class KarminParser:
         else:
             raise SyntaxError(f"Oczekiwano PODZIEL NA … [SORTUJ WEDŁUG …] w OVER: {body}")
         if order_part:
-            win_order, win_desc, frame_start, frame_end = self._parse_window_order(order_part)
-            return partition, win_order, win_desc, frame_start, frame_end
+            win_order, win_desc, frame_start, frame_end, frame_kind = self._parse_window_order(order_part)
+            return partition, win_order, win_desc, frame_start, frame_end, frame_kind
         if order_required:
             raise SyntaxError("OVER wymaga SORTUJ WEDŁUG …")
-        return partition, None, False, None, None
+        return partition, None, False, None, None, "rows"
 
     def _window_proj(self, label: str, func: str, body: str, order_required: bool,
                      win_arg: Optional[Any] = None, win_offset: int = 1,
                      win_ntile: Optional[int] = None) -> ProjColumn:
-        partition, win_order, win_desc, frame_start, frame_end = self._parse_window_over_body(
-            body, order_required=order_required,
+        partition, win_order, win_desc, frame_start, frame_end, frame_kind = (
+            self._parse_window_over_body(body, order_required=order_required)
         )
         if order_required and not win_order:
             raise SyntaxError("OVER wymaga SORTUJ WEDŁUG …")
@@ -1058,6 +1163,7 @@ class KarminParser:
             win_func=func, win_arg=win_arg, win_offset=win_offset, win_ntile=win_ntile,
             win_partition=partition, win_order=win_order, win_desc=win_desc,
             win_frame_start=frame_start, win_frame_end=frame_end,
+            win_frame_kind=frame_kind,
         )
 
     def _parse_window_column(self, text: str, label: Optional[str]) -> ProjColumn:
@@ -1149,6 +1255,8 @@ class KarminParser:
             return self._parse_concat_column(text, label)
         if text.upper().startswith("SUBSTRING"):
             return self._parse_substring_column(text, label)
+        if re.match(r'^JSON_(?:WARTOŚĆ|VALUE)\s*\(', text, re.IGNORECASE):
+            return self._parse_json_value_column(text, label)
         head = text.split("(", 1)[0].strip().upper()
         if head in self._UNARY_STR_FUNCS:
             return self._parse_unary_str_column(text, label)
@@ -1316,7 +1424,8 @@ class KarminParser:
                               ExportCsvNode, ImportCsvNode, MergeNode, DescribeDatabaseNode,
                               CreateViewNode, QueryViewNode, DeleteViewNode,
                               RequireUniqueNode, RequireNotNullNode, RequireCheckNode,
-                              DeleteConstraintNode, RenameBubbleNode, RenamePropertyNode,
+                              DeleteConstraintNode, CreateIndexNode, DropIndexNode, ExplainNode,
+                              RenameBubbleNode, RenamePropertyNode,
                               DeleteBubbleNode, RemovePropertyNode, ConnectNode, DisconnectNode,
                               ExciteNode, BeginTxNode, CommitTxNode, RollbackTxNode, AssignNode)):
             raise SyntaxError("Podzapytanie nie może modyfikować danych")
@@ -1516,6 +1625,19 @@ class KarminParser:
         if re.match(r'^OPISZ\s+BAZĘ\s*$', line, re.IGNORECASE):
             return DescribeDatabaseNode()
 
+        if m := re.match(r'^UTWÓRZ\s+INDEKS\s+NA\s+"([^"]+)"\s*$', line, re.IGNORECASE):
+            return CreateIndexNode(m.group(1))
+
+        if m := re.match(r'^USUŃ\s+INDEKS\s+NA\s+"([^"]+)"\s*$', line, re.IGNORECASE):
+            return DropIndexNode(m.group(1))
+
+        if m := re.match(r'^WYJAŚNIJ\s+(.+)$', line, re.IGNORECASE):
+            sub_line = m.group(1).strip()
+            sub = self._parse_simple_line(sub_line)
+            if sub is None:
+                raise SyntaxError(f"Nierozpoznane zapytanie EXPLAIN: {sub_line}")
+            return ExplainNode(sub)
+
         if m := re.match(r'^SCAL\s+"([^"]+)"\s+Z\s+(.+)$', line, re.IGNORECASE):
             return MergeNode(m.group(1), None, None, tuple(self._parse_prop_pairs(m.group(2))))
 
@@ -1636,7 +1758,8 @@ class SubstrateAPI:
         self.namespaces = {
             "DEFAULT": {
                 "bubbles": {}, "inv_index": {}, "atom_index": {},
-                "views": {}, "constraints": {"unique": set(), "not_null": set(), "check": {}},
+                "views": {}, "user_indexes": set(),
+                "constraints": {"unique": set(), "not_null": set(), "check": {}},
             },
         }
         self.active_ns = "DEFAULT"
@@ -1657,10 +1780,14 @@ class SubstrateAPI:
     @property
     def _constraints(self): return self.namespaces[self.active_ns]["constraints"]
 
+    @property
+    def _user_indexes(self): return self.namespaces[self.active_ns]["user_indexes"]
+
     def _ns_shell(self) -> dict:
         return {
             "bubbles": {}, "inv_index": {}, "atom_index": {},
-            "views": {}, "constraints": {"unique": set(), "not_null": set(), "check": {}},
+            "views": {}, "user_indexes": set(),
+            "constraints": {"unique": set(), "not_null": set(), "check": {}},
         }
 
     def create_namespace(self, name: str):
@@ -1686,6 +1813,7 @@ class SubstrateAPI:
                           for k, vals in self._inv_index.items()},
             "atom_index": {aid: s.copy() for aid, s in self._atom_index.items()},
             "views": dict(self._views),
+            "user_indexes": set(self._user_indexes),
             "constraints": {
                 "unique": set(self._constraints["unique"]),
                 "not_null": set(self._constraints["not_null"]),
@@ -1723,6 +1851,7 @@ class SubstrateAPI:
         self.namespaces[self.active_ns]["inv_index"] = bs["inv_index"]
         self.namespaces[self.active_ns]["atom_index"] = bs["atom_index"]
         self.namespaces[self.active_ns]["views"] = bs["views"]
+        self.namespaces[self.active_ns]["user_indexes"] = bs["user_indexes"]
         self.namespaces[self.active_ns]["constraints"] = bs["constraints"]
         self.commit_transaction()
 
@@ -1770,6 +1899,87 @@ class SubstrateAPI:
             self._constraints["check"].pop(key, None)
         else:
             raise ValueError(f"Nieznany rodzaj wymagania: {kind}")
+
+    def rebuild_index(self, key: str) -> int:
+        self._inv_index[key] = {}
+        count = 0
+        for name in sorted(self._bubble_index.keys()):
+            val = self._get_property_value(name, key)
+            if val is not None:
+                val_str = KarminType.to_str(val)
+                self._inv_index[key].setdefault(val_str, set()).add(name)
+                count += 1
+        return count
+
+    def create_index(self, key: str) -> int:
+        count = self.rebuild_index(key)
+        self._user_indexes.add(key)
+        return count
+
+    def drop_index(self, key: str) -> None:
+        if key not in self._user_indexes:
+            raise ValueError(f"Indeks na cechę '{key}' nie istnieje w przestrzeni '{self.active_ns}'.")
+        self._user_indexes.discard(key)
+
+    def explain_query(self, node: ASTNode) -> dict:
+        universe_size = len(self._bubble_index)
+        if isinstance(node, ProjectWhereNode):
+            universe = self._resolve_universe(node.join_relation, node.join_target)
+            universe_size = len(universe)
+            plan = self._explain_cond(node.cond, universe_size)
+            return {
+                "query_type": "WYPISZ",
+                "plan": plan,
+                "universe_size": universe_size,
+                "user_indexes": sorted(self._user_indexes),
+                "indexed_keys": sorted(self._inv_index.keys()),
+            }
+        if isinstance(node, ConditionNode):
+            universe = self._resolve_universe(node.join_relation, node.join_target)
+            universe_size = len(universe)
+            plan = self._explain_cond(node.cond, universe_size)
+            return {
+                "query_type": node.action,
+                "plan": plan,
+                "universe_size": universe_size,
+                "user_indexes": sorted(self._user_indexes),
+                "indexed_keys": sorted(self._inv_index.keys()),
+            }
+        raise ValueError(f"WYJAŚNIJ obsługuje WYPISZ … GDZIE lub ZNAJDŹ/POLICZ … GDZIE (otrzymano {type(node).__name__})")
+
+    def _explain_cond(self, expr: CondExpr, universe_size: int) -> dict:
+        if isinstance(expr, CondCompare):
+            if expr.subquery is not None or str(expr.val).startswith("$"):
+                return {"strategy": "full_scan", "estimated_rows": universe_size, "reason": "subquery"}
+            if expr.op == "=" and expr.key.upper() not in ("BĄBEL", "TEMPERATURA"):
+                if expr.key in self._inv_index:
+                    val_str = KarminType.to_str(KarminType.parse(expr.val))
+                    est = len(self._inv_index.get(expr.key, {}).get(val_str, set()))
+                    pinned = expr.key in self._user_indexes
+                    return {
+                        "strategy": "index_lookup",
+                        "key": expr.key,
+                        "estimated_rows": est,
+                        "pinned_index": pinned,
+                    }
+            return {"strategy": "full_scan", "estimated_rows": universe_size, "key": expr.key}
+        if isinstance(expr, CondNot):
+            inner = self._explain_cond(expr.inner, universe_size)
+            return {"strategy": "filter", "child": inner, "estimated_rows": inner.get("estimated_rows", universe_size)}
+        if isinstance(expr, CondAnd):
+            parts = [self._explain_cond(p, universe_size) for p in expr.parts]
+            est = universe_size
+            for p in parts:
+                if p.get("strategy") == "index_lookup":
+                    est = min(est, p.get("estimated_rows", est))
+            return {"strategy": "and", "parts": parts, "estimated_rows": est}
+        if isinstance(expr, CondOr):
+            parts = [self._explain_cond(p, universe_size) for p in expr.parts]
+            est = sum(p.get("estimated_rows", 0) for p in parts)
+            return {"strategy": "or", "parts": parts, "estimated_rows": min(est, universe_size)}
+        if isinstance(expr, CondExists):
+            return {"strategy": "exists_subquery", "estimated_rows": universe_size}
+        raise TypeError(f"Nieznany węzeł warunku: {type(expr)}")
 
     def save_view(self, name: str, subquery: ASTNode) -> None:
         self._views[name] = subquery
@@ -2000,6 +2210,7 @@ class SubstrateAPI:
             "check": sorted(self.namespaces[saved_ns]["constraints"]["check"].keys()),
         }
         views = sorted(self.namespaces[saved_ns]["views"].keys())
+        indexes = sorted(self.namespaces[saved_ns]["user_indexes"])
         return {
             "active_namespace": saved_ns,
             "namespaces": [n["name"] for n in all_namespaces],
@@ -2008,6 +2219,7 @@ class SubstrateAPI:
             "properties": current["properties"],
             "catalog_rows": catalog_rows,
             "views": views,
+            "indexes": indexes,
             "constraints": constraints,
             "all_namespaces": all_namespaces,
         }
@@ -2275,6 +2487,9 @@ class SubstrateAPI:
                 val = self._eval_proj_column(arg, left_name, join_ctx, scalar_runner)
                 parts.append("" if val is None else str(val))
             return "".join(parts)
+        if col.kind == "json" and col.str_inner is not None:
+            base = self._eval_proj_column(col.str_inner, left_name, join_ctx, scalar_runner)
+            return _json_path_get(_json_parse(base), col.json_path or "$")
         if col.kind == "ref":
             return self._value_from_ctx(col.ref_alias, col.ref_key or col.label, left_name, join_ctx)
         if col.kind == "coalesce" and col.coalesce_args:
@@ -2438,14 +2653,27 @@ class SubstrateAPI:
 
     def _get_property_value(self, bubble_name: str, key: str) -> Any:
         b = self._bubble_index.get(bubble_name)
-        if not b: return None
+        if not b:
+            return None
         if key.upper() == "TEMPERATURA":
-            return max([self.store.get_atom(aid).T for aid in b.bindings.values() if self.store.get_atom(aid)], default=0.0)
+            return max(
+                [self.store.get_atom(aid).T for aid in b.bindings.values() if self.store.get_atom(aid)],
+                default=0.0,
+            )
         if key.upper() == "BĄBEL":
             return bubble_name
-        atom = self.store.get_atom(b.bindings.get(key))
-        if not atom: return None
-        return atom.metadata.get('v', KarminType.parse(atom.E))
+        if key in b.bindings:
+            atom = self.store.get_atom(b.bindings.get(key))
+            if not atom:
+                return None
+            return atom.metadata.get('v', KarminType.parse(atom.E))
+        if "." in key:
+            root, rest = key.split(".", 1)
+            root_val = self._get_property_value(bubble_name, root)
+            if root_val is None:
+                return None
+            return _json_path_get(_json_parse(root_val), "$." + rest)
+        return None
 
     def _eval_compare(self, bubble_name: str, cmp: CondCompare, env: dict,
                       query_runner: Optional[Any] = None,
@@ -2644,6 +2872,39 @@ class SubstrateAPI:
             si, ei = ei, si
         return list(range(si, ei + 1))
 
+    @staticmethod
+    def _range_bound_value(bound: Any, current: Union[int, float],
+                           all_nums: List[Union[int, float]]) -> Union[int, float]:
+        if bound == "unbounded_preceding":
+            return min(all_nums) if all_nums else current
+        if bound == "unbounded_following":
+            return max(all_nums) if all_nums else current
+        if bound == "current_row":
+            return current
+        if isinstance(bound, int):
+            return current + bound
+        return current
+
+    def _range_frame_indices(self, i: int, order_vals: List[Any],
+                             frame_start: Optional[Any], frame_end: Optional[Any],
+                             desc: bool) -> List[int]:
+        nums: List[Union[int, float]] = []
+        for v in order_vals:
+            if isinstance(v, (int, float)) and not isinstance(v, bool):
+                nums.append(v)
+            else:
+                return list(range(len(order_vals)))
+        if not nums:
+            return list(range(len(order_vals)))
+        current = nums[i]
+        lo = self._range_bound_value(frame_start or "unbounded_preceding", current, nums)
+        hi = self._range_bound_value(frame_end or "current_row", current, nums)
+        if lo > hi:
+            lo, hi = hi, lo
+        if desc:
+            return [j for j, n in enumerate(nums) if hi <= n <= lo]
+        return [j for j, n in enumerate(nums) if lo <= n <= hi]
+
     def _apply_window_functions(self, rows: List[dict],
                                 columns: Tuple[ProjColumn, ...]) -> List[dict]:
         win_cols = [c for c in columns if c.kind == "window"]
@@ -2676,9 +2937,24 @@ class SubstrateAPI:
                         tuple(self._win_row_field(row, k) for k in col.win_order)
                         if col.win_order else None
                     )
-                    frame_idxs = self._frame_indices(
-                        i, n_part, col.win_frame_start, col.win_frame_end, has_order,
-                    )
+                    if (
+                        col.win_frame_kind == "range"
+                        and has_order
+                        and col.win_order
+                        and len(col.win_order) == 1
+                        and (col.win_frame_start is not None or col.win_frame_end is not None)
+                    ):
+                        order_vals = [
+                            self._win_row_field(row, col.win_order[0])
+                            for _, row in sorted_part
+                        ]
+                        frame_idxs = self._range_frame_indices(
+                            i, order_vals, col.win_frame_start, col.win_frame_end, col.win_desc,
+                        )
+                    else:
+                        frame_idxs = self._frame_indices(
+                            i, n_part, col.win_frame_start, col.win_frame_end, has_order,
+                        )
                     frame_vals = [cell_vals[j] for j in frame_idxs]
                     val: Any = None
                     if col.win_func == "row_number":
@@ -3295,6 +3571,24 @@ class KarminEngine:
     def _(self, node):
         self.api.drop_constraint(node.kind, node.key)
         return {"status": "ok", "action": "DROP_CONSTRAINT", "kind": node.kind, "key": node.key}
+
+    @visit.register(CreateIndexNode)
+    def _(self, node):
+        count = self.api.create_index(node.key)
+        return {
+            "status": "ok", "action": "CREATE_INDEX", "key": node.key,
+            "indexed_rows": count, "pinned": True,
+        }
+
+    @visit.register(DropIndexNode)
+    def _(self, node):
+        self.api.drop_index(node.key)
+        return {"status": "ok", "action": "DROP_INDEX", "key": node.key}
+
+    @visit.register(ExplainNode)
+    def _(self, node):
+        data = self.api.explain_query(node.subquery)
+        return {"status": "ok", "action": "EXPLAIN", **data}
 
     @visit.register(RenameBubbleNode)
     def _(self, node):

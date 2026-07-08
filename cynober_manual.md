@@ -1,10 +1,10 @@
-# Cynober DB — Podręcznik Użytkownika i Składnia KarminQL (v6.8)
+# Cynober DB — Podręcznik Użytkownika i Składnia KarminQL (v6.9)
 
 Cynober DB to relacyjno-grafowa baza danych na termodynamicznym rdzeniu **KarmazynOS**, z transportem **Cynober-Secure-1.2** i warstwą **HSL** (Holographic Session Links). Trzy autorskie elementy — silnik, baza, protokół — opierają się na jednej zasadzie: **struktura wynika z rezonansu stanu sesji**, a nie z zewnętrznych etykiet (adres, certyfikat, ACL).
 
 | Komponent | Wersja | Plik |
 |-----------|--------|------|
-| KarminQL (silnik zapytań) | v6.8 | `cynober_query_engine.py` |
+| KarminQL (silnik zapytań) | v6.9 | `cynober_query_engine.py` |
 | Most pandas | — | `cynober_pandas_bridge.py` |
 | Klient CLI | v1.8.0 | `Cynober_db.py` |
 | Serwer | — | `cynober_server.py` |
@@ -31,7 +31,7 @@ Cynober DB to relacyjno-grafowa baza danych na termodynamicznym rdzeniu **Karmaz
          └──────────────────┬─────────────────────────┘
                             ▼
                    ┌─────────────────┐
-                   │  KarminEngine   │  KarminQL v6.8
+                   │  KarminEngine   │  KarminQL v6.9
                    └────────┬────────┘
                             ▼
                    ┌─────────────────┐
@@ -698,6 +698,47 @@ PRZEMIANUJ CECHĘ "Sku" NA "SKU" W "Bąbel"
 ```
 
 Aliasy EN: `RENAME BUBBLE "A" TO "B"`, `RENAME COLUMN "x" TO "y" IN "Bubble"`. Aktualizuje też relacje wskazujące na przemianowany bąbel.
+
+### Indeksy jawne, EXPLAIN, RANGE BETWEEN i JSON (v6.9)
+
+**CREATE / DROP INDEX** — przypięcie odwrotnego indeksu do cechy:
+
+```
+UTWÓRZ INDEKS NA "Sku"
+USUŃ INDEKS NA "Sku"
+```
+
+Aliasy EN: `CREATE INDEX ON "Sku"`, `DROP INDEX ON "Sku"`. `UTWÓRZ INDEKS` przebudowuje `inv_index` dla cechy i oznacza ją w katalogu (`OPISZ BAZĘ` → `indexes`).
+
+**EXPLAIN** — plan bez mutacji danych:
+
+```
+WYJAŚNIJ ZNAJDŹ GDZIE "Sku" = "X1"
+WYJAŚNIJ WYPISZ "BĄBEL", "RAM" GDZIE "Typ" = "Serwer"
+```
+
+Alias EN: `EXPLAIN`. Zwraca `index_lookup` (szacowana liczba wierszy z `inv_index`) lub `full_scan`.
+
+**Ramka `ZAKRES MIĘDZY` (alias: `RANGE BETWEEN`)** — granice po wartości kolumny sortowania (peery):
+
+```
+COUNT(*) OVER (
+  SORTUJ WEDŁUG "Score" ROSNĄCO
+  ZAKRES MIĘDZY BIEŻĄCY WIERSZ A BIEŻĄCY WIERSZ
+) JAKO "Peers"
+```
+
+Dla wartości liczbowych: `N POPRZEDZAJĄCE` oznacza zakres `[wartość−N, bieżąca]`.
+
+**JSON i ścieżki do cech:**
+
+```
+WSTRZYKNIJ "Stats" = {"hp": 100, "mp": 50} DO "Bohater"
+WYPISZ JSON_WARTOŚĆ("Stats", "$.hp") JAKO "HP" GDZIE "BĄBEL" = "Bohater"
+ZNAJDŹ GDZIE "Stats.hp" = 100
+```
+
+Aliasy EN: `JSON_VALUE`. Literały `{...}` / `[...]` są parsowane jako JSON. Ścieżki: `$.pole`, `$.zagnieżdżone.pole`, `$.tab[0]`.
 
 ### Optymalizacja substratu (v6.1)
 
