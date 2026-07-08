@@ -152,8 +152,8 @@ class TestCynoberRpcTunnel(RpcTestBase):
         show = c.query(f'POKAŻ "{tag}"')
         self.assertEqual(show["results"][0]["data"]["properties"]["N"], 4)
 
-    def test_two_clients_share_server_state(self):
-        tag = f"Shared_{time.time_ns()}"
+    def test_two_clients_isolated_state(self):
+        tag = f"Isolated_{time.time_ns()}"
         c1 = CynoberRpcClient(port=self.port)
         c1.connect()
         self.addCleanup(c1.close)
@@ -164,7 +164,14 @@ class TestCynoberRpcTunnel(RpcTestBase):
         c2.connect()
         self.addCleanup(c2.close)
         resp = c2.query(f'POKAŻ "{tag}"')
-        self.assertTrue(resp["results"][0]["data"]["properties"]["Flaga"])
+        self.assertEqual(resp["results"][0]["status"], "error")
+
+    def test_stats_reports_session_isolation(self):
+        c = self._client()
+        row = c.query("STATYSTYKI")["results"][0]
+        self.assertTrue(row["data"]["session_isolated"])
+        self.assertGreaterEqual(row["data"]["active_sessions"], 1)
+        self.assertIn("session_label", row["data"])
 
     def test_large_query_payload_roundtrip(self):
         c = self._client()

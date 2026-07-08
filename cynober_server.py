@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """
-cynober_server.py — Bezpieczny Serwer Bazy Danych Cynober DB
+cynober_server.py — Bezpieczny Serwer Bazy Danych Cynober DB (v7.0)
 ==========================================================================
 Zastępuje serwer HTTP. Wykorzystuje protokół TCP oraz warstwę kryptograficzną
 z karmazyn_handshake.py (Ring-LWE / ECDH / PBKDF2) do zabezpieczenia zapytań.
+
+v7.0: każde połączenie RPC dostaje własny Store + KarminEngine (izolacja sesji).
 """
 
 import os
@@ -30,7 +32,8 @@ from cynober_rate_limit import (
 from karmazyn_handshake import _CryptoLayer, _recv_frame
 
 class CynoberFacade:
-    def __init__(self):
+    def __init__(self, session_label: str = ""):
+        self.session_label = session_label or "anonymous"
         self.bridge = KarminLambdaBridge(kernel.Store(thermal=True))
         self.store = self.bridge.store
         self.engine = self.bridge.engine
@@ -49,7 +52,10 @@ class CynoberFacade:
             stats = self.store.stats()
             return [{"status": "ok", "action": "STATS", "data": {
                 "total_atoms": stats['total'], "hot": stats['hot'], "cold": stats['cold'],
-                "reaped": stats['reaped'], "bubbles": len(self.engine.api._bubble_index)
+                "reaped": stats['reaped'], "bubbles": len(self.engine.api._bubble_index),
+                "session_label": self.session_label,
+                "session_isolated": True,
+                "active_sessions": _session_manager.active_count,
             }}]
         if upper_query.startswith("TICK"):
             parts = upper_query.split()
@@ -97,7 +103,30 @@ class CynoberFacade:
         return self.engine.execute(query, strict=False)
 
 
-facade = CynoberFacade()
+class SessionManager:
+    """Rejestr aktywnych sesji RPC — osobny CynoberFacade (Store) na połączenie."""
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._active = 0
+
+    def create(self, session_label: str) -> CynoberFacade:
+        with self._lock:
+            self._active += 1
+        return CynoberFacade(session_label=session_label)
+
+    def release(self) -> None:
+        with self._lock:
+            if self._active > 0:
+                self._active -= 1
+
+    @property
+    def active_count(self) -> int:
+        with self._lock:
+            return self._active
+
+
+_session_manager = SessionManager()
 _rate_limiter: ServerRateLimiter | None = None
 
 
@@ -114,6 +143,7 @@ def handle_client(conn: socket.socket, addr, query_limit: SessionQueryLimiter | 
     crypto = _CryptoLayer()
     tunnel_ready = False
     crypto_mode = "?"
+    session_facade: CynoberFacade | None = None
 
     try:
         hs_deadline = time.monotonic() + HS_TIMEOUT_SEC
@@ -121,11 +151,13 @@ def handle_client(conn: socket.socket, addr, query_limit: SessionQueryLimiter | 
             conn, crypto, is_server=True, deadline=hs_deadline
         )
         tunnel_ready = True
+        session_label = remote_caps.get("session_id") or f"{addr[0]}:{addr[1]}"
+        session_facade = _session_manager.create(session_label)
         psk_note = " [PSK]" if os.environ.get("KARM_PSK") else ""
         hsl_note = " + HSL" if hsl_link else ""
         qkd_note = " + QKD" if hsl_link and hsl_link.qkd_hybrid else ""
         print(f"[Cynober] Tunel zabezpieczony z {addr} ({crypto_mode.upper()}) "
-              f"v{remote_caps.get('version')}{psk_note}{hsl_note}{qkd_note}")
+              f"v{remote_caps.get('version')} sesja={session_label}{psk_note}{hsl_note}{qkd_note}")
 
         if query_limit is None:
             from cynober_client_config import get_server_config
@@ -148,7 +180,7 @@ def handle_client(conn: socket.socket, addr, query_limit: SessionQueryLimiter | 
 
             try:
                 query = decode_request(enc_req, crypto, hsl_link)
-                results = facade.execute(query)
+                results = session_facade.execute(query)
             except ValueError as e:
                 results = error_result(str(e))
             except Exception as e:
@@ -171,6 +203,8 @@ def handle_client(conn: socket.socket, addr, query_limit: SessionQueryLimiter | 
         else:
             print(f"[Cynober] Odrzucono handshake od {addr}: {e}")
     finally:
+        if session_facade is not None:
+            _session_manager.release()
         conn.close()
 
 def run_server(host='0.0.0.0', port=8080):
@@ -181,8 +215,9 @@ def run_server(host='0.0.0.0', port=8080):
     limiter = _get_rate_limiter()
     rl = limiter.cfg
     print("=" * 60)
-    print(f"  Cynober DB SECURE Server działa na porcie {port}")
+    print(f"  Cynober DB SECURE Server v7.0 działa na porcie {port}")
     print("  Nasłuch w standardzie Karmazyn Handshake RPC.")
+    print("  Izolacja sesji: osobny Store na każde połączenie TCP.")
     if any(rl.values()):
         print(f"  Rate limit: global={rl['max_concurrent_global']} "
               f"ip={rl['max_connections_per_ip']} "

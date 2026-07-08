@@ -7,7 +7,7 @@ Cynober DB to relacyjno-grafowa baza danych na termodynamicznym rdzeniu **Karmaz
 | KarminQL (silnik zapytań) | v6.9 | `cynober_query_engine.py` |
 | Most pandas | — | `cynober_pandas_bridge.py` |
 | Klient CLI | v1.8.0 | `Cynober_db.py` |
-| Serwer | — | `cynober_server.py` |
+| Serwer | v7.0 | `cynober_server.py` |
 | Protokół transportu | Cynober-Secure-1.2 | `cynober_rpc.py` |
 | HSL (sesje sieciowe) | HSL-1.1 | `karmazyn_hsl.py` |
 | Handshake / szyfrowanie | KSH-1.2 | `karmazyn_handshake.py` |
@@ -59,9 +59,13 @@ Cynober DB to relacyjno-grafowa baza danych na termodynamicznym rdzeniu **Karmaz
 
 > **Uwaga:** Serwer **nie** udostępnia HTTP. Transport to wyłącznie TCP z protokołem Karmazyn (HSS + HSL).
 
-### Współdzielony stan
+### Izolacja sesji (v7.0)
 
-Serwer trzyma **jedną globalną instancję** bazy w pamięci (`facade`). Wszyscy podłączeni klienci operują na tych samych danych. To świadomy kompromis prototypu — nie jest to izolacja per sesja.
+Każde połączenie TCP po handshake dostaje **własny** `Store` + `KarminEngine` (`CynoberFacade`). Dane jednego klienta nie są widoczne dla innego. Po rozłączeniu stan sesji jest zwalniany z pamięci.
+
+`STATYSTYKI` zwraca m.in. `session_isolated: true`, `session_label` (z `session_id` handshake) oraz `active_sessions` (liczba otwartych tuneli).
+
+Nowe połączenie = pusta baza (chyba że wczytasz zrzut `WCZYTAJ` w tej sesji).
 
 ---
 
@@ -337,7 +341,7 @@ Klient wyświetli: `Tunel zabezpieczony (HSS + HSL + QKD)`. Rozjazd seeda międz
 * Brak TLS / X.509 — zaufanie z HSL i opcjonalnego PSK/QKD-seed, nie z CA.
 * Brak uwierzytelnienia użytkownika — PSK/QKD to hasło **sieci**, nie konta.
 * **DoS** — częściowa ochrona: rate limit połączeń i zapytań (sekcja `server.rate_limit`); flood TCP nadal możliwy przy wielu IP.
-* Współdzielony `facade` — wszyscy klienci widzą te same dane (brak izolacji per sesja w bazie).
+* Brak persystencji między sesjami — po rozłączeniu dane znikają, chyba że zapiszesz `.kafd` w sesji.
 * Zrzuty `.kafd` — Phi-Cipher (obfuskacja), nie AES z hasłem użytkownika.
 * HSS w tej wersji domyślnie ma **N=15** (prototyp); można podnieść N/Q w `karmazyn_hss.py` bez zmiany protokołu — obecna wartość nie jest równoważna pełnemu Kyber-256.
 
@@ -887,7 +891,8 @@ python -m unittest tests.test_client_config -v
 | `tests/test_hss_handshake.py` | Ring-LWE KEM: init/respond/finalize, odrzucenie złego tokena |
 | `tests/test_cynober_rpc.py` | Kodeki RPC, caps 1.2, PSK, anty-replay, wybór trybu hss |
 | `tests/test_hsl_session.py` | Φ², PrismMask, HSL link, AAD, QKD seed, kolaps przy złym kluczu |
-| `tests/test_server_rpc.py` | Tunel TCP end-to-end: HSS+HSL, PSK, QKD, legacy 1.0, współdzielony stan |
+| `tests/test_server_rpc.py` | Tunel TCP end-to-end: HSS+HSL, PSK, QKD, legacy 1.0, izolacja sesji |
+| `tests/test_v70.py` | Izolacja Store per połączenie RPC (v7.0) |
 | `tests/test_client_config.py` | Profile połączeń, argv/env, zapis JSON |
 | `tests/rpc_client.py` | Pomocniczy klient RPC dla testów integracyjnych |
 
@@ -897,7 +902,7 @@ python -m unittest tests.test_client_config -v
 * TLS / certyfikaty X.509.
 * `WCZYTAJ` z pliku po stronie serwera (tylko `ZAPISZ` przez RPC).
 * Wizualizacja `WYKRES` (plotly).
-* Uwierzytelnienie użytkownika, limity DoS, izolacja per sesja w bazie.
+* Uwierzytelnienie użytkownika (konta, ACL poza PSK sieci).
 
 ### Dodawanie nowych testów
 
