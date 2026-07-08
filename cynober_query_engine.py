@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-cynober_query_engine.py — Silnik zapytań KarminQL v6.3 (PL + aliasy EN)
+cynober_query_engine.py — Silnik zapytań KarminQL v6.4 (PL + aliasy EN)
 ==========================================================================
-Rozszerzenia SQL-owe: WYPISZ GDZIE, JOIN relacyjny, SCAL/UPSERT, CTE (Z … JAKO),
-widoki, constraints (UNIKALNE/NIE NULL/SPRAWDŹ), COALESCE/NULLIF, multi-SORT, DROP VIEW.
+Rozszerzenia SQL-owe: WYPISZ GDZIE, JOIN relacyjny, CTE, widoki, constraints,
+COALESCE/NULLIF/CAST/CONCAT, EXISTS, DROP CONSTRAINT.
 """
 
 import csv
@@ -68,7 +68,12 @@ class CondOr:
     parts: Tuple[Any, ...]
 
 
-CondExpr = Union[CondCompare, CondNot, CondAnd, CondOr]
+@dataclass(frozen=True)
+class CondExists:
+    subquery: Any
+
+
+CondExpr = Union[CondCompare, CondNot, CondAnd, CondOr, CondExists]
 
 
 @dataclass(frozen=True)
@@ -134,6 +139,11 @@ class DeleteViewNode(ASTNode):
     name: str
 
 @dataclass(frozen=True)
+class DeleteConstraintNode(ASTNode):
+    kind: str
+    key: str
+
+@dataclass(frozen=True)
 class DescribeDatabaseNode(ASTNode):
     pass
 
@@ -167,6 +177,9 @@ class ProjColumn:
     coalesce_args: Optional[Tuple[Any, ...]] = None
     nullif_left: Optional[Any] = None
     nullif_right: Optional[Any] = None
+    cast_inner: Optional[Any] = None
+    cast_type: Optional[str] = None
+    concat_args: Optional[Tuple[Any, ...]] = None
 
 @dataclass(frozen=True)
 class UpdatePropertyNode(ASTNode): target: str; key: str; value: str
@@ -330,6 +343,11 @@ _ALIAS_PHRASES: Tuple[Tuple[str, str], ...] = (
     (r"REQUIRE\s+NOT\s+NULL", "WYMAGAJ NIE NULL"),
     (r"REQUIRE\s+CHECK", "WYMAGAJ SPRAWDŹ"),
     (r"DROP\s+VIEW", "USUŃ WIDOK"),
+    (r"NOT\s+EXISTS", "NIE ISTNIEJE"),
+    (r"DROP\s+CONSTRAINT\s+UNIQUE\s+", "USUŃ WYMAGANIE UNIKALNE "),
+    (r"DROP\s+CONSTRAINT\s+NOT\s+NULL\s+", "USUŃ WYMAGANIE NIE NULL "),
+    (r"DROP\s+CONSTRAINT\s+CHECK\s+", "USUŃ WYMAGANIE SPRAWDŹ "),
+    (r"\bEXISTS\b", "ISTNIEJE"),
 )
 
 _ALIAS_WORDS: Tuple[Tuple[str, str], ...] = (
@@ -497,10 +515,24 @@ class ConditionParser:
             return CondNot(self._parse_not(inner))
         return self._parse_primary(text)
 
+    def _parse_exists_expr(self, text: str) -> CondExists:
+        text = text.strip()
+        if not text.upper().startswith("ISTNIEJE"):
+            raise SyntaxError(f"Oczekiwano ISTNIEJE (podzapytanie): {text}")
+        rest = text[len("ISTNIEJE"):].strip()
+        if not rest.startswith("("):
+            raise SyntaxError("Oczekiwano ISTNIEJE (podzapytanie)")
+        inner = self._unwrap_parens(rest)
+        if not self._subquery_parser:
+            raise SyntaxError("Podzapytania nie są dostępne w tym kontekście")
+        return CondExists(self._subquery_parser(inner))
+
     def _parse_primary(self, text: str) -> CondExpr:
         text = text.strip()
         if text.startswith("("):
             return self.parse(self._unwrap_parens(text))
+        if text.upper().startswith("ISTNIEJE"):
+            return self._parse_exists_expr(text)
         return self._parse_compare(text)
 
     def _parse_literal(self, raw: str) -> str:
@@ -786,7 +818,13 @@ class KarminParser:
         if re.match(r'^-?\d+(\.\d+)?$', raw):
             return ProjColumn(raw, "literal", literal_val=KarminType.parse(raw))
         if raw.startswith('"') and raw.endswith('"'):
-            return ProjColumn(raw.strip('"'), "ref", None, raw.strip('"'))
+            inner = raw[1:-1]
+            if "." in inner:
+                alias, key = inner.split(".", 1)
+                return ProjColumn(key.strip('"'), "ref", alias.strip('"'), key.strip('"'))
+            if re.match(r'^[\w]+$', inner, re.UNICODE):
+                return ProjColumn(inner, "ref", None, inner)
+            return ProjColumn(inner, "literal", literal_val=inner)
         if "." in raw:
             alias, key = raw.split(".", 1)
             return ProjColumn(key.strip('"'), "ref", alias.strip('"'), key.strip('"'))
@@ -803,6 +841,28 @@ class KarminParser:
         if not args:
             raise SyntaxError("COALESCE wymaga co najmniej jednego argumentu")
         return ProjColumn(label or "COALESCE", "coalesce", coalesce_args=args)
+
+    def _parse_cast_column(self, text: str, label: Optional[str]) -> ProjColumn:
+        m = re.match(
+            r'^CAST\s*\(\s*(.+?)\s+(?:AS|JAKO)\s+([A-Za-z_]+)\s*\)\s*$',
+            text, re.IGNORECASE | re.DOTALL,
+        )
+        if not m:
+            raise SyntaxError(f"Niepoprawne CAST: {text}")
+        return ProjColumn(
+            label or "CAST", "cast",
+            cast_inner=self._parse_proj_atom(m.group(1).strip()),
+            cast_type=m.group(2).strip().upper(),
+        )
+
+    def _parse_concat_column(self, text: str, label: Optional[str]) -> ProjColumn:
+        m = re.match(r'^CONCAT\s*\((.+)\)\s*$', text, re.IGNORECASE | re.DOTALL)
+        if not m:
+            raise SyntaxError(f"Niepoprawne CONCAT: {text}")
+        args = tuple(self._parse_proj_atom(a) for a in self._split_func_args(m.group(1)))
+        if not args:
+            raise SyntaxError("CONCAT wymaga co najmniej jednego argumentu")
+        return ProjColumn(label or "CONCAT", "concat", concat_args=args)
 
     def _parse_nullif_column(self, text: str, label: Optional[str]) -> ProjColumn:
         m = re.match(r'^NULLIF\s*\((.+)\)\s*$', text, re.IGNORECASE | re.DOTALL)
@@ -827,6 +887,10 @@ class KarminParser:
             return self._parse_coalesce_column(text, label)
         if text.upper().startswith("NULLIF"):
             return self._parse_nullif_column(text, label)
+        if text.upper().startswith("CAST"):
+            return self._parse_cast_column(text, label)
+        if text.upper().startswith("CONCAT"):
+            return self._parse_concat_column(text, label)
         if text.upper().startswith("CASE"):
             return self._parse_case_column(text, label)
         if re.search(r'[*+\-/]', text) and ('"' in text or "." in text):
@@ -935,6 +999,7 @@ class KarminParser:
                               ExportCsvNode, ImportCsvNode, MergeNode, DescribeDatabaseNode,
                               CreateViewNode, QueryViewNode, DeleteViewNode,
                               RequireUniqueNode, RequireNotNullNode, RequireCheckNode,
+                              DeleteConstraintNode,
                               DeleteBubbleNode, RemovePropertyNode, ConnectNode, DisconnectNode,
                               ExciteNode, BeginTxNode, CommitTxNode, RollbackTxNode, AssignNode)):
             raise SyntaxError("Podzapytanie nie może modyfikować danych")
@@ -1114,6 +1179,13 @@ class KarminParser:
             cond = self.cond_parser.parse(m.group(1).strip())
             key = self._extract_check_key(cond)
             return RequireCheckNode(key, cond)
+
+        if m := re.match(
+            r'^USUŃ\s+WYMAGANIE\s+(UNIKALNE|NIE\s+NULL|SPRAWDŹ)\s+"([^"]+)"\s*$',
+            line, re.IGNORECASE,
+        ):
+            kind = re.sub(r"\s+", " ", m.group(1).upper()).strip()
+            return DeleteConstraintNode(kind, m.group(2))
 
         if re.match(r'^OPISZ\s+BAZĘ\s*$', line, re.IGNORECASE):
             return DescribeDatabaseNode()
@@ -1371,6 +1443,16 @@ class SubstrateAPI:
 
     def require_check(self, key: str, cond: CondExpr) -> None:
         self._constraints["check"][key] = cond
+
+    def drop_constraint(self, kind: str, key: str) -> None:
+        if kind == "UNIKALNE":
+            self._constraints["unique"].discard(key)
+        elif kind == "NIE NULL":
+            self._constraints["not_null"].discard(key)
+        elif kind == "SPRAWDŹ":
+            self._constraints["check"].pop(key, None)
+        else:
+            raise ValueError(f"Nieznany rodzaj wymagania: {kind}")
 
     def save_view(self, name: str, subquery: ASTNode) -> None:
         self._views[name] = subquery
@@ -1763,9 +1845,40 @@ class SubstrateAPI:
             return None
         return self._get_property_value(target, key)
 
+    @staticmethod
+    def _apply_cast(val: Any, cast_type: str) -> Any:
+        if val is None:
+            return None
+        t = cast_type.upper()
+        if t in ("INT", "INTEGER", "LICZBA", "LICZBA_CAŁKOWITA"):
+            return int(float(val))
+        if t in ("FLOAT", "REAL", "DOUBLE", "LICZBA_ZMIENNOPRZECINKOWA"):
+            return float(val)
+        if t in ("TEXT", "TEKST", "VARCHAR", "STRING", "CHAR"):
+            return str(val)
+        if t in ("BOOL", "BOOLEAN", "LOGICZNE"):
+            if isinstance(val, bool):
+                return val
+            s = str(val).upper()
+            if s in ("PRAWDA", "TRUE", "1"):
+                return True
+            if s in ("FAŁSZ", "FALSE", "0"):
+                return False
+            return bool(val)
+        raise ValueError(f"Nieznany typ CAST: {cast_type}")
+
     def _eval_proj_column(self, col: ProjColumn, left_name: str, join_ctx: dict) -> Any:
         if col.kind == "literal":
             return col.literal_val
+        if col.kind == "cast" and col.cast_inner is not None:
+            inner = self._eval_proj_column(col.cast_inner, left_name, join_ctx)
+            return self._apply_cast(inner, col.cast_type or "TEXT")
+        if col.kind == "concat" and col.concat_args:
+            parts = []
+            for arg in col.concat_args:
+                val = self._eval_proj_column(arg, left_name, join_ctx)
+                parts.append("" if val is None else str(val))
+            return "".join(parts)
         if col.kind == "ref":
             return self._value_from_ctx(col.ref_alias, col.ref_key or col.label, left_name, join_ctx)
         if col.kind == "coalesce" and col.coalesce_args:
@@ -1993,14 +2106,16 @@ class SubstrateAPI:
     def evaluate_cond_expr(self, expr: CondExpr, env: dict,
                            join_relation: Optional[str] = None,
                            join_target: Optional[str] = None,
-                           query_runner: Optional[Any] = None) -> List[str]:
+                           query_runner: Optional[Any] = None,
+                           exists_runner: Optional[Any] = None) -> List[str]:
         universe = self._resolve_universe(join_relation, join_target)
-        matched = self._eval_cond_expr(expr, env, universe, query_runner)
+        matched = self._eval_cond_expr(expr, env, universe, query_runner, None, exists_runner)
         return sorted(matched)
 
     def _eval_cond_expr(self, expr: CondExpr, env: dict, universe: Set[str],
                         query_runner: Optional[Any] = None,
-                        property_overrides: Optional[dict] = None) -> Set[str]:
+                        property_overrides: Optional[dict] = None,
+                        exists_runner: Optional[Any] = None) -> Set[str]:
         if isinstance(expr, CondCompare):
             if property_overrides:
                 return {name for name in universe if self._eval_compare(
@@ -2010,9 +2125,14 @@ class SubstrateAPI:
                 return indexed
             return {name for name in universe if self._eval_compare(
                 name, expr, env, query_runner, property_overrides)}
+        if isinstance(expr, CondExists):
+            if not exists_runner:
+                raise ValueError("ISTNIEJE wymaga kontekstu wykonania podzapytania")
+            return {name for name in universe if exists_runner(expr.subquery, name)}
         if isinstance(expr, CondNot):
             all_in = set(universe)
-            inner = self._eval_cond_expr(expr.inner, env, universe, query_runner, property_overrides)
+            inner = self._eval_cond_expr(
+                expr.inner, env, universe, query_runner, property_overrides, exists_runner)
             return all_in - inner
         if isinstance(expr, CondAnd):
             if not expr.parts:
@@ -2027,12 +2147,14 @@ class SubstrateAPI:
                     if indexed is not None:
                         result = indexed
                         continue
-                result = self._eval_cond_expr(part, env, current, query_runner, property_overrides)
+                result = self._eval_cond_expr(
+                    part, env, current, query_runner, property_overrides, exists_runner)
             return result or set()
         if isinstance(expr, CondOr):
             result: Set[str] = set()
             for part in expr.parts:
-                result |= self._eval_cond_expr(part, env, universe, query_runner, property_overrides)
+                result |= self._eval_cond_expr(
+                    part, env, universe, query_runner, property_overrides, exists_runner)
             return result
         raise TypeError(f"Nieznany węzeł warunku: {type(expr)}")
 
@@ -2089,9 +2211,11 @@ class SubstrateAPI:
                       sort_by: Optional[Tuple[str, ...]] = None, sort_desc: bool = False,
                       limit: Optional[int] = None, offset: Optional[int] = None,
                       query_runner: Optional[Any] = None,
+                      exists_runner: Optional[Any] = None,
                       join_filter_fn: Optional[Any] = None) -> Tuple[List[dict], List[str]]:
         keys = [c.label for c in columns]
-        matched = self.evaluate_cond_expr(cond, env, join_relation, join_target, query_runner)
+        matched = self.evaluate_cond_expr(
+            cond, env, join_relation, join_target, query_runner, exists_runner)
         if not rel_joins:
             rows = [self._project_row(name, {}, columns) for name in sorted(matched)]
         else:
@@ -2127,8 +2251,10 @@ class SubstrateAPI:
 
     def update_where(self, key: str, value_raw: str, cond: CondExpr, env: dict,
                      join_relation: Optional[str] = None, join_target: Optional[str] = None,
-                     query_runner: Optional[Any] = None) -> int:
-        matched = self.evaluate_cond_expr(cond, env, join_relation, join_target, query_runner)
+                     query_runner: Optional[Any] = None,
+                     exists_runner: Optional[Any] = None) -> int:
+        matched = self.evaluate_cond_expr(
+            cond, env, join_relation, join_target, query_runner, exists_runner)
         count = 0
         for b_name in matched:
             self.update_property(b_name, key, value_raw)
@@ -2239,6 +2365,24 @@ class KarminEngine:
 
         self._subquery_cache[cache_key] = values
         return values
+
+    def _exists_check(self, node: ASTNode, outer_bubble: str) -> bool:
+        saved_env = dict(self.env)
+        saved_cache = dict(self._subquery_cache)
+        self.env = dict(self.env)
+        self.env["$BĄBEL"] = [outer_bubble]
+        self._subquery_cache = {}
+        try:
+            res = node.accept(self)
+            action = res.get("action", "")
+            if action in ("FIND_WHERE", "FIND_REL", "SEARCH", "SET_OP"):
+                return len(res.get("matches", [])) > 0
+            if action == "PROJECT_WHERE":
+                return res.get("count", 0) > 0
+            return False
+        finally:
+            self.env = saved_env
+            self._subquery_cache = saved_cache
 
     def execute(self, script: str, strict: bool = True) -> list:
         results = []
@@ -2545,6 +2689,11 @@ class KarminEngine:
         self.api.require_check(node.key, node.cond)
         return {"status": "ok", "action": "REQUIRE_CHECK", "key": node.key}
 
+    @visit.register(DeleteConstraintNode)
+    def _(self, node):
+        self.api.drop_constraint(node.kind, node.key)
+        return {"status": "ok", "action": "DROP_CONSTRAINT", "kind": node.kind, "key": node.key}
+
     @visit.register(DescribeDatabaseNode)
     def _(self, node):
         data = self.api.describe_database()
@@ -2567,7 +2716,7 @@ class KarminEngine:
     def _(self, node):
         count = self.api.update_where(
             node.key, node.value, node.cond, self.env, node.join_relation, node.join_target,
-            self._subquery_values)
+            self._subquery_values, self._exists_check)
         return {"status": "ok", "action": "UPDATE_WHERE", "key": node.key, "updated_count": count}
 
     @visit.register(RemovePropertyNode)
@@ -2611,7 +2760,7 @@ class KarminEngine:
             node.columns, node.cond, self.env, node.join_relation, node.join_target,
             node.rel_joins,
             node.distinct, node.sort_by, node.sort_desc, node.limit, node.offset,
-            self._subquery_values, self._resolve_join_filter,
+            self._subquery_values, self._exists_check, self._resolve_join_filter,
         )
         return {
             "status": "ok", "action": "PROJECT_WHERE", "columns": node.keys,
@@ -2631,7 +2780,8 @@ class KarminEngine:
     def _(self, node):
         if node.cond:
             matched = self.api.evaluate_cond_expr(
-                node.cond, self.env, node.relation, node.target, self._subquery_values)
+                node.cond, self.env, node.relation, node.target,
+                self._subquery_values, self._exists_check)
         else:
             matched = self.api.find_relation(node.relation, node.target)
         matched = self.api.process_modifiers(matched, node.sort_by, node.sort_desc, node.limit, node.offset)
@@ -2645,7 +2795,8 @@ class KarminEngine:
     @visit.register(ConditionNode)
     def _(self, node):
         matched = self.api.evaluate_cond_expr(
-            node.cond, self.env, node.join_relation, node.join_target, self._subquery_values)
+            node.cond, self.env, node.join_relation, node.join_target,
+            self._subquery_values, self._exists_check)
         matched = self.api.process_modifiers(matched, node.sort_by, node.sort_desc, node.limit, node.offset)
 
         if node.action == "ZNAJDŹ": return {"status": "ok", "action": "FIND_WHERE", "matches": matched}
@@ -2660,7 +2811,8 @@ class KarminEngine:
     @visit.register(AggregateNode)
     def _(self, node):
         matched = self.api.evaluate_cond_expr(
-            node.cond, self.env, node.join_relation, node.join_target, self._subquery_values)
+            node.cond, self.env, node.join_relation, node.join_target,
+            self._subquery_values, self._exists_check)
         matched = self.api.process_modifiers(matched, node.sort_by, node.sort_desc, node.limit, node.offset)
         result = self.api.calculate_aggregate(
             node.action, node.key, matched, node.group_by,

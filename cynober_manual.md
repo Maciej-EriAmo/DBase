@@ -1,10 +1,10 @@
-# Cynober DB — Podręcznik Użytkownika i Składnia KarminQL (v6.3)
+# Cynober DB — Podręcznik Użytkownika i Składnia KarminQL (v6.4)
 
 Cynober DB to relacyjno-grafowa baza danych na termodynamicznym rdzeniu **KarmazynOS**, z transportem **Cynober-Secure-1.2** i warstwą **HSL** (Holographic Session Links). Trzy autorskie elementy — silnik, baza, protokół — opierają się na jednej zasadzie: **struktura wynika z rezonansu stanu sesji**, a nie z zewnętrznych etykiet (adres, certyfikat, ACL).
 
 | Komponent | Wersja | Plik |
 |-----------|--------|------|
-| KarminQL (silnik zapytań) | v6.3 | `cynober_query_engine.py` |
+| KarminQL (silnik zapytań) | v6.4 | `cynober_query_engine.py` |
 | Most pandas | — | `cynober_pandas_bridge.py` |
 | Klient CLI | v1.8.0 | `Cynober_db.py` |
 | Serwer | — | `cynober_server.py` |
@@ -31,7 +31,7 @@ Cynober DB to relacyjno-grafowa baza danych na termodynamicznym rdzeniu **Karmaz
          └──────────────────┬─────────────────────────┘
                             ▼
                    ┌─────────────────┐
-                   │  KarminEngine   │  KarminQL v6.3
+                   │  KarminEngine   │  KarminQL v6.4
                    └────────┬────────┘
                             ▼
                    ┌─────────────────┐
@@ -555,6 +555,35 @@ Angielski alias: `REQUIRE CHECK "RAM" > 0`. Naruszenie przy `WSTRZYKNIJ` / `ZAKT
 WYPISZ "BĄBEL", "Grp", "Score" GDZIE ... SORTUJ WEDŁUG "Grp", "Score" MALEJĄCO
 ZNAJDŹ GDZIE ... SORTUJ WEDŁUG "A", "B" ROSNĄCO
 ```
+
+### EXISTS, CAST, CONCAT i DROP CONSTRAINT (v6.4)
+
+**EXISTS / NOT EXISTS:**
+
+```
+ZNAJDŹ GDZIE "Typ" = "Serwer" ORAZ ISTNIEJE (ZNAJDŹ GDZIE "RAM" > 1000)
+ZNAJDŹ GDZIE NIE ISTNIEJE (ZNAJDŹ GDZIE "RAM" < 0)
+```
+
+Aliasy EN: `EXISTS (…)`, `NOT EXISTS (…)`. Korelacja z bąblem zewnętrznym przez `$BĄBEL` w podzapytaniu.
+
+**CAST i CONCAT w projekcji:**
+
+```
+WYPISZ CAST("Qty" AS INT) JAKO "Qty_num", CONCAT("Imie", " ", "Nazwisko") JAKO "Pełna" GDZIE ...
+```
+
+Typy CAST: `INT`, `FLOAT`, `TEXT`, `BOOL` (oraz polskie: `LICZBA`, `TEKST`, `LOGICZNE`).
+
+**Usuwanie constraints:**
+
+```
+USUŃ WYMAGANIE UNIKALNE "Sku"
+USUŃ WYMAGANIE NIE NULL "Sku"
+USUŃ WYMAGANIE SPRAWDŹ "RAM"
+```
+
+Aliasy EN: `DROP CONSTRAINT UNIQUE "Sku"`, `DROP CONSTRAINT NOT NULL "Sku"`, `DROP CONSTRAINT CHECK "RAM"`.
 
 ### Optymalizacja substratu (v6.1)
 
