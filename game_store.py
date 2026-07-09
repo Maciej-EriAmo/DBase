@@ -128,6 +128,16 @@ class GameStore:
     def flush_world(self) -> dict:
         return self.run_line("ZAPISZ ŚWIAT", strict=True)
 
+    def login(self, user: str, token: str) -> dict:
+        return self.run_line(f'ZALOGUJ "{_esc(user)}" TOKEN "{_esc(token)}"', strict=True)
+
+    def logout(self) -> None:
+        self.run_line("WYLOGUJ", strict=True)
+
+    def whoami(self) -> dict:
+        row = self.run_line("KTO JESTEM", strict=True)
+        return {k: v for k, v in row.items() if k not in ("status", "action")}
+
     def seed_demo_world(self) -> None:
         """NPC, gracz, quest, relacje i pamięć tekstowa (JSON w cechach)."""
         self.run(
@@ -213,12 +223,16 @@ def connect_rpc(
     *,
     world: Optional[str] = None,
     create_world: bool = False,
+    user: Optional[str] = None,
+    token: Optional[str] = None,
 ) -> GameStore:
     from tests.rpc_client import CynoberRpcClient
 
     client = CynoberRpcClient(host=host, port=port)
     client.connect()
     store = GameStore(RpcBackend(client))
+    if user and token:
+        store.login(user, token)
     if world:
         store.select_world(world, create=create_world)
     return store

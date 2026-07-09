@@ -7,7 +7,7 @@ Cynober DB to relacyjno-grafowa baza danych na termodynamicznym rdzeniu **Karmaz
 | KarminQL (silnik zapytań) | v6.9 | `cynober_query_engine.py` |
 | Most pandas | — | `cynober_pandas_bridge.py` |
 | Klient CLI | v1.8.0 | `Cynober_db.py` |
-| Serwer | v7.1 | `cynober_server.py` |
+| Serwer | v7.2 | `cynober_server.py` |
 | Protokół transportu | Cynober-Secure-1.2 | `cynober_rpc.py` |
 | HSL (sesje sieciowe) | HSL-1.1 | `karmazyn_hsl.py` |
 | Handshake / szyfrowanie | KSH-1.2 | `karmazyn_handshake.py` |
@@ -78,7 +78,27 @@ Cynober DB to relacyjno-grafowa baza danych na termodynamicznym rdzeniu **Karmaz
 
 Katalog światów: zmienna `CYNOBER_WORLDS_DIR` lub domyślnie `~/.cynober_worlds/`.
 
-`STATYSTYKI` zwraca m.in. `session_isolated` (true w sandboxie), `world` (nazwa lub null), `persistent_worlds`, `worlds_dir`, `session_label`, `active_sessions`.
+### Auth na światach (v7.2)
+
+Plik `{worlds_dir}/auth.json` z `"enabled": true` włącza kontrolę dostępu. Bez pliku lub z `enabled: false` — zachowanie jak v7.1 (otwarte światy).
+
+| Polecenie | Opis |
+|-----------|------|
+| `ZALOGUJ "user" TOKEN "sekret"` | Logowanie sesji |
+| `WYLOGUJ` | Wylogowanie |
+| `KTO JESTEM` | user, world, role, auth_enabled |
+| `NADAJ "user" ROLĘ "writer" W ŚWIECIE "nazwa"` | Nadanie roli (admin) |
+| `ODEBIERZ "user" Z ŚWIATA "nazwa"` | Odebranie dostępu (admin) |
+| `LISTA UPRAWNIEŃ` | Wszystkie ACL (admin globalny) |
+| `LISTA UPRAWNIEŃ ŚWIATA "nazwa"` | ACL jednego świata |
+
+**Role:** `reader` (odczyt), `writer` (+ zapis), `admin` (+ zarządzanie światem i ACL).
+
+**ACL:** sekcja `"acl"` w `auth.json` — klucz `"*"` = globalnie, klucz nazwy świata = per świat.
+
+Audyt: `{worlds_dir}/audit.log` (JSON lines) — zapis przy operacjach na świecie.
+
+`STATYSTYKI` zwraca m.in. `session_isolated`, `world`, `auth_user`, `auth_role`, `auth_enabled`, `persistent_worlds`, `worlds_dir`.
 
 ---
 
@@ -942,7 +962,7 @@ Skrypt **wieloliniowy** (więcej niż jedna komenda, bez wiodącego `BEGIN`) jes
 
 ## 14. Testy
 
-Projekt zawiera **257 testów** w katalogu `tests/` (stan na serwer v7.1 + KarminQL v6.9). Część wymaga uruchomionego serwera w procesie testowym (harness w `test_server_rpc.py`).
+Projekt zawiera **264 testów** w katalogu `tests/` (stan na serwer v7.1 + KarminQL v6.9). Część wymaga uruchomionego serwera w procesie testowym (harness w `test_server_rpc.py`).
 
 ### Uruchomienie wszystkich testów
 
@@ -981,6 +1001,7 @@ python -m unittest tests.test_v70 -v
 | `tests/test_server_rpc.py` | Tunel TCP end-to-end: HSS+HSL, PSK, QKD, legacy 1.0 |
 | `tests/test_v70.py` | Izolacja sandbox per połączenie RPC (v7.0) |
 | `tests/test_v71.py` | Trwałe światy: współdzielenie, reconnect, LISTA/USUŃ (v7.1) |
+| `tests/test_v72.py` | Auth: ZALOGUJ, role reader/writer/admin, ACL (v7.2) |
 | `tests/test_game_store.py` | GameStore: lokalnie + RPC, trwały świat, izolacja sandbox |
 | `tests/test_client_config.py` | Profile połączeń, argv/env, zapis JSON |
 | `tests/test_rate_limit.py` | Limity połączeń i zapytań na serwerze |
@@ -1025,6 +1046,7 @@ DBase/
 ├── HSL_Paper_v1_1_0_EN.md     ← specyfikacja HSL (teoria)
 ├── cynober_server.py          ← serwer TCP v7.1 (sesje + trwałe światy)
 ├── cynober_worlds.py          ← rejestr światów (.kafd + .meta.json)
+├── cynober_world_auth.py      ← auth.json, role, ACL, audyt (v7.2)
 ├── Cynober_db.py              ← klient CLI v1.8.0
 ├── game_store.py              ← adapter aplikacyjny (gry / RPC)
 ├── cynober_konfigurator.py    ← kreator profili połączenia
@@ -1081,15 +1103,14 @@ DBase/
 | Ograniczenie | Wpływ |
 |--------------|-------|
 | Sandbox = efemeryczna baza | Bez `WYBIERZ ŚWIAT` rozłączenie kasuje stan |
-| Światy bez auth | Współdzielone, ale każdy z tunelem może pisać |
+| Auth opcjonalne | Bez `auth.json` światy są otwarte; z auth — role w ACL |
 | PSK/QKD = hasło sieci | Brak kont użytkowników i ról |
 | Brak HTTP/ODBC | Integracja tylko przez własny klient TCP / Python |
 | HSS N=15 | Prototyp kryptograficzny; podnieść parametry przed ekspozycją na internet |
 
-### Planowany kierunek (v7.2+)
+### Planowany kierunek (v7.3+)
 
-1. **Auth per użytkownik** — tokeny, role, audyt na światach
-2. **Operacje** — metryki, backup/restore E2E, dokumentacja wdrożeniowa
+1. **Operacje** — metryki, backup/restore E2E, dokumentacja wdrożeniowa
 3. **Hardening** — HSS N=256, adapter QKD, opcjonalny TLS overlay
 4. **Replikacja** — gossip / synchronizacja między węzłami
 

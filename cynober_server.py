@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 """
-cynober_server.py — Bezpieczny Serwer Bazy Danych Cynober DB (v7.1)
+cynober_server.py — Bezpieczny Serwer Bazy Danych Cynober DB (v7.2)
 ==========================================================================
 Zastępuje serwer HTTP. Wykorzystuje protokół TCP oraz warstwę kryptograficzną
 z karmazyn_handshake.py (Ring-LWE / ECDH / PBKDF2) do zabezpieczenia zapytań.
 
 v7.0: każde połączenie RPC dostaje własny Store + KarminEngine (izolacja sesji).
 v7.1: trwałe, nazwane światy — WYBIERZ ŚWIAT / UTWÓRZ ŚWIAT (współdzielony stan).
+v7.2: auth na światach — ZALOGUJ, role reader/writer/admin, ACL w auth.json.
 """
 
 from __future__ import annotations
@@ -19,6 +20,18 @@ import time
 
 import karmazyn_kernel as kernel
 from cynober_lambda_bridge import KarminLambdaBridge
+from cynober_world_auth import (
+    ROLE_ADMIN,
+    ROLE_READER,
+    ROLE_WRITER,
+    _GRANT_RE,
+    _LIST_ACL_WORLD_RE,
+    _LOGIN_RE,
+    _REVOKE_RE,
+    get_auth_store,
+    is_read_only_query,
+    is_world_admin_command,
+)
 from cynober_worlds import (
     World,
     WorldRuntime,
@@ -62,6 +75,8 @@ class CynoberFacade:
     def __init__(self, session_label: str = "", registry=None):
         self.session_label = session_label or "anonymous"
         self._registry = registry or get_world_registry()
+        self._auth = get_auth_store(self._registry.base_dir)
+        self._auth_user: str | None = None
         self._ephemeral = WorldRuntime(KarminLambdaBridge(kernel.Store(thermal=True)))
         self._world: World | None = None
         self._lock = threading.Lock()
@@ -83,8 +98,31 @@ class CynoberFacade:
         stripped = query.strip()
         upper = stripped.upper()
 
+        auth_resp = self._try_auth_command(stripped, upper)
+        if auth_resp is not None:
+            return auth_resp
+
+        deny = self._check_permission(stripped, upper)
+        if deny is not None:
+            self._auth.audit(
+                user=self._auth_user,
+                world=self.world_name,
+                action="DENY",
+                query=stripped,
+                allowed=False,
+            )
+            return deny
+
         world_resp = self._try_world_command(stripped, upper)
         if world_resp is not None:
+            if world_resp[0].get("status") == "ok":
+                self._auth.audit(
+                    user=self._auth_user,
+                    world=self.world_name,
+                    action=world_resp[0].get("action", "WORLD"),
+                    query=stripped,
+                    allowed=True,
+                )
             return world_resp
 
         rt = self._runtime()
@@ -92,16 +130,185 @@ class CynoberFacade:
             results = self._execute_on_runtime(rt, stripped, upper)
         if self._world is not None and self._should_mark_dirty(upper, results):
             self._registry.mark_dirty(self._world.name)
+        if self._world is not None and results and results[0].get("status") == "ok":
+            self._auth.audit(
+                user=self._auth_user,
+                world=self.world_name,
+                action=results[0].get("action", "QUERY"),
+                query=stripped,
+                allowed=True,
+            )
         return results
+
+    def _try_auth_command(self, stripped: str, upper: str) -> list | None:
+        m = _LOGIN_RE.match(stripped)
+        if m:
+            user, token = m.group(1), m.group(2)
+            if self._auth.verify_login(user, token):
+                self._auth_user = user
+                return [{"status": "ok", "action": "LOGIN", "user": user}]
+            return [{"status": "error", "message": "Nieprawidłowy użytkownik lub token."}]
+
+        if upper == "WYLOGUJ":
+            self._auth_user = None
+            return [{"status": "ok", "action": "LOGOUT"}]
+
+        if upper == "KTO JESTEM":
+            return [{
+                "status": "ok",
+                "action": "WHOAMI",
+                "user": self._auth_user,
+                "world": self.world_name,
+                "role": self._auth.role_for(self._auth_user, self.world_name),
+                "auth_enabled": self._auth.enabled,
+            }]
+
+        m = _GRANT_RE.match(stripped)
+        if m:
+            target, role, world = m.group(1), m.group(2), m.group(3)
+            try:
+                world = validate_world_name(world)
+                self._auth.grant(self._auth_user or "", target, role, world)
+                return [{
+                    "status": "ok",
+                    "action": "GRANT_ROLE",
+                    "user": target,
+                    "role": role,
+                    "world": world,
+                }]
+            except (ValueError, PermissionError) as e:
+                return [{"status": "error", "message": str(e)}]
+
+        m = _REVOKE_RE.match(stripped)
+        if m:
+            target, world = m.group(1), m.group(2)
+            try:
+                world = validate_world_name(world)
+                self._auth.revoke(self._auth_user or "", target, world)
+                return [{
+                    "status": "ok",
+                    "action": "REVOKE_ROLE",
+                    "user": target,
+                    "world": world,
+                }]
+            except (ValueError, PermissionError) as e:
+                return [{"status": "error", "message": str(e)}]
+
+        if upper == "LISTA UPRAWNIEŃ":
+            if not self._auth.has_min_role(self._auth_user, "*", ROLE_ADMIN):
+                return [{"status": "error", "message": "Wymagana rola admin (globalna)."}]
+            return [{
+                "status": "ok",
+                "action": "LIST_ACL",
+                "grants": self._auth.list_acl(),
+            }]
+
+        m = _LIST_ACL_WORLD_RE.match(stripped)
+        if m:
+            world = validate_world_name(m.group(1))
+            if not self._auth.has_min_role(self._auth_user, world, ROLE_ADMIN):
+                if not self._auth.has_min_role(self._auth_user, "*", ROLE_ADMIN):
+                    return [{"status": "error", "message": f"Brak uprawnień admin w świecie '{world}'."}]
+            return [{
+                "status": "ok",
+                "action": "LIST_ACL",
+                "world": world,
+                "grants": self._auth.list_acl(world),
+            }]
+
+        return None
+
+    def _check_permission(self, stripped: str, upper: str) -> list | None:
+        if not self._auth.enabled:
+            return None
+
+        if upper.startswith("ZALOGUJ") or upper in ("WYLOGUJ", "KTO JESTEM"):
+            return None
+
+        if upper.startswith(("WYBIERZ ŚWIAT", "UTWÓRZ ŚWIAT", "USUŃ ŚWIAT")):
+            return self._check_world_access_command(stripped, upper)
+
+        if self._world is None:
+            if is_world_admin_command(upper):
+                return self._check_world_admin_permission(upper)
+            return None
+
+        if upper == "ODŁĄCZ ŚWIAT":
+            if self._auth.has_min_role(self._auth_user, self._world.name, ROLE_READER):
+                return None
+            return [{"status": "error", "message": "Brak uprawnień do tego świata."}]
+
+        if is_world_admin_command(upper):
+            return self._check_world_admin_permission(upper)
+
+        if is_read_only_query(upper):
+            if not self._auth.has_min_role(self._auth_user, self._world.name, ROLE_READER):
+                return [{"status": "error", "message": "Brak uprawnień do odczytu tego świata."}]
+            return None
+
+        if not self._auth.has_min_role(self._auth_user, self._world.name, ROLE_WRITER):
+            return [{"status": "error", "message": "Brak uprawnień do zapisu w tym świecie (wymagana rola writer)."}]
+        return None
+
+    def _check_world_access_command(self, stripped: str, upper: str) -> list | None:
+        if not self._auth_user:
+            return [{"status": "error", "message": "Wymagane logowanie: ZALOGUJ \"user\" TOKEN \"...\"."}]
+
+        if upper.startswith("UTWÓRZ ŚWIAT"):
+            if not self._auth.has_min_role(self._auth_user, "*", ROLE_ADMIN):
+                return [{"status": "error", "message": "UTWÓRZ ŚWIAT wymaga globalnej roli admin."}]
+            return None
+
+        if upper.startswith("USUŃ ŚWIAT"):
+            m = _WORLD_QUOTED.match(stripped)
+            if m:
+                world = validate_world_name(m.group(1))
+                if not self._auth.has_min_role(self._auth_user, world, ROLE_ADMIN):
+                    return [{"status": "error", "message": f"USUŃ ŚWIAT wymaga roli admin w '{world}'."}]
+            return None
+
+        if upper.startswith("WYBIERZ ŚWIAT"):
+            m = _WORLD_QUOTED.match(stripped)
+            if m:
+                world = validate_world_name(m.group(1))
+                kafd = self._registry.base_dir / f"{world}.kafd"
+                if not kafd.is_file():
+                    if not self._auth.has_min_role(self._auth_user, "*", ROLE_ADMIN):
+                        return [{
+                            "status": "error",
+                            "message": "Tworzenie nowego świata wymaga globalnej roli admin.",
+                        }]
+                elif not self._auth.has_min_role(self._auth_user, world, ROLE_READER):
+                    return [{"status": "error", "message": f"Brak dostępu do świata '{world}'."}]
+            return None
+
+        return None
+
+    def _check_world_admin_permission(self, upper: str) -> list | None:
+        if not self._auth_user:
+            return [{"status": "error", "message": "Wymagane logowanie."}]
+        if self._world and self._auth.has_min_role(self._auth_user, self._world.name, ROLE_ADMIN):
+            return None
+        if self._auth.has_min_role(self._auth_user, "*", ROLE_ADMIN):
+            return None
+        return [{"status": "error", "message": "Wymagana rola admin."}]
 
     def _try_world_command(self, stripped: str, upper: str) -> list | None:
         if upper == "LISTA ŚWIATÓW":
             worlds = self._registry.list_worlds()
+            if self._auth.enabled:
+                if not self._auth_user:
+                    worlds = []
+                else:
+                    allowed = self._auth.worlds_for(self._auth_user)
+                    if allowed is not None:
+                        worlds = [w for w in worlds if w["name"] in allowed]
             return [{
                 "status": "ok",
                 "action": "LIST_WORLDS",
                 "worlds": worlds,
                 "worlds_dir": str(self._registry.base_dir),
+                "auth_enabled": self._auth.enabled,
             }]
 
         if upper == "ODŁĄCZ ŚWIAT":
@@ -210,6 +417,9 @@ class CynoberFacade:
                 "loaded_worlds": self._registry.loaded_count,
                 "active_sessions": _session_manager.active_count,
                 "worlds_dir": str(self._registry.base_dir),
+                "auth_enabled": self._auth.enabled,
+                "auth_user": self._auth_user,
+                "auth_role": self._auth.role_for(self._auth_user, self.world_name),
             }}]
 
         if upper.startswith("TICK"):
@@ -388,10 +598,15 @@ def run_server(host='0.0.0.0', port=8080):
     rl = limiter.cfg
     worlds_dir = get_world_registry().base_dir
     print("=" * 60)
-    print(f"  Cynober DB SECURE Server v7.1 działa na porcie {port}")
+    auth = get_auth_store(worlds_dir)
+    print(f"  Cynober DB SECURE Server v7.2 działa na porcie {port}")
     print("  Nasłuch w standardzie Karmazyn Handshake RPC.")
     print("  Izolacja sesji: osobny executor na każde połączenie TCP.")
     print(f"  Trwałe światy: {worlds_dir}")
+    if auth.enabled:
+        print(f"  Auth światów: WŁĄCZONE ({auth.path})")
+    else:
+        print("  Auth światów: wyłączone (brak auth.json lub enabled=false)")
     if any(rl.values()):
         print(f"  Rate limit: global={rl['max_concurrent_global']} "
               f"ip={rl['max_connections_per_ip']} "

@@ -9,7 +9,7 @@ Relacyjno-grafowa baza danych na termodynamicznym rdzeniu **KarmazynOS**, z tran
 | Komponent | Wersja | Plik |
 |-----------|--------|------|
 | KarminQL | v6.9 | `cynober_query_engine.py` |
-| Serwer RPC | v7.1 | `cynober_server.py` |
+| Serwer RPC | v7.2 | `cynober_server.py` |
 | Klient CLI | v1.8.0 | `Cynober_db.py` |
 | Protokół | Cynober-Secure-1.2 | `cynober_rpc.py` |
 | GameStore (adapter aplikacyjny) | — | `game_store.py` |
@@ -31,7 +31,7 @@ Pełna składnia i API: [`cynober_manual.md`](cynober_manual.md)
 | **Analityka / ETL** | KarminQL + `read_karmin()` → pandas, CSV, `.kafd` | ★★★★☆ |
 | **Zdalny dostęp (sandbox)** | CLI lub własny klient RPC przez tunel HSS+HSL | ★★★★☆ |
 | **Gry / pamięć narracyjna** | `GameStore` + demo — NPC, questy, graf, termodynamika | ★★★★★ |
-| **Wspólna baza zespołu** | Trwałe światy v7.1 (`WYBIERZ ŚWIAT`); auth per użytkownik — planowane | ★★★☆☆ |
+| **Wspólna baza zespołu** | Trwałe światy v7.1 + auth/role v7.2 (`ZALOGUJ`, reader/writer/admin) | ★★★★☆ |
 
 ## Co widać w demo, a co nie
 
@@ -112,7 +112,7 @@ python -m unittest discover -s tests -v
 python -m pytest tests/ -q
 ```
 
-Stan: **257 testów** (kernel, KarminQL v6.0–v6.9, HSS, HSL, RPC, sesje v7.0, światy v7.1, GameStore).
+Stan: **264 testów** (kernel, KarminQL v6.0–v6.9, HSS, HSL, RPC, sesje v7.0, światy v7.1, GameStore).
 
 ## Status i ograniczenia
 
