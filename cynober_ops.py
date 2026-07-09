@@ -33,7 +33,7 @@ def _load_meta(path: Path) -> dict:
     except (OSError, json.JSONDecodeError):
         return {}
 
-SERVER_VERSION = "8.0"
+SERVER_VERSION = "8.0.1"
 
 _BACKUP_WORLD_RE = re.compile(
     r'^KOPIA\s+ZAPASOWA\s+ŚWIATA\s+"([^"]+)"$',
