@@ -7,7 +7,7 @@ Cynober DB to relacyjno-grafowa baza danych na termodynamicznym rdzeniu **Karmaz
 | KarminQL (silnik zapytań) | v6.9 | `cynober_query_engine.py` |
 | Most pandas | — | `cynober_pandas_bridge.py` |
 | Klient CLI | v1.8.0 | `Cynober_db.py` |
-| Serwer | v7.0 | `cynober_server.py` |
+| Serwer | v7.1 | `cynober_server.py` |
 | Protokół transportu | Cynober-Secure-1.2 | `cynober_rpc.py` |
 | HSL (sesje sieciowe) | HSL-1.1 | `karmazyn_hsl.py` |
 | Handshake / szyfrowanie | KSH-1.2 | `karmazyn_handshake.py` |
@@ -61,13 +61,24 @@ Cynober DB to relacyjno-grafowa baza danych na termodynamicznym rdzeniu **Karmaz
 
 > **Uwaga:** Serwer **nie** udostępnia HTTP. Transport to wyłącznie TCP z protokołem Karmazyn (HSS + HSL).
 
-### Izolacja sesji (v7.0)
+### Izolacja sesji (v7.0) i trwałe światy (v7.1)
 
-Każde połączenie TCP po handshake dostaje **własny** `Store` + `KarminEngine` (`CynoberFacade`). Dane jednego klienta nie są widoczne dla innego. Po rozłączeniu stan sesji jest zwalniany z pamięci.
+**Tryb domyślny (sandbox):** każde połączenie TCP dostaje **własny** efemeryczny `Store` + `KarminEngine`. Dane jednego klienta nie są widoczne dla innego. Po rozłączeniu stan jest zwalniany.
 
-`STATYSTYKI` zwraca m.in. `session_isolated: true`, `session_label` (z `session_id` handshake) oraz `active_sessions` (liczba otwartych tuneli).
+**Tryb świata (v7.1):** po `WYBIERZ ŚWIAT "nazwa"` sesja dołącza do **współdzielonego**, **trwałego** stanu zapisanego na dysku (`~/.cynober_worlds/nazwa.kafd`). Wiele klientów może pracować na tym samym świecie; po reconnect dane nadal są dostępne.
 
-Nowe połączenie = pusta baza (chyba że wczytasz zrzut `WCZYTAJ` w tej sesji).
+| Polecenie | Opis |
+|-----------|------|
+| `LISTA ŚWIATÓW` | Katalog światów (dysk + załadowane) |
+| `UTWÓRZ ŚWIAT "nazwa"` | Nowy pusty świat (błąd gdy istnieje) |
+| `WYBIERZ ŚWIAT "nazwa"` | Dołącz do świata (tworzy pusty, jeśli brak na dysku) |
+| `ODŁĄCZ ŚWIAT` | Powrót do efemerycznego sandboxa |
+| `ZAPISZ ŚWIAT` | Wymuszenie zapisu aktywnego świata |
+| `USUŃ ŚWIAT "nazwa"` | Usuwa pliki świata (gdy brak aktywnych sesji) |
+
+Katalog światów: zmienna `CYNOBER_WORLDS_DIR` lub domyślnie `~/.cynober_worlds/`.
+
+`STATYSTYKI` zwraca m.in. `session_isolated` (true w sandboxie), `world` (nazwa lub null), `persistent_worlds`, `worlds_dir`, `session_label`, `active_sessions`.
 
 ---
 
@@ -224,11 +235,12 @@ df = read_karmin(engine, 'WYPISZ "BĄBEL", "Qty" GDZIE "Qty" > 0')
 | Backend | Użycie |
 |---------|--------|
 | `connect_local()` | Testy, dev bez serwera (in-process `KarminEngine`) |
-| `connect_rpc(host, port)` | Produkcja demo — jedna sesja TCP = izolowany świat (v7.0) |
+| `connect_rpc(host, port, world=…)` | RPC; opcjonalnie `WYBIERZ ŚWIAT` przy połączeniu (v7.1) |
 
 ```bash
 python cynober_server.py                              # terminal 1
-python examples/game_memory_demo.py                     # przez RPC (profil ~/.karmazyn_client.json)
+python examples/game_memory_demo.py                     # sandbox RPC (efemeryczny)
+python examples/game_memory_demo.py --world rivendell --create-world  # trwały świat
 python examples/game_memory_demo.py --local           # bez serwera
 python examples/game_memory_demo.py --host IP --port 8080
 ```
@@ -245,14 +257,15 @@ Główne metody `GameStore`:
 | `search_resonance(query)` | HRR: `SZUKAJ` — najlepiej na krótkich etykietach atomów (`Klucz`) |
 | `excite(bubble, energy)` | `WZBUDŹ` — podbija temperaturę atomów |
 | `tick(cycles)` | Cykle termodynamiczne (serwer: `TICK`; lokalnie: emulacja w `LocalBackend`) |
-| `stats()` | `STATYSTYKI` (na serwerze: `session_isolated`, `session_label`) |
+| `list_worlds()` / `select_world()` / `detach_world()` | Zarządzanie trwałymi światami (v7.1) |
+| `stats()` | `STATYSTYKI` (`world`, `session_isolated`, `session_label`) |
 
 Przykład integracji w aplikacji:
 
 ```python
 from game_store import connect_rpc, connect_local
 
-store = connect_rpc("127.0.0.1", 8080)
+store = connect_rpc("127.0.0.1", 8080, world="rivendell", create_world=True)
 try:
     store.seed_demo_world()
     print(store.find_npcs())           # ['Gandalf']
@@ -441,10 +454,13 @@ Dostępne tylko przez tunel (klient lub RPC), obsługiwane w `cynober_server.py`
 
 | Polecenie | Opis |
 |-----------|------|
-| `STATYSTYKI` | Atomy (hot/cold/reaped), bąble; v7.0: `session_isolated`, `session_label`, `active_sessions` |
+| `STATYSTYKI` | Atomy, bąble; `world`, `session_isolated`, `persistent_worlds`, `worlds_dir` |
+| `LISTA ŚWIATÓW` | Katalog trwałych światów (v7.1) |
+| `UTWÓRZ / WYBIERZ / ODŁĄCZ / USUŃ ŚWIAT` | Zarządzanie trwałymi światami (v7.1) |
+| `ZAPISZ ŚWIAT` | Zapis aktywnego świata na dysk |
 | `TICK [n]` | `n` cykli termodynamicznych (domyślnie 1) |
-| `ZAPISZ [ścieżka]` | Zapis do `.kafd` (domyślnie `zrzut_cynober.kafd`) — stan **tej sesji** |
-| `WCZYTAJ [ścieżka]` | Wczytanie z `.kafd` (domyślnie `zrzut_cynober.kafd`) — stan **tej sesji** |
+| `ZAPISZ [ścieżka]` | Zapis do `.kafd`; w świecie bez ścieżki → `ZAPISZ ŚWIAT` |
+| `WCZYTAJ [ścieżka]` | Wczytanie z `.kafd` do bieżącego kontekstu (sandbox lub świat) |
 
 Przykład sesji:
 
@@ -926,7 +942,7 @@ Skrypt **wieloliniowy** (więcej niż jedna komenda, bez wiodącego `BEGIN`) jes
 
 ## 14. Testy
 
-Projekt zawiera **249 testów** w katalogu `tests/` (stan na serwer v7.0 + KarminQL v6.9). Część wymaga uruchomionego serwera w procesie testowym (harness w `test_server_rpc.py`).
+Projekt zawiera **257 testów** w katalogu `tests/` (stan na serwer v7.1 + KarminQL v6.9). Część wymaga uruchomionego serwera w procesie testowym (harness w `test_server_rpc.py`).
 
 ### Uruchomienie wszystkich testów
 
@@ -963,8 +979,9 @@ python -m unittest tests.test_v70 -v
 | `tests/test_cynober_rpc.py` | Kodeki RPC, caps 1.2, PSK, anty-replay, wybór trybu hss |
 | `tests/test_hsl_session.py` | Φ², PrismMask, HSL link, AAD, QKD seed, kolaps przy złym kluczu |
 | `tests/test_server_rpc.py` | Tunel TCP end-to-end: HSS+HSL, PSK, QKD, legacy 1.0 |
-| `tests/test_v70.py` | Izolacja Store per połączenie RPC (v7.0) |
-| `tests/test_game_store.py` | GameStore: lokalnie + RPC, izolacja światów między sesjami |
+| `tests/test_v70.py` | Izolacja sandbox per połączenie RPC (v7.0) |
+| `tests/test_v71.py` | Trwałe światy: współdzielenie, reconnect, LISTA/USUŃ (v7.1) |
+| `tests/test_game_store.py` | GameStore: lokalnie + RPC, trwały świat, izolacja sandbox |
 | `tests/test_client_config.py` | Profile połączeń, argv/env, zapis JSON |
 | `tests/test_rate_limit.py` | Limity połączeń i zapytań na serwerze |
 | `tests/rpc_client.py` | Pomocniczy klient RPC dla testów integracyjnych |
@@ -976,7 +993,7 @@ python -m unittest tests.test_v70 -v
 * `WCZYTAJ` przez RPC end-to-end (implementacja w serwerze jest; brak dedykowanych testów integracyjnych).
 * Wizualizacja `WYKRES` (plotly).
 * Uwierzytelnienie użytkownika (konta, ACL poza PSK sieci).
-* Trwałe, współdzielone światy na serwerze (planowane v7.1).
+* Auth per użytkownik na współdzielonych światach (planowane).
 
 ### Dodawanie nowych testów
 
@@ -1006,7 +1023,8 @@ DBase/
 ├── README.md                  ← szybki start i status projektu
 ├── cynober_manual.md          ← ten podręcznik
 ├── HSL_Paper_v1_1_0_EN.md     ← specyfikacja HSL (teoria)
-├── cynober_server.py          ← serwer TCP v7.0 (izolacja sesji)
+├── cynober_server.py          ← serwer TCP v7.1 (sesje + trwałe światy)
+├── cynober_worlds.py          ← rejestr światów (.kafd + .meta.json)
 ├── Cynober_db.py              ← klient CLI v1.8.0
 ├── game_store.py              ← adapter aplikacyjny (gry / RPC)
 ├── cynober_konfigurator.py    ← kreator profili połączenia
@@ -1033,10 +1051,10 @@ DBase/
 │   ├── analyst_demo.py        ← pandas + JOIN (analityka)
 │   └── game_memory_demo.py    ← pamięć gry przez RPC / --local
 ├── requirements.txt           ← zależności opcjonalne
-├── tests/                     ← 249 testów
+├── tests/                     ← 257 testów
 │   ├── test_kernel.py … test_karminql.py
 │   ├── test_sql_closure.py, test_v62.py … test_v69.py
-│   ├── test_v70.py, test_game_store.py
+│   ├── test_v70.py, test_v71.py, test_game_store.py
 │   ├── test_hss_handshake.py, test_hsl_session.py
 │   ├── test_cynober_rpc.py, test_server_rpc.py
 │   ├── test_client_config.py, test_rate_limit.py
@@ -1053,27 +1071,27 @@ DBase/
 | Obszar | Opis |
 |--------|------|
 | **Silnik** | KarminQL v6.9 — bogaty dialekt zapytań, transakcje, JSON, EXPLAIN, indeksy |
-| **Sieć** | Tunel HSS + HSL, profile klienta, rate limit, izolacja sesji v7.0 |
+| **Sieć** | Tunel HSS + HSL, profile klienta, rate limit, sandbox v7.0, trwałe światy v7.1 |
 | **Analityka** | pandas, CSV, `.kafd`, `examples/analyst_demo.py` |
 | **Aplikacje** | `GameStore` + demo gry przez RPC lub lokalnie |
-| **Jakość** | 249 testów jednostkowych i integracyjnych |
+| **Jakość** | 257 testów jednostkowych i integracyjnych |
 
 ### Ograniczenia (prototyp → produkcja)
 
 | Ograniczenie | Wpływ |
 |--------------|-------|
-| Sesja = efemeryczna baza | Rozłączenie kasuje stan (chyba że `ZAPISZ` w tej sesji) |
-| Brak współdzielonych światów | Zespół nie ma jednej wspólnej bazy na serwerze |
+| Sandbox = efemeryczna baza | Bez `WYBIERZ ŚWIAT` rozłączenie kasuje stan |
+| Światy bez auth | Współdzielone, ale każdy z tunelem może pisać |
 | PSK/QKD = hasło sieci | Brak kont użytkowników i ról |
 | Brak HTTP/ODBC | Integracja tylko przez własny klient TCP / Python |
 | HSS N=15 | Prototyp kryptograficzny; podnieść parametry przed ekspozycją na internet |
 
-### Planowany kierunek (v7.1+)
+### Planowany kierunek (v7.2+)
 
-1. **Trwałe, nazwane światy** na serwerze — współdzielone bazy, wznowienie po reconnect
-2. **Auth per użytkownik** — tokeny, role, audyt
-3. **Operacje** — metryki, backup/restore przetestowany E2E, dokumentacja wdrożeniowa
-4. **Hardening** — HSS N=256, adapter QKD, opcjonalny TLS overlay
+1. **Auth per użytkownik** — tokeny, role, audyt na światach
+2. **Operacje** — metryki, backup/restore E2E, dokumentacja wdrożeniowa
+3. **Hardening** — HSS N=256, adapter QKD, opcjonalny TLS overlay
+4. **Replikacja** — gossip / synchronizacja między węzłami
 
 ### Pliki tożsamości węzła (poza repozytorium)
 

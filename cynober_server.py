@@ -1,19 +1,32 @@
 #!/usr/bin/env python3
 """
-cynober_server.py — Bezpieczny Serwer Bazy Danych Cynober DB (v7.0)
+cynober_server.py — Bezpieczny Serwer Bazy Danych Cynober DB (v7.1)
 ==========================================================================
 Zastępuje serwer HTTP. Wykorzystuje protokół TCP oraz warstwę kryptograficzną
 z karmazyn_handshake.py (Ring-LWE / ECDH / PBKDF2) do zabezpieczenia zapytań.
 
 v7.0: każde połączenie RPC dostaje własny Store + KarminEngine (izolacja sesji).
+v7.1: trwałe, nazwane światy — WYBIERZ ŚWIAT / UTWÓRZ ŚWIAT (współdzielony stan).
 """
 
+from __future__ import annotations
+
 import os
+import re
 import socket
 import threading
 import time
+
 import karmazyn_kernel as kernel
 from cynober_lambda_bridge import KarminLambdaBridge
+from cynober_worlds import (
+    World,
+    WorldRuntime,
+    get_world_registry,
+    load_runtime_from_kafd,
+    save_runtime_to_kafd,
+    validate_world_name,
+)
 
 from cynober_rpc import (
     HS_TIMEOUT_SEC,
@@ -31,80 +44,237 @@ from cynober_rate_limit import (
 )
 from karmazyn_handshake import _CryptoLayer, _recv_frame
 
+_MUTATING_PREFIXES = (
+    "UTRWAL", "WSTRZYKNIJ", "ZAKTUALIZUJ", "USUŃ", "POŁĄCZ", "ROZŁĄCZ",
+    "UTWÓRZ", "PRZEMIANUJ", "IMPORT", "EKSPORT", "SCAL", "BEGIN", "COMMIT",
+    "ROLLBACK", "TICK", "WCZYTAJ", "ZAPISZ", "UTWÓRZ INDEKS", "USUŃ INDEKS",
+    "UTWÓRZ WIDOK", "USUŃ WIDOK", "WYMAGAJ", "USUŃ WYMAGANIE",
+)
+_WORLD_QUOTED = re.compile(
+    r'^(?:WYBIERZ|UTWÓRZ|USUŃ)\s+ŚWIAT\s+"([^"]+)"$',
+    re.IGNORECASE,
+)
+
+
 class CynoberFacade:
-    def __init__(self, session_label: str = ""):
+    """Executor zapytań jednej sesji RPC — efemeryczny lub podłączony do świata."""
+
+    def __init__(self, session_label: str = "", registry=None):
         self.session_label = session_label or "anonymous"
-        self.bridge = KarminLambdaBridge(kernel.Store(thermal=True))
-        self.store = self.bridge.store
-        self.engine = self.bridge.engine
+        self._registry = registry or get_world_registry()
+        self._ephemeral = WorldRuntime(KarminLambdaBridge(kernel.Store(thermal=True)))
+        self._world: World | None = None
         self._lock = threading.Lock()
+
+    @property
+    def world_name(self) -> str | None:
+        return self._world.name if self._world else None
+
+    def _runtime(self):
+        if self._world is not None:
+            return self._world.runtime
+        return self._ephemeral
 
     def execute(self, query: str) -> list:
         with self._lock:
             return self._execute_unlocked(query)
 
     def _execute_unlocked(self, query: str) -> list:
-        if self.bridge.is_lambda_line(query):
-            return [self.bridge.eval_line(query)]
+        stripped = query.strip()
+        upper = stripped.upper()
 
-        upper_query = query.strip().upper()
-        if upper_query == "STATYSTYKI":
-            stats = self.store.stats()
-            return [{"status": "ok", "action": "STATS", "data": {
-                "total_atoms": stats['total'], "hot": stats['hot'], "cold": stats['cold'],
-                "reaped": stats['reaped'], "bubbles": len(self.engine.api._bubble_index),
-                "session_label": self.session_label,
-                "session_isolated": True,
-                "active_sessions": _session_manager.active_count,
-            }}]
-        if upper_query.startswith("TICK"):
-            parts = upper_query.split()
-            n = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else 1
-            self.store.settle(n)
-            return [{"status": "ok", "action": "TICK", "cycles": n}]
-        if upper_query.startswith("ZAPISZ"):
-            parts = query.split()
-            path = parts[1] if len(parts) > 1 else "zrzut_cynober.kafd"
-            import karmazyn_store
-            syn_ids = []
+        world_resp = self._try_world_command(stripped, upper)
+        if world_resp is not None:
+            return world_resp
+
+        rt = self._runtime()
+        with rt.lock:
+            results = self._execute_on_runtime(rt, stripped, upper)
+        if self._world is not None and self._should_mark_dirty(upper, results):
+            self._registry.mark_dirty(self._world.name)
+        return results
+
+    def _try_world_command(self, stripped: str, upper: str) -> list | None:
+        if upper == "LISTA ŚWIATÓW":
+            worlds = self._registry.list_worlds()
+            return [{
+                "status": "ok",
+                "action": "LIST_WORLDS",
+                "worlds": worlds,
+                "worlds_dir": str(self._registry.base_dir),
+            }]
+
+        if upper == "ODŁĄCZ ŚWIAT":
+            if self._world is None:
+                return [{"status": "error", "message": "Sesja nie jest podłączona do świata."}]
+            name = self._world.name
+            self._registry.release(name)
+            self._world = None
+            self._ephemeral = WorldRuntime(KarminLambdaBridge(kernel.Store(thermal=True)))
+            return [{"status": "ok", "action": "DETACH_WORLD", "world": name}]
+
+        if upper == "ZAPISZ ŚWIAT":
+            if self._world is None:
+                return [{"status": "error", "message": "Brak aktywnego świata (użyj WYBIERZ ŚWIAT)."}]
             try:
-                for nazwa, b in self.engine.api._bubble_index.items():
-                    syn = self.store.atom_new(S="__bubble__", E=nazwa, value=nazwa)
-                    syn.metadata["bindings"] = b.bindings
-                    syn_ids.append(syn.id)
-                aktywne_typy = list(set(a.S for a in self.store.reg.atoms() if a.S))
-                if "__bubble__" not in aktywne_typy: aktywne_typy.append("__bubble__")
-                zapisane = karmazyn_store.save_documents(self.store, path, kinds=aktywne_typy)
-                return [{"status": "ok", "action": "SAVE", "file": path, "saved": zapisane}]
+                info = self._registry.flush(self._world.name)
+                return [{"status": "ok", "action": "SAVE_WORLD", **info}]
+            except ValueError as e:
+                return [{"status": "error", "message": str(e)}]
+
+        m = _WORLD_QUOTED.match(stripped)
+        if m:
+            name = validate_world_name(m.group(1))
+            cmd = upper.split()[0]
+            try:
+                if cmd == "WYBIERZ":
+                    return self._attach_world(name, create_if_missing=True)
+                if cmd == "UTWÓRZ":
+                    return self._attach_world(name, create_if_missing=False, force_create=True)
+                if cmd == "USUŃ":
+                    return self._delete_world(name)
+            except ValueError as e:
+                return [{"status": "error", "message": str(e)}]
+
+        return None
+
+    def _attach_world(
+        self,
+        name: str,
+        *,
+        create_if_missing: bool = False,
+        force_create: bool = False,
+    ) -> list:
+        if self._world is not None:
+            if self._world.name == name:
+                return [{
+                    "status": "ok",
+                    "action": "ATTACH_WORLD",
+                    "world": name,
+                    "already_attached": True,
+                }]
+            self._registry.release(self._world.name)
+            self._world = None
+
+        if force_create:
+            world = self._registry.create(name)
+        else:
+            kafd = self._registry.base_dir / f"{name}.kafd"
+            if not kafd.is_file() and not create_if_missing:
+                return [{
+                    "status": "error",
+                    "message": f"Świat '{name}' nie istnieje. Użyj UTWÓRZ ŚWIAT lub WYBIERZ z nową nazwą.",
+                }]
+            world = self._registry.attach(name)
+            if not kafd.is_file():
+                self._registry.mark_dirty(name)
+
+        self._world = world
+        bubbles = len(world.runtime.engine.api._bubble_index)
+        return [{
+            "status": "ok",
+            "action": "ATTACH_WORLD",
+            "world": name,
+            "bubbles": bubbles,
+            "created": force_create or bubbles == 0,
+        }]
+
+    def _delete_world(self, name: str) -> list:
+        if self._world is not None and self._world.name == name:
+            self._registry.release(name)
+            self._world = None
+            self._ephemeral = WorldRuntime(KarminLambdaBridge(kernel.Store(thermal=True)))
+        try:
+            self._registry.delete(name)
+        except ValueError as e:
+            return [{"status": "error", "message": str(e)}]
+        return [{"status": "ok", "action": "DELETE_WORLD", "world": name}]
+
+    def _execute_on_runtime(self, rt, query: str, upper: str) -> list:
+        bridge = rt.bridge
+        if bridge.is_lambda_line(query):
+            return [bridge.eval_line(query)]
+
+        if upper == "STATYSTYKI":
+            stats = bridge.store.stats()
+            return [{"status": "ok", "action": "STATS", "data": {
+                "total_atoms": stats["total"],
+                "hot": stats["hot"],
+                "cold": stats["cold"],
+                "reaped": stats["reaped"],
+                "bubbles": len(bridge.engine.api._bubble_index),
+                "session_label": self.session_label,
+                "session_isolated": self._world is None,
+                "world": self.world_name,
+                "persistent_worlds": self._registry.persistent_count,
+                "loaded_worlds": self._registry.loaded_count,
+                "active_sessions": _session_manager.active_count,
+                "worlds_dir": str(self._registry.base_dir),
+            }}]
+
+        if upper.startswith("TICK"):
+            parts = upper.split()
+            n = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else 1
+            bridge.store.settle(n)
+            return [{"status": "ok", "action": "TICK", "cycles": n}]
+
+        if upper.startswith("ZAPISZ"):
+            parts = query.split(maxsplit=1)
+            path = parts[1].strip() if len(parts) > 1 else "zrzut_cynober.kafd"
+            if self._world is not None and path in ("", "zrzut_cynober.kafd"):
+                info = self._registry.flush(self._world.name)
+                return [{"status": "ok", "action": "SAVE_WORLD", **info}]
+            try:
+                saved = save_runtime_to_kafd(bridge, path)
+                return [{"status": "ok", "action": "SAVE", "file": path, "saved": saved}]
             except Exception as e:
                 return [{"status": "error", "message": f"Błąd zapisu: {e}"}]
-            finally:
-                for sid in syn_ids:
-                    self.store.reg.delete(sid)
-        if upper_query.startswith("WCZYTAJ"):
-            parts = query.split()
-            path = parts[1] if len(parts) > 1 else "zrzut_cynober.kafd"
+
+        if upper.startswith("WCZYTAJ"):
+            parts = query.split(maxsplit=1)
+            path = parts[1].strip() if len(parts) > 1 else "zrzut_cynober.kafd"
             try:
-                import karmazyn_store
-                wczytane = karmazyn_store.load_documents(self.store, path)
-                for a in list(self.store.reg.atoms()):
-                    if a.S == "__bubble__":
-                        nazwa = a.E
-                        if nazwa not in self.engine.api._bubble_index:
-                            b = self.store.bubble_new(label=nazwa)
-                            b.bindings = a.metadata.get("bindings", {})
-                            self.store.set_root(b)
-                            self.engine.api._bubble_index[nazwa] = b
-                        self.store.reg.delete(a.id)
-                return [{"status": "ok", "action": "LOAD", "file": path, "loaded": wczytane}]
+                loaded = load_runtime_from_kafd(bridge, path)
+                return [{"status": "ok", "action": "LOAD", "file": path, "loaded": loaded}]
             except Exception as e:
                 return [{"status": "error", "message": f"Błąd odczytu: {e}"}]
 
-        return self.engine.execute(query, strict=False)
+        return bridge.engine.execute(query, strict=False)
+
+    @staticmethod
+    def _should_mark_dirty(upper: str, results: list) -> bool:
+        if any(r.get("status") == "error" for r in results):
+            return False
+        if upper.startswith("WYJAŚNIJ") or upper.startswith("EXPLAIN"):
+            return False
+        if upper.startswith("POKAŻ") or upper.startswith("ZNAJDŹ") or upper.startswith("WYPISZ"):
+            return False
+        if upper.startswith("POLICZ") or upper == "STATYSTYKI" or upper == "OPISZ BAZĘ":
+            return False
+        if upper.startswith("SZUKAJ"):
+            return False
+        for prefix in _MUTATING_PREFIXES:
+            if upper.startswith(prefix):
+                return True
+        for r in results:
+            action = r.get("action", "")
+            if action and action not in (
+                "SHOW", "FIND_WHERE", "PROJECT_WHERE", "SEARCH", "DESCRIBE_DB",
+                "EXPLAIN", "STATS", "AGGREGATE_COUNT", "AGGREGATE_SUM",
+                "AGGREGATE_AVG", "AGGREGATE_MIN", "AGGREGATE_MAX",
+            ):
+                if not str(action).startswith("AGGREGATE_"):
+                    return True
+        return False
+
+    def close(self) -> None:
+        if self._world is not None:
+            self._registry.release(self._world.name)
+            self._world = None
 
 
 class SessionManager:
-    """Rejestr aktywnych sesji RPC — osobny CynoberFacade (Store) na połączenie."""
+    """Rejestr aktywnych sesji RPC — osobny CynoberFacade na połączenie."""
 
     def __init__(self):
         self._lock = threading.Lock()
@@ -204,8 +374,10 @@ def handle_client(conn: socket.socket, addr, query_limit: SessionQueryLimiter | 
             print(f"[Cynober] Odrzucono handshake od {addr}: {e}")
     finally:
         if session_facade is not None:
+            session_facade.close()
             _session_manager.release()
         conn.close()
+
 
 def run_server(host='0.0.0.0', port=8080):
     srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -214,17 +386,19 @@ def run_server(host='0.0.0.0', port=8080):
     srv.listen(5)
     limiter = _get_rate_limiter()
     rl = limiter.cfg
+    worlds_dir = get_world_registry().base_dir
     print("=" * 60)
-    print(f"  Cynober DB SECURE Server v7.0 działa na porcie {port}")
+    print(f"  Cynober DB SECURE Server v7.1 działa na porcie {port}")
     print("  Nasłuch w standardzie Karmazyn Handshake RPC.")
-    print("  Izolacja sesji: osobny Store na każde połączenie TCP.")
+    print("  Izolacja sesji: osobny executor na każde połączenie TCP.")
+    print(f"  Trwałe światy: {worlds_dir}")
     if any(rl.values()):
         print(f"  Rate limit: global={rl['max_concurrent_global']} "
               f"ip={rl['max_connections_per_ip']} "
               f"conn/min={rl['max_new_connections_per_ip_per_min']} "
               f"q/min={rl['max_queries_per_minute']}")
     print("=" * 60)
-    
+
     try:
         while True:
             conn, addr = srv.accept()
@@ -252,6 +426,7 @@ def run_server(host='0.0.0.0', port=8080):
     except KeyboardInterrupt:
         print("\nZamykanie serwera...")
         srv.close()
+
 
 if __name__ == '__main__':
     import sys

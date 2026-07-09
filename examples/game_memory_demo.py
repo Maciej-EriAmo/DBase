@@ -114,6 +114,8 @@ def main() -> int:
     parser.add_argument("--host", help="Host serwera (domyślnie profil aktywny)")
     parser.add_argument("--port", type=int, help="Port serwera")
     parser.add_argument("--profile", help="Profil z ~/.karmazyn_client.json")
+    parser.add_argument("--world", help="Trwały świat na serwerze (WYBIERZ ŚWIAT)")
+    parser.add_argument("--create-world", action="store_true", help="UTWÓRZ ŚWIAT zamiast WYBIERZ")
     args = parser.parse_args()
 
     store: GameStore | None = None
@@ -137,8 +139,16 @@ def main() -> int:
                 host, port, _ = resolve_client_target(argv)
             else:
                 host, port, _ = resolve_client_target([])
-            store = connect_rpc(host, port)
-            run_demo(store, via=f"RPC {host}:{port} (profil: {prof_name})")
+            store = connect_rpc(
+                host,
+                port,
+                world=args.world,
+                create_world=args.create_world,
+            )
+            via = f"RPC {host}:{port} (profil: {prof_name})"
+            if args.world:
+                via += f' | świat: {args.world}'
+            run_demo(store, via=via)
         return 0
     except (ConnectionError, OSError, RuntimeError) as e:
         print(f"\n[!] Nie udało się połączyć z serwerem: {e}", file=sys.stderr)

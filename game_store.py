@@ -113,6 +113,21 @@ class GameStore:
         row = self.run_line("STATYSTYKI", strict=True)
         return row.get("data", {})
 
+    def list_worlds(self) -> List[dict]:
+        row = self.run_line("LISTA ŚWIATÓW", strict=True)
+        return list(row.get("worlds", []))
+
+    def select_world(self, name: str, *, create: bool = False) -> dict:
+        cmd = f'UTWÓRZ ŚWIAT "{_esc(name)}"' if create else f'WYBIERZ ŚWIAT "{_esc(name)}"'
+        row = self.run_line(cmd, strict=True)
+        return row
+
+    def detach_world(self) -> None:
+        self.run_line("ODŁĄCZ ŚWIAT", strict=True)
+
+    def flush_world(self) -> dict:
+        return self.run_line("ZAPISZ ŚWIAT", strict=True)
+
     def seed_demo_world(self) -> None:
         """NPC, gracz, quest, relacje i pamięć tekstowa (JSON w cechach)."""
         self.run(
@@ -192,12 +207,21 @@ POŁĄCZ "Aldric" Z "Gandalf" JAKO "spotkał"
         return {k: v for k, v in row.items() if k not in ("status", "action")}
 
 
-def connect_rpc(host: str = "127.0.0.1", port: int = 8080) -> GameStore:
+def connect_rpc(
+    host: str = "127.0.0.1",
+    port: int = 8080,
+    *,
+    world: Optional[str] = None,
+    create_world: bool = False,
+) -> GameStore:
     from tests.rpc_client import CynoberRpcClient
 
     client = CynoberRpcClient(host=host, port=port)
     client.connect()
-    return GameStore(RpcBackend(client))
+    store = GameStore(RpcBackend(client))
+    if world:
+        store.select_world(world, create=create_world)
+    return store
 
 
 def connect_local(engine: Optional[KarminEngine] = None) -> GameStore:
