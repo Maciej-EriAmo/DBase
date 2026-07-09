@@ -1,4 +1,4 @@
-# Cynober DB — Podręcznik Użytkownika i Składnia KarminQL (v6.9)
+# Cynober DB — Podręcznik Użytkownika i Składnia KarminQL (v8.0)
 
 Cynober DB to relacyjno-grafowa baza danych na termodynamicznym rdzeniu **KarmazynOS**, z transportem **Cynober-Secure-1.2** i warstwą **HSL** (Holographic Session Links). Trzy autorskie elementy — silnik, baza, protokół — opierają się na jednej zasadzie: **struktura wynika z rezonansu stanu sesji**, a nie z zewnętrznych etykiet (adres, certyfikat, ACL).
 
@@ -7,8 +7,9 @@ Cynober DB to relacyjno-grafowa baza danych na termodynamicznym rdzeniu **Karmaz
 | KarminQL (silnik zapytań) | v6.9 | `cynober_query_engine.py` |
 | Most pandas | — | `cynober_pandas_bridge.py` |
 | Klient CLI | v1.8.0 | `Cynober_db.py` |
-| Serwer | v7.6 | `cynober_server.py` |
-| Klient SDK | v7.6 | `cynober_client.py` |
+| Serwer | v8.0.1 | `cynober_server.py` |
+| Klient SDK | v7.7 | `cynober_client.py` |
+| Pakiet PyPI | 8.0.1+ | `cynober-db` |
 | Protokół transportu | Cynober-Secure-1.2 | `cynober_rpc.py` |
 | HSL (sesje sieciowe) | HSL-1.1 | `karmazyn_hsl.py` |
 | Handshake / szyfrowanie | KSH-1.2 | `karmazyn_handshake.py` |
@@ -79,6 +80,53 @@ Cynober DB to relacyjno-grafowa baza danych na termodynamicznym rdzeniu **Karmaz
 
 Katalog światów: zmienna `CYNOBER_WORLDS_DIR` lub domyślnie `~/.cynober_worlds/`.
 
+**Layout dysku (v8.0, sharding włączony):**
+
+```
+~/.cynober_worlds/
+  nazwa.kafd                  # manifest: nagłówki wszystkich atomów + bąble + payload HOT
+  nazwa.meta.json             # query_indexes, user_indexes, shard_index, folded_atoms
+  shards/nazwa/
+    index.json                # regiony grafu rel:* → lista bąbli, atomów, plik
+    region_0.kafd             # payload atomów COLD przypisanych do regionu
+  proca/nazwa/*.pfld          # współdzielone payloady COLD (deduplikacja Proca)
+  backups/nazwa/{id}/         # kopia: .kafd + .meta.json + shards/ + proca/
+  peers.json                  # rejestr węzłów replikacji
+```
+
+### Persystencja i indeksy (v7.8)
+
+| Element | Opis |
+|---------|------|
+| Auto-flush | Co 60s zapisuje światy z flagą `dirty` (`CYNOBER_AUTO_FLUSH_SEC`, domyślnie 60) |
+| `query_indexes` | `inv_index` / `atom_index` utrwalone w `.meta.json` — szybsze `ZNAJDŹ` po restarcie |
+| Proca COLD | Payloady nie-HOT mogą być deduplikowane w `proca/<świat>/` (współdzielone między atomami) |
+| `ZAPISZ ŚWIAT` | Wymusza natychmiastowy zapis; przy rozłączeniu sesji dirty świat też jest zapisywany |
+
+### Lazy load i ROZWIJ (v7.9)
+
+Przy `WYBIERZ ŚWIAT` (gdy `CYNOBER_LAZY_LOAD=1`, domyślnie włączone) serwer wczytuje **manifest** — nagłówki wszystkich atomów, pełny payload tylko dla HOT i `__bubble__`. Atomy COLD są **zwinięte** w RAM (bez `data`).
+
+| Polecenie | Opis |
+|-----------|------|
+| `ROZWIJ "bąbel" PROMIEŃ N` | Dociąga payload zwiniętych atomów w bąblu i sąsiedztwie grafu `rel:*` (domyślnie N=2) |
+| `WYBIERZ ŚWIAT "w" CEL "bąbel" PROMIEŃ N` | Dołącza do świata i od razu rozwija region wokół celu |
+| Auto-unfold | `POKAŻ`, `WSTRZYKNIJ DO`, `UTRWAL`, `ZAKTUALIZUJ W` automatycznie rozwijają potrzebne atomy |
+
+Zmienne: `CYNOBER_LAZY_LOAD` (1/0), `CYNOBER_UNFOLD_RADIUS` (domyślnie 2).
+
+`GameStore`: `select_world(name, cel=…, promien=…)`, `unfold(bubble, promien=…)`.
+
+### Shardy per region grafu (v8.0)
+
+Spójny składnik grafu relacji (`rel:*`) = **region** → osobny plik `region_<n>.kafd`. Manifest `{świat}.kafd` trzyma nagłówki i payload HOT; ciężkie COLD lądują w shardach.
+
+| Zmienna | Efekt |
+|---------|-------|
+| `CYNOBER_SHARDED` | `1` (domyślnie) — zapis manifest + shardy; `0` — jeden monolityczny `.kafd` |
+
+Przy lazy load atomy COLD ze shardów są zwijane; `ROZWIJ` czyta z właściwego pliku wg `shard_index` w meta.
+
 ### Auth na światach (v7.2)
 
 Plik `{worlds_dir}/auth.json` z `"enabled": true` włącza kontrolę dostępu. Bez pliku lub z `enabled: false` — zachowanie jak v7.1 (otwarte światy).
@@ -109,7 +157,7 @@ Metryki i kopie zapasowe trwałych światów. Kopie trafiają do `{worlds_dir}/b
 |-----------|------|---------------------|
 | `ZDROWIE` | Status serwera, wersja, uptime | publiczne |
 | `METRYKI SERWERA` | Liczniki zapytań, sesji, światów, top_actions | publiczne |
-| `KOPIA ZAPASOWA ŚWIATA "nazwa"` | Snapshot `.kafd` (+ meta) | writer+ w świecie |
+| `KOPIA ZAPASOWA ŚWIATA "nazwa"` | Snapshot `.kafd` + meta + `shards/` + `proca/` | writer+ w świecie |
 | `LISTA KOPII ŚWIATA "nazwa"` | Katalog kopii | reader+ w świecie |
 | `PRZYWRÓĆ ŚWIAT "nazwa" Z KOPII "id"` | Przywrócenie z kopii | admin w świecie |
 
@@ -117,7 +165,7 @@ Metryki i kopie zapasowe trwałych światów. Kopie trafiają do `{worlds_dir}/b
 
 Przykład seedu świata CRPG: `python examples/crpg_world_setup.py --world dungeon --create-world`
 
-### Replikacja światów (v7.4)
+### Replikacja światów (v7.4 + manifest-first v8.0)
 
 Synchronizacja trwałych światów między serwerami Cynober (ten sam tunel HSS+HSL). Rejestr węzłów: `{worlds_dir}/peers.json`.
 
@@ -126,10 +174,17 @@ Synchronizacja trwałych światów między serwerami Cynober (ten sam tunel HSS+
 | `LISTA WĘZŁÓW` | Katalog peerów | globalny reader+ |
 | `DODAJ WĘZEŁ "n" HOST "h" PORT 8080` | Rejestracja węzła | globalny admin |
 | `USUŃ WĘZEŁ "n"` | Usunięcie węzła | globalny admin |
-| `PULL ŚWIAT "w" Z "peer"` | Pobranie świata z węzła | admin w świecie |
-| `PUSH ŚWIAT "w" DO "peer"` | Wysłanie świata na węzeł | admin w świecie |
+| `PULL ŚWIAT "w" Z "peer"` | Manifest-first: manifest + meta, potem shardy | admin w świecie |
+| `PUSH ŚWIAT "w" DO "peer"` | Pełny export (manifest + shardy) na węzeł | admin w świecie |
 | `SYNC ŚWIAT "w" Z "peer"` | Sync wg `modified_at` (nowszy wygrywa) | admin w świecie |
-| `EKSPORT ŚWIATA "w"` / `IMPORT ŚWIATA "w" DANE "…"` | Protokół między węzłami | reader+ / admin |
+| `EKSPORT ŚWIATA "w"` | Pełny export (monolit lub manifest + wszystkie shardy) | reader+ |
+| `EKSPORT MANIFEST ŚWIATA "w"` | Tylko manifest + meta + indeks shardów | reader+ |
+| `EKSPORT SHARD ŚWIATA "w" REGION "region_0"` | Pojedynczy plik regionu | reader+ |
+| `IMPORT ŚWIATA "w" DANE "…"` | Import pełnego payloadu | admin |
+| `IMPORT SHARD ŚWIATA "w" REGION "region_0" DANE "…"` | Import jednego sharda | admin |
+| `PULL SHARD ŚWIATA "w" Z "peer" REGION "region_0"` | Pobranie sharda z węzła | admin w świecie |
+
+**Manifest-first (v8.0):** `PULL ŚWIAT` najpierw pobiera manifest i `index.json`, następnie każdy `region_<n>.kafd` osobno — mniejszy pierwszy transfer, shardy na żądanie. `EKSPORT ŚWIATA` nadal zwraca komplet (kompatybilność z v7.4).
 
 Opcjonalnie przy dodawaniu węzła: `UŻYTKOWNIK "repl" TOKEN "sekret"` — logowanie przy połączeniu replikacji.
 
@@ -164,10 +219,21 @@ Profil w `~/.karmazyn_client.json` może zawierać `hss_profile` (jak sekcja `se
 
 ## 2. Szybki start
 
+### Instalacja z PyPI
+
+```bash
+pip install cynober-db          # aktualnie 8.0.1+
+python -m cynober_server        # serwer (gdy Scripts nie ma PATH)
+python -m Cynober_db            # klient CLI
+```
+
+Skróty po dodaniu `Scripts` do PATH: `cynober-server`, `cynober-cli`, `cynober-konfigurator`.
+
 ### Uruchomienie serwera
 
 ```bash
 python cynober_server.py
+# lub: python -m cynober_server
 ```
 
 Serwer nasłuchuje na porcie 8080. Zatrzymanie: `Ctrl+C`.
@@ -337,7 +403,8 @@ Główne metody `GameStore`:
 | `search_resonance(query)` | HRR: `SZUKAJ` — najlepiej na krótkich etykietach atomów (`Klucz`) |
 | `excite(bubble, energy)` | `WZBUDŹ` — podbija temperaturę atomów |
 | `tick(cycles)` | Cykle termodynamiczne (serwer: `TICK`; lokalnie: emulacja w `LocalBackend`) |
-| `list_worlds()` / `select_world()` / `detach_world()` | Zarządzanie trwałymi światami (v7.1) |
+| `list_worlds()` / `select_world(cel=, promien=)` / `detach_world()` | Światy v7.1; lazy unfold przy `cel` (v7.9) |
+| `unfold(bubble, promien=)` | `ROZWIJ` — dociągnięcie payloadu ze shardów (v7.9/v8.0) |
 | `health()` / `server_metrics()` | Zdrowie i metryki serwera (v7.3) |
 | `backup_world()` / `list_backups()` / `restore_world()` | Kopie zapasowe światów (v7.3) |
 | `list_peers()` / `add_peer()` / `pull_world()` / `push_world()` / `sync_world()` | Replikacja (v7.4) |
@@ -500,6 +567,11 @@ Klient wyświetli: `Tunel zabezpieczony (HSS + HSL + QKD)`. Rozjazd seeda międz
 | `CYNOBER_MAX_QUERIES_PER_MIN` | Max zapytań RPC na sesję na minutę |
 | `CYNOBER_MIN_CRYPTO=ecdh` | Odrzuć tryb `simple` w negocjacji |
 | `CYNOBER_FORCE_CRYPTO=hss` | Wymuś konkretny tryb (debug/testy) |
+| `CYNOBER_WORLDS_DIR` | Katalog trwałych światów (domyślnie `~/.cynober_worlds`) |
+| `CYNOBER_LAZY_LOAD` | `1` — manifest przy `WYBIERZ ŚWIAT`; `0` — pełny load |
+| `CYNOBER_UNFOLD_RADIUS` | Domyślny promień `ROZWIJ` w grafie relacji (domyślnie 2) |
+| `CYNOBER_SHARDED` | `1` — zapis manifest + shardy; `0` — jeden plik `.kafd` |
+| `CYNOBER_AUTO_FLUSH_SEC` | Okres auto-flush dirty światów w sekundach (domyślnie 60) |
 
 ### Kompatybilność wsteczna
 
@@ -525,7 +597,7 @@ Klient wyświetli: `Tunel zabezpieczony (HSS + HSL + QKD)`. Rozjazd seeda międz
 * Brak klasycznego PKI (X.509 / TLS) — **świadomy wybór jednego protokołu**; zaufanie z HSL + PSK/QKD, nie z CA. Wzmocnienie w v7.5 (profile, N=256).
 * PSK/QKD to hasło **sieci**; konta użytkowników wymagają `auth.json` (opcjonalne).
 * **DoS** — częściowa ochrona: rate limit połączeń i zapytań (sekcja `server.rate_limit`); flood TCP nadal możliwy przy wielu IP.
-* Brak persystencji między sesjami — po rozłączeniu dane znikają, chyba że zapiszesz `.kafd` w sesji.
+* Sandbox bez świata — po rozłączeniu dane znikają; trwałe światy (`WYBIERZ ŚWIAT`) przetrwają na dysku.
 * Zrzuty `.kafd` — Phi-Cipher (obfuskacja), nie AES z hasłem użytkownika.
 * HSS w tej wersji domyślnie ma **N=15** (prototyp); można podnieść N/Q w `karmazyn_hss.py` bez zmiany protokołu — obecna wartość nie jest równoważna pełnemu Kyber-256.
 
@@ -564,7 +636,10 @@ Dostępne tylko przez tunel (klient lub RPC), obsługiwane w `cynober_server.py`
 | `UTWÓRZ / WYBIERZ / ODŁĄCZ / USUŃ ŚWIAT` | Zarządzanie trwałymi światami (v7.1) |
 | `ZDROWIE` / `METRYKI SERWERA` | Operacje serwera (v7.3) |
 | `KOPIA ZAPASOWA / LISTA KOPII / PRZYWRÓĆ ŚWIAT` | Backup i restore światów (v7.3) |
+| `ROZWIJ "bąbel" PROMIEŃ N` | Lazy unfold — dociągnięcie payloadu COLD (v7.9) |
+| `WYBIERZ ŚWIAT "w" CEL "b" PROMIEŃ N` | Dołączenie + unfold regionu (v7.9) |
 | `LISTA WĘZŁÓW / PULL / PUSH / SYNC ŚWIAT` | Replikacja między serwerami (v7.4) |
+| `EKSPORT MANIFEST / EKSPORT SHARD / PULL SHARD` | Replikacja manifest-first (v8.0) |
 | `ZAPISZ ŚWIAT` | Zapis aktywnego świata na dysk |
 | `TICK [n]` | `n` cykli termodynamicznych (domyślnie 1) |
 | `ZAPISZ [ścieżka]` | Zapis do `.kafd`; w świecie bez ścieżki → `ZAPISZ ŚWIAT` |
@@ -1050,7 +1125,7 @@ Skrypt **wieloliniowy** (więcej niż jedna komenda, bez wiodącego `BEGIN`) jes
 
 ## 14. Testy
 
-Projekt zawiera **283 testów** w katalogu `tests/` (stan na serwer v7.6 + KarminQL v6.9). Część wymaga uruchomionego serwera w procesie testowym (harness w `test_server_rpc.py`).
+Projekt zawiera **313 testów** w katalogu `tests/` (stan na serwer v8.0.1 + KarminQL v6.9). Część wymaga uruchomionego serwera w procesie testowym (harness w `test_server_rpc.py`).
 
 ### Uruchomienie wszystkich testów
 
@@ -1093,6 +1168,10 @@ python -m unittest tests.test_v70 -v
 | `tests/test_v72.py` | Auth: ZALOGUJ, role reader/writer/admin, ACL (v7.2) |
 | `tests/test_v73.py` | Ops: ZDROWIE, METRYKI, backup/restore światów (v7.3) |
 | `tests/test_v74.py` | Replikacja: peers, PUSH/PULL/SYNC E2E (v7.4) |
+| `tests/test_v78.py` | Auto-flush, indeksy w meta, Proca COLD (v7.8) |
+| `tests/test_v79.py` | Lazy manifest, ROZWIJ, WYBIERZ CEL (v7.9) |
+| `tests/test_v80.py` | Shardy per region, manifest-first replikacja (v8.0) |
+| `tests/test_packaging.py` | Weryfikacja listy modułów PyPI (`py-modules`) |
 | `tests/test_cynober_client.py` | Oficjalny klient SDK: connect, context manager (v7.6) |
 | `tests/test_game_store.py` | GameStore: lokalnie + RPC, trwały świat, izolacja sandbox |
 | `tests/test_client_config.py` | Profile połączeń, argv/env, zapis JSON |
@@ -1136,11 +1215,15 @@ DBase/
 ├── README.md                  ← szybki start i status projektu
 ├── cynober_manual.md          ← ten podręcznik
 ├── HSL_Paper_v1_1_0_EN.md     ← specyfikacja HSL (teoria)
-├── cynober_server.py          ← serwer TCP v7.6 (sesje + światy + ops + repl)
-├── cynober_client.py          ← oficjalny klient SDK (v7.6)
+├── cynober_server.py          ← serwer TCP v8.0 (sesje + światy + ops + repl)
+├── cynober_client.py          ← oficjalny klient SDK (v7.7)
+├── cynober_auto_flush.py      ← okresowy zapis dirty światów (v7.8)
 ├── cynober_ops.py             ← metryki, zdrowie, backup światów (v7.3+)
-├── cynober_replicate.py       ← replikacja światów, peers.json (v7.4)
-├── cynober_worlds.py          ← rejestr światów (.kafd + .meta.json)
+├── cynober_replicate.py       ← replikacja manifest-first, peers.json (v7.4/v8.0)
+├── cynober_worlds.py          ← rejestr światów, lazy load, ROZWIJ (v7.9)
+├── cynober_world_shards.py    ← shardy KAFD per region grafu (v8.0)
+├── pyproject.toml             ← pakiet PyPI cynober-db
+├── scripts/publish_pypi.ps1   ← publikacja na pypi.org
 ├── cynober_world_auth.py      ← auth.json, role, ACL, audyt (v7.2)
 ├── Cynober_db.py              ← klient CLI v1.8.0
 ├── game_store.py              ← adapter aplikacyjny (gry / RPC)
@@ -1169,7 +1252,7 @@ DBase/
 │   ├── game_memory_demo.py    ← pamięć gry przez RPC / --local
 │   └── team_connect.py        ← szybki test połączenia zespołu (v7.6)
 ├── requirements.txt           ← zależności opcjonalne
-├── tests/                     ← 283 testów
+├── tests/                     ← 313 testów
 │   ├── test_kernel.py … test_karminql.py
 │   ├── test_sql_closure.py, test_v62.py … test_v69.py
 │   ├── test_v70.py, test_v71.py, test_game_store.py
@@ -1190,9 +1273,11 @@ DBase/
 |--------|------|
 | **Silnik** | KarminQL v6.9 — bogaty dialekt zapytań, transakcje, JSON, EXPLAIN, indeksy |
 | **Sieć** | Tunel HSS + HSL, profile klienta, rate limit, sandbox v7.0, trwałe światy v7.1 |
+| **Persystencja** | Auto-flush v7.8, lazy unfold v7.9, shardy KAFD v8.0, replikacja manifest-first |
+| **Dystrybucja** | PyPI `cynober-db` 8.0.1+ (`pip install cynober-db`) |
 | **Analityka** | pandas, CSV, `.kafd`, `examples/analyst_demo.py` |
 | **Aplikacje** | `GameStore` + demo gry przez RPC lub lokalnie |
-| **Jakość** | 283 testów jednostkowych i integracyjnych |
+| **Jakość** | 313 testów jednostkowych i integracyjnych |
 
 ### Ograniczenia (prototyp → produkcja)
 
@@ -1203,7 +1288,7 @@ DBase/
 | PSK/QKD = hasło sieci | Brak kont użytkowników i ról |
 | Jeden protokół (świadomy wybór) | Brak HTTP/REST/ODBC — integracja przez klienty na Cynober-Secure-1.2 |
 | HSS N=15 (domyślny) | Profile `standard`/`production` dostępne; NTT w v7.5+ |
-| SDK | `cynober_client.py` — docelowo pakiet PyPI + bindingi |
+| SDK | PyPI ✓; opcjonalnie bindingi Go/TypeScript |
 
 ### Mapa drogowa (jeden protokół)
 
@@ -1213,9 +1298,12 @@ DBase/
 |--------|--------|--------|
 | v7.4 ✓ | Replikacja | `PULL`/`PUSH`/`SYNC`, `peers.json` — ten sam RPC między węzłami |
 | v7.5 ✓ (część) | Bezpieczeństwo | Profile HSS `proto`/`standard`/`production`, negocjacja w handshake |
-| **v7.6** ✓ | **Klient SDK** | `cynober_client.py`, `team_connect.py`, `hss_profile` w konfiguratorze |
-| v7.5+ | Bezpieczeństwo (reszta) | Adapter QKD; capability tokens; rotacja epoki; NTT |
-| v7.7+ | Gossip | `karmazyn_gossip.py` — BubbleVFS / phi-space nad RPC |
+| v7.6 ✓ | Klient SDK | `cynober_client.py`, `team_connect.py`, `hss_profile` w konfiguratorze |
+| v7.7 ✓ | Pro | Gossip phi-space, PyPI, capability tokens |
+| v7.8 ✓ | Persystencja | Auto-flush, indeksy w meta, Proca COLD |
+| v7.9 ✓ | Lazy load | Manifest, `ROZWIJ`, `WYBIERZ CEL` |
+| **v8.0** ✓ | **Shardy** | Regiony grafu → `shards/`; `EKSPORT MANIFEST`, `PULL SHARD` |
+| v8.1+ | Gossip pełny | BubbleVFS (.soul) nad RPC |
 
 **Czego nie planujemy:** REST gateway, ODBC, równoległy TLS/HTTP — rozproszyłyby adopcję i osłabiły model HSL jako jedynej warstwy sesji post-kwantowej.
 

@@ -32,7 +32,7 @@ Pełna składnia i API: [`cynober_manual.md`](cynober_manual.md)
 | **Analityka / ETL** | KarminQL + `read_karmin()` → pandas, CSV, `.kafd` | ★★★★☆ |
 | **Zdalny dostęp (sandbox)** | CLI lub własny klient RPC przez tunel HSS+HSL | ★★★★☆ |
 | **Gry / pamięć narracyjna** | `GameStore` + demo — NPC, questy, graf, termodynamika | ★★★★★ |
-| **Wspólna baza zespołu** | Światy v7.1 + auth v7.2 + ops v7.3 + replikacja v7.4 + SDK v7.6 | ★★★★☆ |
+| **Wspólna baza zespołu** | Światy v7.1 + auth + ops + replikacja manifest-first + shardy v8.0 | ★★★★☆ |
 | **CRPG hack and slash** | `crpg_world_setup.py` — seed świata gry na trwałym serwerze | ★★★★★ |
 
 ## Co widać w demo, a co nie
@@ -46,6 +46,8 @@ Pełna składnia i API: [`cynober_manual.md`](cynober_manual.md)
 
 **Poza kadrem (warto przeczytać opis / manual):**
 - **Izolacja sesji v7.0** — domyślnie każde połączenie = pusty sandbox; **trwałe światy v7.1** — `WYBIERZ ŚWIAT` współdzieli stan między klientami i przetrwa reconnect
+- **Lazy unfold v7.9** — przy `WYBIERZ ŚWIAT` ładowany jest manifest; `ROZWIJ` / `CEL` dociąga payload z dysku w promieniu grafu
+- **Shardy v8.0** — COLD payloady per region grafu `rel:*`; replikacja manifest-first (`EKSPORT MANIFEST`, `PULL SHARD`)
 - Rezonans HSL — ramka bez właściwego stanu sesji kończy się błędem GCM (kolaps do szumu)
 - Weryfikacja `qkd_fp` przy rozjazdzie seeda QKD
 - AAD na ramkach RPC, anty-replay (`session_id`, `ts`)
@@ -58,11 +60,13 @@ Wymagania: **Python 3.10+**.
 ### Z PyPI (zalecane dla zespołu)
 
 ```bash
-pip install cynober-db
+pip install cynober-db    # PyPI: cynober-db 8.0.1+
 cynober-server          # terminal 1 — serwer RPC
 cynober-cli             # terminal 2 — klient KarminQL
 cynober-konfigurator    # profile Termux / LAN / firewall
 ```
+
+Bez `Scripts` w PATH: `python -m cynober_server`, `python -m Cynober_db`.
 
 Opcjonalnie analityka i wykresy: `pip install "cynober-db[viz]"`.
 
@@ -123,6 +127,20 @@ Cynober_db.py / GameStore  ◄── TCP :8080, Cynober-Secure-1.2 ──►  cy
                               KarminQL v6.9 → karmazyn_kernel
 ```
 
+### Trwałość światów (v8.0)
+
+```
+~/.cynober_worlds/
+  rivendell.kafd              # manifest (nagłówki + bąble + HOT)
+  rivendell.meta.json         # indeksy zapytań, shard_index, folded_atoms
+  shards/rivendell/
+    index.json                # mapa region → bąble, atomy, plik
+    region_0.kafd             # payload COLD danego regionu grafu
+  proca/rivendell/*.pfld      # deduplikacja semantyczna COLD
+  backups/…                   # kopie (kafd + meta + shards + proca)
+  peers.json                  # węzły replikacji
+```
+
 Szczegóły: [`cynober_manual.md`](cynober_manual.md) · specyfikacja HSL: [`HSL_Paper_v1_1_0_EN.md`](HSL_Paper_v1_1_0_EN.md)
 
 ## Testy
@@ -141,13 +159,13 @@ Projekt jest w **fazie użytkowej dla early adopterów** — działa end-to-end,
 
 **Co działa:**
 - KarminQL v6.9 z rozbudowanym dialektem SQL-owym (JOIN, CTE, okna, JSON, EXPLAIN, indeksy)
-- Serwer v7.6: **izolacja sesji** + **trwałe światy** + **auth/role** + **operacje** + **replikacja** + **SDK klienta** (`cynober_client.py`)
+- Serwer v8.0: **izolacja sesji** + **trwałe światy** + **auth/role** + **ops** + **replikacja manifest-first** + **shardy KAFD** + **lazy unfold**
+- Pakiet PyPI [`cynober-db`](https://pypi.org/project/cynober-db/) 8.0.1+
 - Tunel HSS + HSL + opcjonalny PSK/QKD-seed
-- Trwałość plikowa: `ZAPISZ` / `WCZYTAJ` (`.kafd`) w ramach sesji
+- Trwałość: `ZAPISZ ŚWIAT`, auto-flush co 60s, kopie zapasowe z `shards/` i `proca/`
 - Integracja pandas, CSV, `GameStore` dla gier i prototypów
 
 **Czego brakuje do pełnej produkcji:**
-- Pierwszy upload na **pypi.org** (`scripts/publish_pypi.ps1` — wymaga API token)
 - **Profile HSS w produkcji** — `KARM_HSS_PROFILE=standard|production` (domyślnie `proto` N=15); paper [v2.5](https://github.com/Maciej-EriAmo/holonOs/blob/main/HSS_Paper_v2.5.0_PL.md)
 - PSK/QKD to hasło sieci; konta użytkowników wymagają `auth.json` na serwerze
 - Metadane TCP widoczne; częściowa ochrona DoS (rate limit)
@@ -161,8 +179,11 @@ Projekt jest w **fazie użytkowej dla early adopterów** — działa end-to-end,
 | v7.4 ✓ | Replikacja światów | HA-lite: `PULL`/`PUSH`/`SYNC`, `peers.json` |
 | v7.5 ✓ | Bezpieczeństwo | Profile HSS, QKD adapter, capability tokens, rotacja epoki, NTT |
 | v7.6 ✓ | Klient SDK | `cynober_client.py`, `team_connect.py` |
-| **v7.7** ✓ | **Pro** | Gossip phi-space, `pyproject.toml` (pip), ZDROWIE z metadanymi HSS/QKD |
-| v7.8+ | Gossip pełny | BubbleVFS (.soul) nad RPC |
+| v7.7 ✓ | Pro | Gossip phi-space, PyPI, ZDROWIE z metadanymi HSS/QKD |
+| v7.8 ✓ | Persystencja | Auto-flush dirty, `inv_index`/`atom_index` w meta, Proca COLD |
+| v7.9 ✓ | Lazy load | Manifest przy `WYBIERZ ŚWIAT`, `ROZWIJ` / `CEL` + promień grafu |
+| **v8.0** ✓ | **Shardy** | Regiony grafu → `shards/<świat>/`; replikacja manifest-first |
+| v8.1+ | Gossip pełny | BubbleVFS (.soul) nad RPC |
 
 **Dlaczego nie REST:** HTTP dałby znajome narzędzia, ale drugi silnik transportu i gorsze wykorzystanie HSL. Produktem jest **Cynober end-to-end** — post-quantum oriented tunnel + KarminQL + światy, nie „JSON API obok”.
 
@@ -171,7 +192,7 @@ Projekt jest w **fazie użytkowej dla early adopterów** — działa end-to-end,
 Stack jest warstwowy — można wnieść kawałek bez znajomości całości. Przydatne obszary:
 
 - **Bezpieczeństwo v7.5** — profile HSS N=128/512, NTT, adapter QKD
-- **Klient SDK** — PyPI, opcjonalnie Go/TypeScript na tym samym handshake
+- **Klient SDK** — bindingi Go/TypeScript na tym samym handshake (PyPI ✓)
 - **Gossip** — `karmazyn_gossip.py`, synchronizacja BubbleVFS po istniejącym tunelu
 
 Jeśli chcesz dołączyć — issue, PR albo kontakt przez profil GitHub.
