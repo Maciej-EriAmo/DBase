@@ -116,7 +116,7 @@ python -m unittest discover -s tests -v
 python -m pytest tests/ -q
 ```
 
-Stan: **274 testów** (kernel, KarminQL v6.0–v6.9, HSS, HSL, RPC, sesje v7.0–v7.4, GameStore).
+Stan: **280 testów** (kernel, KarminQL v6.0–v6.9, HSS, HSL, RPC, sesje v7.0–v7.4, GameStore).
 
 ## Status i ograniczenia
 
@@ -131,7 +131,7 @@ Projekt jest w **fazie użytkowej dla early adopterów** — działa end-to-end,
 
 **Czego brakuje do pracy zawodowej w zespole:**
 - Oficjalny **pakiet klienta** (SDK) — dziś: CLI + `GameStore` + `tests/rpc_client.py`
-- **Hardening bezpieczeństwa** — profile `proto`/`production`, podniesienie parametrów HSS (N=256)
+- **Profile HSS** — `KARM_HSS_PROFILE=standard|production` (domyślnie `proto` N=15); paper [v2.5](https://github.com/Maciej-EriAmo/holonOs/blob/main/HSS_Paper_v2.5.0_PL.md)
 - PSK/QKD to hasło sieci; konta użytkowników wymagają `auth.json` na serwerze
 - Metadane TCP widoczne; częściowa ochrona DoS (rate limit)
 
@@ -142,7 +142,7 @@ Projekt jest w **fazie użytkowej dla early adopterów** — działa end-to-end,
 | Wersja | Kierunek | Cel |
 |--------|----------|-----|
 | v7.4 ✓ | Replikacja światów | HA-lite: `PULL`/`PUSH`/`SYNC`, `peers.json` |
-| **v7.5** | **Bezpieczeństwo** | Profile wdrożeniowe, wzmocnienie HSS (N=256 / NTT), adapter QKD, capability tokens |
+| **v7.5** | **Bezpieczeństwo** | Profile HSS `proto`/`standard`/`production` (N=15→128→512, [paper v2.5](https://github.com/Maciej-EriAmo/holonOs/blob/main/HSS_Paper_v2.5.0_PL.md)), adapter QKD, capability tokens |
 | **v7.6** | **Klient SDK** | Stabilne API (`pip install`), przewodnik „zespół w 15 min”, bindingi językowe na tym samym handshake |
 | v7.7+ | Gossip pełny | Synchronizacja BubbleVFS / phi-space (`karmazyn_gossip.py`) — nadal po RPC |
 
@@ -152,7 +152,7 @@ Projekt jest w **fazie użytkowej dla early adopterów** — działa end-to-end,
 
 Stack jest warstwowy — można wnieść kawałek bez znajomości całości. Przydatne obszary:
 
-- **Bezpieczeństwo v7.5** — NTT / N=256 w `karmazyn_hss.py`, profile proto/production, adapter QKD
+- **Bezpieczeństwo v7.5** — profile HSS N=128/512, NTT, adapter QKD
 - **Klient SDK** — biblioteka Python (PyPI), opcjonalnie Go/TypeScript na tym samym `cynober_rpc.py`
 - **Gossip** — `karmazyn_gossip.py`, synchronizacja BubbleVFS po istniejącym tunelu
 

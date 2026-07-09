@@ -403,7 +403,15 @@ Domyślny kontekst PrismMask dla Cynober: `task=cynober-rpc`, `prisms=["karminql
 * Wspólny klucz z kwantyzacji iloczynu skalarnego `sk_b·pk_a` (hint w `ack`).
 * Inicjator weryfikuje `sk_a·pk_b` w tolerancji rekonsyliacji (ochrona MITM).
 
-**Parametry N i Q (prototyp).** W `karmazyn_hss.py` domyślnie `N=15`, `Q=256` — to świadomy wybór prototypowy (m.in. lekkość na Termux / telefon), przeniesiony z wcześniejszego projektu. **Nie jest to limit architektury:** wartości można podnieść do pożądanej siły (np. N=256 i parametry zbliżone do Kyber) przez zmianę stałych w `karmazyn_hss.py`. Warstwy HSL, Cynober-RPC i KarminQL pozostają bez zmian — skaluje się wyłącznie KEM. Przy większym N warto rozważyć NTT zamiast zwykłego mnożenia wielomianów (opis w `HSL_Paper_v1_1_0_EN.md`).
+**Profile HSS (v2.5).** Parametry kraty LPR — [HSS Paper v2.5.0 PL](https://github.com/Maciej-EriAmo/holonOs/blob/main/HSS_Paper_v2.5.0_PL.md). Wybór: `KARM_HSS_PROFILE` (obie strony muszą mieć ten sam profil; negocjacja w handshake pole `hss_profile`).
+
+| Profil | N | Q | Zastosowanie |
+|--------|---|---|--------------|
+| `proto` (domyślny) | 15 | 256 | Termux / dev, kompatybilność wsteczna |
+| `standard` | 128 | 3329 | Zespół / LAN (modulus jak Kyber) |
+| `production` | 512 | 12289 | Serwer zespołowy, wysoka siła |
+
+Warstwy HSL, Cynober-RPC i KarminQL bez zmian — skaluje się wyłącznie KEM. Przy `production` rozważ NTT (paper §2.3); obecna implementacja używa macierzy symetrycznej A (prototyp kompatybilny z handshake).
 
 ### Anty-replay (1.1+)
 
@@ -457,6 +465,7 @@ Klient wyświetli: `Tunel zabezpieczony (HSS + HSL + QKD)`. Rozjazd seeda międz
 | `KARM_QKD_SEED` | Seed hybrydowy QKD+HSL (hex 64 zn. lub hasło→SHA-256); obie strony muszą być identyczne |
 | `KARM_PHI2` | Nadpisuje trwałą tożsamość węzła Φ² (domyślnie `~/.karmazyn_phi2`) |
 | `KARM_HSL_EPOCH_SEC` | Długość epoki HSL w sekundach (domyślnie 3600) |
+| `KARM_HSS_PROFILE` | Profil Ring-LWE KEM: `proto` (N=15), `standard` (N=128), `production` (N=512) |
 | `CYNOBER_HOST` / `CYNOBER_PORT` | Adres serwera — klient (gdy brak profilu / argv) |
 | `CYNOBER_SERVER_BIND` / `CYNOBER_SERVER_PORT` | Nasłuch serwera (gdy brak sekcji server / argv) |
 | `CYNOBER_MAX_CONCURRENT` | Max równoczesnych połączeń (nadpisuje config) |
@@ -1015,7 +1024,7 @@ Skrypt **wieloliniowy** (więcej niż jedna komenda, bez wiodącego `BEGIN`) jes
 
 ## 14. Testy
 
-Projekt zawiera **274 testów** w katalogu `tests/` (stan na serwer v7.4 + KarminQL v6.9). Część wymaga uruchomionego serwera w procesie testowym (harness w `test_server_rpc.py`).
+Projekt zawiera **280 testów** w katalogu `tests/` (stan na serwer v7.4 + KarminQL v6.9). Część wymaga uruchomionego serwera w procesie testowym (harness w `test_server_rpc.py`).
 
 ### Uruchomienie wszystkich testów
 
@@ -1049,6 +1058,7 @@ python -m unittest tests.test_v70 -v
 | `tests/test_sql_closure.py` | Domknięcie SQL v6.0 (JOIN, LIKE, CASE, OPISZ BAZĘ) |
 | `tests/test_v62.py` … `tests/test_v69.py` | Rozszerzenia KarminQL v6.2–v6.9 (CTE, okna, JSON, EXPLAIN…) |
 | `tests/test_hss_handshake.py` | Ring-LWE KEM: init/respond/finalize, odrzucenie złego tokena |
+| `tests/test_hss_profiles.py` | Profile HSS proto/standard/production (N=15/128/512) |
 | `tests/test_cynober_rpc.py` | Kodeki RPC, caps 1.2, PSK, anty-replay, wybór trybu hss |
 | `tests/test_hsl_session.py` | Φ², PrismMask, HSL link, AAD, QKD seed, kolaps przy złym kluczu |
 | `tests/test_server_rpc.py` | Tunel TCP end-to-end: HSS+HSL, PSK, QKD, legacy 1.0 |
@@ -1173,7 +1183,7 @@ DBase/
 | Wersja | Obszar | Zakres |
 |--------|--------|--------|
 | v7.4 ✓ | Replikacja | `PULL`/`PUSH`/`SYNC`, `peers.json` — ten sam RPC między węzłami |
-| **v7.5** | **Bezpieczeństwo** | Profile `proto` / `production`; HSS N=256 + NTT; adapter QKD; capability tokens; rotacja epoki |
+| **v7.5** | **Bezpieczeństwo** | Profile HSS `proto`/`standard`/`production` (N=15→128→512); adapter QKD; capability tokens; rotacja epoki; NTT (opcjonalnie) |
 | **v7.6** | **Klient SDK** | Stabilne API Python (PyPI), dokumentacja wdrożeniowa, opcjonalne bindingi (Go/TS) — ten sam handshake |
 | v7.7+ | Gossip | `karmazyn_gossip.py` — BubbleVFS / phi-space nad RPC |
 

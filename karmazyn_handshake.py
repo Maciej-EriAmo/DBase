@@ -52,7 +52,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 # ── Importy KarmazynOS (graceful degradation) ─────────────────────────────────
 
 try:
-    from karmazyn_hss import HSSDaemon
+    from karmazyn_hss import HSSDaemon, resolve_hss_profile
     _HSS_AVAILABLE = True
 except ImportError:
     _HSS_AVAILABLE = False
@@ -166,12 +166,17 @@ class _CryptoLayer:
 
     def negotiate_hss_initiator(self, sock: socket.socket, deadline: float = 0.0) -> bytes:
         # Zakładane: init_session() → (token, pubkey_bytes: bytes)
-        hss = HSSDaemon()
+        profile = resolve_hss_profile()
+        hss = HSSDaemon(profile=profile)
         try:
             token, pubkey_bytes = hss.init_session()
         except (TypeError, ValueError) as e:
             raise RuntimeError(f"HSSDaemon.init_session() niezgodne API: {e}") from e
-        _send_json(sock, {"mode": "hss", "pubkey": pubkey_bytes.hex()})
+        _send_json(sock, {
+            "mode": "hss",
+            "pubkey": pubkey_bytes.hex(),
+            "hss_profile": profile.name,
+        })
         resp        = _recv_json(sock, deadline)
         ack         = bytes.fromhex(resp["ack"])
         key         = hss.finalize(token, ack)
@@ -182,13 +187,20 @@ class _CryptoLayer:
     def negotiate_hss_responder(self, sock: socket.socket,
                                  init_msg: dict) -> bytes:
         # Zakładane: respond_handshake(pubkey) → (token, shared_key, ack: bytes)
-        hss = HSSDaemon()
+        remote_profile = init_msg.get("hss_profile", "proto")
+        profile = resolve_hss_profile()
+        if remote_profile != profile.name:
+            raise RuntimeError(
+                f"Niezgodny profil HSS: klient={remote_profile}, serwer={profile.name}. "
+                f"Ustaw KARM_HSS_PROFILE na obu stronach."
+            )
+        hss = HSSDaemon(profile=profile)
         pubkey_a = bytes.fromhex(init_msg["pubkey"])
         try:
             _token_b, shared_key, ack = hss.respond_handshake(pubkey_a)
         except (TypeError, ValueError) as e:
             raise RuntimeError(f"HSSDaemon.respond_handshake() niezgodne API: {e}") from e
-        _send_json(sock, {"ack": ack.hex()})
+        _send_json(sock, {"ack": ack.hex(), "hss_profile": profile.name})
         self._key  = shared_key
         self._mode = "hss"
         return shared_key
