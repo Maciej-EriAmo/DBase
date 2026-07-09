@@ -189,6 +189,29 @@ def save_documents(phi, path: str,
                    proca_index=None,
                    proca_cold_only: bool = False) -> int:
     """Zapisz atomy z opcjonalną deduplikacją ProcaIndex i szyfrowaniem Phi."""
+    return save_documents_filtered(
+        phi,
+        path,
+        kinds=kinds,
+        proca_index=proca_index,
+        proca_cold_only=proca_cold_only,
+    )
+
+
+def save_documents_filtered(
+    phi,
+    path: str,
+    *,
+    kinds: Iterable[str] = DOC_KINDS,
+    proca_index=None,
+    proca_cold_only: bool = False,
+    atom_filter=None,
+    include_payload=None,
+) -> int:
+    """
+    Zapisz podzbiór atomów. include_payload(atom)->bool steruje payloadem
+    (False = sam nagłówek, bez data).
+    """
     if not _KAFD_OK:
         raise RuntimeError("Brak karmazyn_kafd — nie można zapisać na dysk")
 
@@ -197,12 +220,14 @@ def save_documents(phi, path: str,
     kinds = tuple(kinds)
     atoms_dict = {}
     for atom in _iter_atoms(phi):
+        if atom_filter is not None and not atom_filter(atom):
+            continue
         if _is_doc_atom(atom, kinds):
             override_data = None
             data = atom.metadata.get("data", b"")
-            
-            # Deduplikacja Proca (opcjonalnie tylko dla nie-HOT)
-            if proca_index and len(data) > 0:
+            strip_payload = include_payload is not None and not include_payload(atom)
+
+            if not strip_payload and proca_index and len(data) > 0:
                 use_proca = not proca_cold_only or float(atom.T) < T_HOT
                 if use_proca:
                     phi_vec = _atom_phi_vector(phi, atom)
@@ -212,7 +237,10 @@ def save_documents(phi, path: str,
                     if typ == "coordinate":
                         override_data = res.to_json_bytes()
 
-            atoms_dict[atom.id] = _encode_atom(atom, override_data)
+            if strip_payload:
+                atoms_dict[atom.id] = _encode_atom(atom, override_data=b"")
+            else:
+                atoms_dict[atom.id] = _encode_atom(atom, override_data)
 
     if proca_index:
         proca_index.save_all_sources()
@@ -365,6 +393,23 @@ def load_folded_atoms(phi, path: str, atom_ids: set[str], proca_index=None) -> i
         atom.metadata.pop(FOLD_SRC_KEY, None)
         loaded += 1
     return loaded
+
+
+def load_folded_atoms_multi(
+    phi,
+    atom_paths: dict[str, str],
+    proca_index=None,
+) -> int:
+    """Dociągnij zwinięte atomy z wielu plików .kafd (shardy)."""
+    if not atom_paths:
+        return 0
+    by_path: dict[str, set[str]] = {}
+    for aid, path in atom_paths.items():
+        by_path.setdefault(path, set()).add(aid)
+    total = 0
+    for path, aids in by_path.items():
+        total += load_folded_atoms(phi, path, aids, proca_index=proca_index)
+    return total
 
 
 def load_documents(phi, path: str, proca_index=None) -> int:

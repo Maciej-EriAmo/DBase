@@ -8,6 +8,7 @@ Wiele sesji RPC może dołączyć do tego samego świata (wspólny stan, lock na
 v7.8: auto-flush dirty, utrwalony inv_index/atom_index w .meta.json,
       Proca dla payloadów COLD (katalog proca/<świat>/).
 v7.9: lazy load manifestu (zwinięte nie-HOT), ROZWIJ / CEL + promień grafu.
+v8.0: shardy KAFD per region grafu, replikacja manifest-first.
 """
 
 from __future__ import annotations
@@ -204,8 +205,10 @@ def load_runtime_from_kafd(
     proca_dir: Path | str | None = None,
     query_indexes: dict[str, Any] | None = None,
     lazy: bool = False,
+    shard_paths: Optional[Dict[str, Path]] = None,
 ) -> tuple[int, set[str]]:
     import karmazyn_store
+    from karmazyn_store import FOLDED_META_KEY, FOLD_SRC_KEY
 
     store = bridge.store
     proca_index = _proca_index_for(proca_dir)
@@ -214,6 +217,19 @@ def load_runtime_from_kafd(
         loaded, folded = karmazyn_store.load_documents_lazy(
             store, str(path), proca_index=proca_index
         )
+        if shard_paths:
+            from karmazyn_atom import T_HOT
+
+            for aid, spath in shard_paths.items():
+                atom = store.get_atom(aid)
+                if atom is None or atom.S == "__bubble__":
+                    continue
+                if float(atom.T) >= T_HOT:
+                    continue
+                folded.add(aid)
+                atom.metadata[FOLDED_META_KEY] = True
+                atom.metadata[FOLD_SRC_KEY] = str(spath)
+                atom.metadata.pop("data", None)
     else:
         loaded = karmazyn_store.load_documents(store, str(path), proca_index=proca_index)
     _finalize_kafd_load(bridge, query_indexes)
@@ -281,14 +297,26 @@ def unfold_runtime(
 
     to_load = atom_ids & runtime.folded_atoms
     loaded = 0
-    if to_load and runtime.kafd_path and runtime.kafd_path.is_file():
+    if to_load:
         proca = _proca_index_for(runtime.proca_dir)
-        loaded = karmazyn_store.load_folded_atoms(
-            runtime.store,
-            str(runtime.kafd_path),
-            to_load,
-            proca_index=proca,
-        )
+        if runtime.shard_index:
+            atom_paths: Dict[str, str] = {}
+            for aid in to_load:
+                spath = runtime.shard_index.get(aid)
+                if spath and Path(spath).is_file():
+                    atom_paths[aid] = str(spath)
+                elif runtime.kafd_path and runtime.kafd_path.is_file():
+                    atom_paths[aid] = str(runtime.kafd_path)
+            loaded = karmazyn_store.load_folded_atoms_multi(
+                runtime.store, atom_paths, proca_index=proca
+            )
+        elif runtime.kafd_path and runtime.kafd_path.is_file():
+            loaded = karmazyn_store.load_folded_atoms(
+                runtime.store,
+                str(runtime.kafd_path),
+                to_load,
+                proca_index=proca,
+            )
         for aid in to_load:
             runtime.folded_atoms.discard(aid)
             atom = runtime.store.get_atom(aid)
@@ -326,6 +354,7 @@ class WorldRuntime:
     kafd_path: Optional[Path] = None
     proca_dir: Optional[Path] = None
     folded_atoms: Set[str] = field(default_factory=set)
+    shard_index: Dict[str, Path] = field(default_factory=dict)
 
     @property
     def store(self):
@@ -377,6 +406,7 @@ class WorldRegistry:
         if cached is not None:
             bubbles = len(cached.runtime.engine.api._bubble_index)
         qi = meta.get("query_indexes") or {}
+        shard_meta = meta.get("shard_index") or {}
         return {
             "name": name,
             "exists_on_disk": kafd.is_file(),
@@ -387,6 +417,8 @@ class WorldRegistry:
             "modified_at": meta.get("modified_at", cached.modified_at if cached else None),
             "indexed_keys": sorted((qi.get("inv_index") or {}).keys()),
             "folded_atoms": len(cached.runtime.folded_atoms) if cached else meta.get("folded_atoms", 0),
+            "sharded": bool(shard_meta.get("sharded") or meta.get("sharded")),
+            "shard_regions": shard_meta.get("regions", meta.get("shard_regions", 0)),
         }
 
     def _create_runtime(self) -> WorldRuntime:
@@ -399,6 +431,9 @@ class WorldRegistry:
         proca = _proca_dir(self._base, name)
         runtime.kafd_path = kafd
         runtime.proca_dir = proca
+        from cynober_world_shards import atom_shard_paths
+
+        runtime.shard_index = atom_shard_paths(self._base, name)
         if kafd.is_file():
             _, folded = load_runtime_from_kafd(
                 runtime.bridge,
@@ -406,6 +441,7 @@ class WorldRegistry:
                 proca_dir=proca,
                 query_indexes=meta.get("query_indexes"),
                 lazy=True,
+                shard_paths=runtime.shard_index,
             )
             runtime.folded_atoms = folded
         user_indexes = set(meta.get("user_indexes", []))
@@ -511,17 +547,39 @@ class WorldRegistry:
         proca = self._base / "proca" / name
         if proca.is_dir():
             shutil.rmtree(proca, ignore_errors=True)
+        from cynober_world_shards import clear_shards
+
+        clear_shards(self._base, name)
 
     def _persist(self, world: World) -> int:
         with world.runtime.lock:
             kafd = _kafd_path(self._base, world.name)
             proca = _proca_dir(self._base, world.name)
-            saved = save_runtime_to_kafd(
-                world.runtime.bridge,
-                kafd,
-                proca_dir=proca,
-                proca_cold=True,
+            from cynober_world_shards import (
+                atom_shard_paths,
+                save_sharded_runtime,
+                sharding_enabled,
             )
+
+            if sharding_enabled():
+                stats = save_sharded_runtime(
+                    world.runtime.bridge,
+                    kafd,
+                    self._base,
+                    world.name,
+                    proca_dir=proca,
+                    proca_cold=True,
+                )
+                saved = stats.get("manifest_atoms", 0)
+                world.runtime.shard_index = atom_shard_paths(self._base, world.name)
+            else:
+                saved = save_runtime_to_kafd(
+                    world.runtime.bridge,
+                    kafd,
+                    proca_dir=proca,
+                    proca_cold=True,
+                )
+                world.runtime.shard_index = {}
             api = world.runtime.engine.api
             bubbles = len(api._bubble_index)
             meta = {
@@ -534,6 +592,13 @@ class WorldRegistry:
             }
             meta["folded_atoms"] = len(world.runtime.folded_atoms)
             meta["lazy_load"] = lazy_load_enabled()
+            meta["sharded"] = sharding_enabled()
+            if sharding_enabled():
+                from cynober_world_shards import load_shard_index
+
+                shard_idx = load_shard_index(self._base, world.name)
+                meta["shard_index"] = shard_idx
+                meta["shard_regions"] = len(shard_idx.get("regions") or [])
             _save_meta(_meta_path(self._base, world.name), meta)
             world.modified_at = meta["modified_at"]
             world.user_indexes = set(meta["user_indexes"])

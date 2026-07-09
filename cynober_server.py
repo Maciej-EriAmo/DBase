@@ -15,6 +15,7 @@ v7.6: cynober_client.py — oficjalny SDK klienta (jeden protokół).
 v7.7: pro — QKD adapter, capability tokens, rotacja epoki, NTT, gossip phi, PyPI.
 v7.8: auto-flush światów, utrwalony indeks zapytań, Proca dla COLD.
 v7.9: lazy load manifestu, ROZWIJ / WYBIERZ CEL, auto-unfold przy POKAŻ.
+v8.0: shardy KAFD per region grafu, replikacja manifest-first.
 """
 
 from __future__ import annotations

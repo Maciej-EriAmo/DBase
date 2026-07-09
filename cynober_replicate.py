@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """
-cynober_replicate.py — replikacja trwałych światów między węzłami (v7.4)
+cynober_replicate.py — replikacja trwałych światów między węzłami (v7.4+)
+v8.0: manifest-first + shardy per region grafu.
 """
 
 from __future__ import annotations
@@ -40,6 +41,21 @@ _SYNC_RE = re.compile(r'^SYNC\s+ŚWIAT\s+"([^"]+)"\s+Z\s+"([^"]+)"$', re.IGNOREC
 _EXPORT_WORLD_RE = re.compile(r'^EKSPORT\s+ŚWIATA\s+"([^"]+)"$', re.IGNORECASE)
 _IMPORT_WORLD_RE = re.compile(
     r'^IMPORT\s+ŚWIATA\s+"([^"]+)"\s+DANE\s+"([A-Za-z0-9+/=]+)"$',
+    re.IGNORECASE,
+)
+_EXPORT_MANIFEST_RE = re.compile(
+    r'^EKSPORT\s+MANIFEST\s+ŚWIATA\s+"([^"]+)"$', re.IGNORECASE,
+)
+_EXPORT_SHARD_RE = re.compile(
+    r'^EKSPORT\s+SHARD\s+ŚWIATA\s+"([^"]+)"\s+REGION\s+"([^"]+)"$',
+    re.IGNORECASE,
+)
+_IMPORT_SHARD_RE = re.compile(
+    r'^IMPORT\s+SHARD\s+ŚWIATA\s+"([^"]+)"\s+REGION\s+"([^"]+)"\s+DANE\s+"([A-Za-z0-9+/=]+)"$',
+    re.IGNORECASE,
+)
+_PULL_SHARD_RE = re.compile(
+    r'^PULL\s+SHARD\s+ŚWIATA\s+"([^"]+)"\s+Z\s+"([^"]+)"\s+REGION\s+"([^"]+)"$',
     re.IGNORECASE,
 )
 
@@ -171,24 +187,116 @@ def reset_peer_registry_for_tests(base_dir: Path) -> PeerRegistry:
         return store
 
 
-def export_world_payload(registry: WorldRegistry, world_name: str) -> dict:
-    name = validate_world_name(world_name)
+def _ensure_world_flushed(registry: WorldRegistry, name: str) -> None:
     with registry._lock:
         world = registry._worlds.get(name)
         if world is not None and world.dirty:
             registry._persist(world)
             world.dirty = False
+
+
+def export_manifest_payload(registry: WorldRegistry, world_name: str) -> dict:
+    """Manifest + meta + indeks shardów (bez payloadów shardów)."""
+    name = validate_world_name(world_name)
+    _ensure_world_flushed(registry, name)
     kafd = _kafd_path(registry.base_dir, name)
     if not kafd.is_file():
         raise ValueError(f"Świat '{name}' nie ma zapisu na dysku.")
     meta = _load_meta(_meta_path(registry.base_dir, name))
+    from cynober_world_shards import list_shard_regions, load_shard_index
+
+    shard_index = load_shard_index(registry.base_dir, name)
     return {
         "world": name,
         "kafd_b64": base64.b64encode(kafd.read_bytes()).decode("ascii"),
         "meta": meta,
         "modified_at": meta.get("modified_at"),
         "bubbles": meta.get("bubbles", 0),
+        "sharded": bool(meta.get("sharded") or shard_index.get("sharded")),
+        "shard_index": shard_index,
+        "shard_regions": list_shard_regions(registry.base_dir, name),
     }
+
+
+def export_shard_payload(registry: WorldRegistry, world_name: str, region: str) -> dict:
+    name = validate_world_name(world_name)
+    region = region.strip()
+    if not region:
+        raise ValueError("Brak identyfikatora regionu sharda.")
+    _ensure_world_flushed(registry, name)
+    from cynober_world_shards import read_shard_bytes
+
+    data = read_shard_bytes(registry.base_dir, name, region)
+    return {
+        "world": name,
+        "region": region,
+        "shard_b64": base64.b64encode(data).decode("ascii"),
+        "bytes": len(data),
+    }
+
+
+def export_world_payload(registry: WorldRegistry, world_name: str) -> dict:
+    name = validate_world_name(world_name)
+    payload = export_manifest_payload(registry, name)
+    if not payload.get("sharded"):
+        return payload
+
+    shards_out: List[dict] = []
+    for entry in payload.get("shard_regions") or []:
+        rid = entry.get("id")
+        if not rid:
+            continue
+        try:
+            shard = export_shard_payload(registry, name, rid)
+            shards_out.append({
+                "region": rid,
+                "shard_b64": shard["shard_b64"],
+                "bytes": shard["bytes"],
+            })
+        except ValueError:
+            pass
+    payload["shards"] = shards_out
+    payload["action"] = "EXPORT_WORLD"
+    return payload
+
+
+def import_shard_payload(
+    registry: WorldRegistry,
+    world_name: str,
+    region: str,
+    shard_b64: str,
+) -> dict:
+    name = validate_world_name(world_name)
+    region = region.strip()
+    try:
+        shard_bytes = base64.b64decode(shard_b64.encode("ascii"), validate=True)
+    except Exception as e:
+        raise ValueError(f"Nieprawidłowe dane sharda (base64): {e}") from e
+    if not shard_bytes:
+        raise ValueError("Puste dane sharda.")
+    from cynober_world_shards import write_shard_bytes
+
+    path = write_shard_bytes(registry.base_dir, name, region, shard_bytes)
+    return {"world": name, "region": region, "imported": True, "bytes": len(shard_bytes), "path": str(path)}
+
+
+def _import_shards_from_payload(registry: WorldRegistry, name: str, payload: dict) -> int:
+    shards = payload.get("shards") or []
+    count = 0
+    for entry in shards:
+        if not isinstance(entry, dict):
+            continue
+        rid = entry.get("region")
+        b64 = entry.get("shard_b64")
+        if rid and b64:
+            import_shard_payload(registry, name, rid, b64)
+            count += 1
+    shard_index = payload.get("shard_index")
+    if shard_index:
+        from cynober_world_shards import import_shard_index
+
+        import_shard_index(registry.base_dir, name, shard_index)
+    return count
 
 
 def import_world_payload(
@@ -196,6 +304,9 @@ def import_world_payload(
     world_name: str,
     kafd_b64: str,
     meta: Optional[dict] = None,
+    *,
+    shards: Optional[List[dict]] = None,
+    shard_index: Optional[dict] = None,
 ) -> dict:
     name = validate_world_name(world_name)
     try:
@@ -225,15 +336,35 @@ def import_world_payload(
             "bubbles": info.get("bubbles", 0),
         })
 
+    shard_count = 0
+    if shards or shard_index:
+        shard_count = _import_shards_from_payload(registry, name, {
+            "shards": shards or [],
+            "shard_index": shard_index,
+        })
+
     with registry._lock:
         world = registry._worlds.get(name)
         if world is not None and world.refs > 0:
             new_rt = registry._create_runtime()
+            proca = registry.base_dir / "proca" / name
+            from cynober_world_shards import atom_shard_paths
+
+            new_rt.kafd_path = dest
+            new_rt.proca_dir = proca if proca.is_dir() else None
+            new_rt.shard_index = atom_shard_paths(registry.base_dir, name)
             with tempfile.NamedTemporaryFile(delete=False, suffix=".kafd") as tmp:
                 tmp.write(kafd_bytes)
                 tmp_path = tmp.name
             try:
-                load_runtime_from_kafd(new_rt.bridge, tmp_path, lazy=False)
+                load_runtime_from_kafd(
+                    new_rt.bridge,
+                    tmp_path,
+                    proca_dir=new_rt.proca_dir,
+                    query_indexes=(meta or {}).get("query_indexes"),
+                    lazy=False,
+                    shard_paths=new_rt.shard_index,
+                )
             finally:
                 Path(tmp_path).unlink(missing_ok=True)
             with world.runtime.lock:
@@ -244,7 +375,12 @@ def import_world_payload(
         else:
             registry._worlds.pop(name, None)
 
-    return {"world": name, "imported": True, "bytes": len(kafd_bytes)}
+    return {
+        "world": name,
+        "imported": True,
+        "bytes": len(kafd_bytes),
+        "shards_imported": shard_count,
+    }
 
 
 class _PeerRpc:
@@ -334,10 +470,24 @@ def _remote_world_modified(client: _PeerRpc, world: str) -> Optional[float]:
     return None
 
 
-def _remote_export(client: _PeerRpc, world: str) -> dict:
-    row = _first_result(client.query(f'EKSPORT ŚWIATA "{world}"'))
+def _remote_export(client: _PeerRpc, world: str, *, manifest_only: bool = False) -> dict:
+    cmd = (
+        f'EKSPORT MANIFEST ŚWIATA "{world}"'
+        if manifest_only
+        else f'EKSPORT ŚWIATA "{world}"'
+    )
+    row = _first_result(client.query(cmd))
     if "kafd_b64" not in row:
         raise RuntimeError("Węzeł nie zwrócił danych świata.")
+    return row
+
+
+def _remote_export_shard(client: _PeerRpc, world: str, region: str) -> dict:
+    row = _first_result(
+        client.query(f'EKSPORT SHARD ŚWIATA "{world}" REGION "{region}"')
+    )
+    if "shard_b64" not in row:
+        raise RuntimeError("Węzeł nie zwrócił danych sharda.")
     return row
 
 
@@ -347,20 +497,80 @@ def _remote_import(client: _PeerRpc, world: str, payload: dict) -> dict:
     return row
 
 
-def pull_world(registry: WorldRegistry, peers: PeerRegistry, world: str, peer_name: str) -> dict:
+def pull_world(
+    registry: WorldRegistry,
+    peers: PeerRegistry,
+    world: str,
+    peer_name: str,
+    *,
+    manifest_first: bool = True,
+) -> dict:
     world = validate_world_name(world)
     peer = peers.get(peer_name)
     client = _peer_client(peer)
     try:
         client.connect()
         _login_peer(client, peer)
-        payload = _remote_export(client, world)
-        info = import_world_payload(registry, world, payload["kafd_b64"], payload.get("meta"))
+        if manifest_first:
+            manifest = _remote_export(client, world, manifest_only=True)
+            info = import_world_payload(
+                registry,
+                world,
+                manifest["kafd_b64"],
+                manifest.get("meta"),
+                shard_index=manifest.get("shard_index"),
+            )
+            shards_pulled = 0
+            if manifest.get("sharded"):
+                for entry in manifest.get("shard_regions") or []:
+                    rid = entry.get("id")
+                    if not rid:
+                        continue
+                    shard = _remote_export_shard(client, world, rid)
+                    import_shard_payload(registry, world, rid, shard["shard_b64"])
+                    shards_pulled += 1
+                info["shards_imported"] = shards_pulled
+        else:
+            payload = _remote_export(client, world, manifest_only=False)
+            info = import_world_payload(
+                registry,
+                world,
+                payload["kafd_b64"],
+                payload.get("meta"),
+                shards=payload.get("shards"),
+                shard_index=payload.get("shard_index"),
+            )
         return {
             "action": "PULL_WORLD",
             "world": world,
             "peer": peer_name,
             "direction": "pull",
+            **info,
+        }
+    finally:
+        client.close()
+
+
+def pull_shard(
+    registry: WorldRegistry,
+    peers: PeerRegistry,
+    world: str,
+    peer_name: str,
+    region: str,
+) -> dict:
+    world = validate_world_name(world)
+    peer = peers.get(peer_name)
+    client = _peer_client(peer)
+    try:
+        client.connect()
+        _login_peer(client, peer)
+        shard = _remote_export_shard(client, world, region)
+        info = import_shard_payload(registry, world, region, shard["shard_b64"])
+        return {
+            "action": "PULL_SHARD",
+            "world": world,
+            "peer": peer_name,
+            "region": region,
             **info,
         }
     finally:
@@ -405,7 +615,14 @@ def sync_world(registry: WorldRegistry, peers: PeerRegistry, world: str, peer_na
         if remote_exists and local_exists:
             if remote_mod > local_mod:
                 payload = _remote_export(client, world)
-                info = import_world_payload(registry, world, payload["kafd_b64"], payload.get("meta"))
+                info = import_world_payload(
+                    registry,
+                    world,
+                    payload["kafd_b64"],
+                    payload.get("meta"),
+                    shards=payload.get("shards"),
+                    shard_index=payload.get("shard_index"),
+                )
                 return {"action": "SYNC_WORLD", "world": world, "peer": peer_name, "direction": "pull", **info}
             if local_mod > remote_mod:
                 payload = export_world_payload(registry, world)
@@ -421,7 +638,14 @@ def sync_world(registry: WorldRegistry, peers: PeerRegistry, world: str, peer_na
             }
         if remote_exists and not local_exists:
             payload = _remote_export(client, world)
-            info = import_world_payload(registry, world, payload["kafd_b64"], payload.get("meta"))
+            info = import_world_payload(
+                registry,
+                world,
+                payload["kafd_b64"],
+                payload.get("meta"),
+                shards=payload.get("shards"),
+                shard_index=payload.get("shard_index"),
+            )
             return {"action": "SYNC_WORLD", "world": world, "peer": peer_name, "direction": "pull", **info}
         if local_exists and not remote_exists:
             payload = export_world_payload(registry, world)
@@ -465,6 +689,30 @@ def try_replicate_command(
         except ValueError as e:
             return [{"status": "error", "message": str(e)}]
 
+    m = _EXPORT_MANIFEST_RE.match(stripped)
+    if m:
+        try:
+            payload = export_manifest_payload(registry, m.group(1))
+            return [{"status": "ok", "action": "EXPORT_MANIFEST", **payload}]
+        except (ValueError, OSError) as e:
+            return [{"status": "error", "message": str(e)}]
+
+    m = _EXPORT_SHARD_RE.match(stripped)
+    if m:
+        try:
+            payload = export_shard_payload(registry, m.group(1), m.group(2))
+            return [{"status": "ok", "action": "EXPORT_SHARD", **payload}]
+        except (ValueError, OSError) as e:
+            return [{"status": "error", "message": str(e)}]
+
+    m = _IMPORT_SHARD_RE.match(stripped)
+    if m:
+        try:
+            info = import_shard_payload(registry, m.group(1), m.group(2), m.group(3))
+            return [{"status": "ok", "action": "IMPORT_SHARD", **info}]
+        except (ValueError, OSError) as e:
+            return [{"status": "error", "message": str(e)}]
+
     m = _EXPORT_WORLD_RE.match(stripped)
     if m:
         try:
@@ -479,6 +727,14 @@ def try_replicate_command(
             info = import_world_payload(registry, m.group(1), m.group(2))
             return [{"status": "ok", "action": "IMPORT_WORLD", **info}]
         except (ValueError, OSError) as e:
+            return [{"status": "error", "message": str(e)}]
+
+    m = _PULL_SHARD_RE.match(stripped)
+    if m:
+        try:
+            info = pull_shard(registry, peers, m.group(1), m.group(2), m.group(3))
+            return [{"status": "ok", **info}]
+        except (ValueError, OSError, RuntimeError, ConnectionError) as e:
             return [{"status": "error", "message": str(e)}]
 
     m = _PULL_RE.match(stripped)
@@ -513,8 +769,12 @@ def is_replicate_query(stripped: str, upper: str) -> bool:
         upper == "LISTA WĘZŁÓW"
         or bool(_ADD_PEER_RE.match(stripped))
         or bool(_REMOVE_PEER_RE.match(stripped))
+        or bool(_EXPORT_MANIFEST_RE.match(stripped))
+        or bool(_EXPORT_SHARD_RE.match(stripped))
+        or bool(_IMPORT_SHARD_RE.match(stripped))
         or bool(_EXPORT_WORLD_RE.match(stripped))
         or bool(_IMPORT_WORLD_RE.match(stripped))
+        or bool(_PULL_SHARD_RE.match(stripped))
         or bool(_PULL_RE.match(stripped))
         or bool(_PUSH_RE.match(stripped))
         or bool(_SYNC_RE.match(stripped))
@@ -522,7 +782,12 @@ def is_replicate_query(stripped: str, upper: str) -> bool:
 
 
 def is_replicate_read_query(stripped: str, upper: str) -> bool:
-    return upper == "LISTA WĘZŁÓW" or bool(_EXPORT_WORLD_RE.match(stripped))
+    return (
+        upper == "LISTA WĘZŁÓW"
+        or bool(_EXPORT_MANIFEST_RE.match(stripped))
+        or bool(_EXPORT_SHARD_RE.match(stripped))
+        or bool(_EXPORT_WORLD_RE.match(stripped))
+    )
 
 
 def is_replicate_admin_query(stripped: str) -> bool:
@@ -530,6 +795,8 @@ def is_replicate_admin_query(stripped: str) -> bool:
         _ADD_PEER_RE.match(stripped)
         or _REMOVE_PEER_RE.match(stripped)
         or _IMPORT_WORLD_RE.match(stripped)
+        or _IMPORT_SHARD_RE.match(stripped)
+        or _PULL_SHARD_RE.match(stripped)
         or _PULL_RE.match(stripped)
         or _PUSH_RE.match(stripped)
         or _SYNC_RE.match(stripped)
@@ -537,7 +804,17 @@ def is_replicate_admin_query(stripped: str) -> bool:
 
 
 def world_from_replicate_query(stripped: str) -> Optional[str]:
-    for pat in (_EXPORT_WORLD_RE, _IMPORT_WORLD_RE, _PULL_RE, _PUSH_RE, _SYNC_RE):
+    for pat in (
+        _EXPORT_MANIFEST_RE,
+        _EXPORT_SHARD_RE,
+        _IMPORT_SHARD_RE,
+        _EXPORT_WORLD_RE,
+        _IMPORT_WORLD_RE,
+        _PULL_SHARD_RE,
+        _PULL_RE,
+        _PUSH_RE,
+        _SYNC_RE,
+    ):
         m = pat.match(stripped)
         if m:
             return validate_world_name(m.group(1))

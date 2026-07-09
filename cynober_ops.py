@@ -33,7 +33,7 @@ def _load_meta(path: Path) -> dict:
     except (OSError, json.JSONDecodeError):
         return {}
 
-SERVER_VERSION = "7.9"
+SERVER_VERSION = "8.0"
 
 _BACKUP_WORLD_RE = re.compile(
     r'^KOPIA\s+ZAPASOWA\s+ŚWIATA\s+"([^"]+)"$',
@@ -182,6 +182,9 @@ class WorldBackupManager:
         proca_src = self._registry.base_dir / "proca" / name
         if proca_src.is_dir():
             shutil.copytree(proca_src, dest / "proca", dirs_exist_ok=True)
+        shards_src = self._registry.base_dir / "shards" / name
+        if shards_src.is_dir():
+            shutil.copytree(shards_src, dest / "shards", dirs_exist_ok=True)
         manifest = {
             "world": name,
             "backup_id": backup_id,
@@ -237,12 +240,24 @@ class WorldBackupManager:
                 proca_live = _proca_dir(self._registry.base_dir, name)
                 if proca_backup.is_dir():
                     shutil.copytree(proca_backup, proca_live, dirs_exist_ok=True)
+                shards_backup = src / "shards"
+                shards_live = self._registry.base_dir / "shards" / name
+                if shards_backup.is_dir():
+                    if shards_live.is_dir():
+                        shutil.rmtree(shards_live, ignore_errors=True)
+                    shutil.copytree(shards_backup, shards_live, dirs_exist_ok=True)
+                from cynober_world_shards import atom_shard_paths
+
+                new_rt.kafd_path = src_kafd
+                new_rt.proca_dir = proca_live
+                new_rt.shard_index = atom_shard_paths(self._registry.base_dir, name)
                 load_runtime_from_kafd(
                     new_rt.bridge,
                     src_kafd,
                     proca_dir=proca_live,
                     query_indexes=_load_meta(src / f"{name}.meta.json").get("query_indexes"),
                     lazy=False,
+                    shard_paths=new_rt.shard_index,
                 )
                 with world.runtime.lock:
                     world.runtime = new_rt
@@ -261,6 +276,12 @@ class WorldBackupManager:
                         _proca_dir(self._registry.base_dir, name),
                         dirs_exist_ok=True,
                     )
+                shards_backup = src / "shards"
+                shards_live = self._registry.base_dir / "shards" / name
+                if shards_backup.is_dir():
+                    if shards_live.is_dir():
+                        shutil.rmtree(shards_live, ignore_errors=True)
+                    shutil.copytree(shards_backup, shards_live, dirs_exist_ok=True)
                 if world is not None:
                     self._registry._worlds.pop(name, None)
         return {"world": name, "backup_id": bid, "restored": True}
