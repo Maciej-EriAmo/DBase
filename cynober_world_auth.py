@@ -247,7 +247,10 @@ def reset_auth_store_for_tests(base_dir: Path) -> WorldAuthStore:
 
 
 def is_read_only_query(upper: str) -> bool:
-    if upper in ("STATYSTYKI", "OPISZ BAZĘ", "LISTA ŚWIATÓW", "KTO JESTEM", "LISTA UPRAWNIEŃ"):
+    if upper in (
+        "STATYSTYKI", "OPISZ BAZĘ", "LISTA ŚWIATÓW", "KTO JESTEM", "LISTA UPRAWNIEŃ",
+        "ZDROWIE", "METRYKI SERWERA",
+    ):
         return True
     if upper.startswith(("POKAŻ", "ZNAJDŹ", "WYPISZ", "POLICZ", "SZUKAJ", "WYJAŚNIJ", "EXPLAIN")):
         return True

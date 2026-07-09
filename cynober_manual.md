@@ -7,7 +7,7 @@ Cynober DB to relacyjno-grafowa baza danych na termodynamicznym rdzeniu **Karmaz
 | KarminQL (silnik zapytań) | v6.9 | `cynober_query_engine.py` |
 | Most pandas | — | `cynober_pandas_bridge.py` |
 | Klient CLI | v1.8.0 | `Cynober_db.py` |
-| Serwer | v7.2 | `cynober_server.py` |
+| Serwer | v7.3 | `cynober_server.py` |
 | Protokół transportu | Cynober-Secure-1.2 | `cynober_rpc.py` |
 | HSL (sesje sieciowe) | HSL-1.1 | `karmazyn_hsl.py` |
 | Handshake / szyfrowanie | KSH-1.2 | `karmazyn_handshake.py` |
@@ -99,6 +99,22 @@ Plik `{worlds_dir}/auth.json` z `"enabled": true` włącza kontrolę dostępu. B
 Audyt: `{worlds_dir}/audit.log` (JSON lines) — zapis przy operacjach na świecie.
 
 `STATYSTYKI` zwraca m.in. `session_isolated`, `world`, `auth_user`, `auth_role`, `auth_enabled`, `persistent_worlds`, `worlds_dir`.
+
+### Operacje serwera (v7.3)
+
+Metryki i kopie zapasowe trwałych światów. Kopie trafiają do `{worlds_dir}/backups/{świat}/{backup_id}/`.
+
+| Polecenie | Opis | Auth (gdy włączone) |
+|-----------|------|---------------------|
+| `ZDROWIE` | Status serwera, wersja, uptime | publiczne |
+| `METRYKI SERWERA` | Liczniki zapytań, sesji, światów, top_actions | publiczne |
+| `KOPIA ZAPASOWA ŚWIATA "nazwa"` | Snapshot `.kafd` (+ meta) | writer+ w świecie |
+| `LISTA KOPII ŚWIATA "nazwa"` | Katalog kopii | reader+ w świecie |
+| `PRZYWRÓĆ ŚWIAT "nazwa" Z KOPII "id"` | Przywrócenie z kopii | admin w świecie |
+
+`GameStore`: `health()`, `server_metrics()`, `backup_world()`, `list_backups()`, `restore_world()`.
+
+Przykład seedu świata CRPG: `python examples/crpg_world_setup.py --world dungeon --create-world`
 
 ---
 
@@ -278,6 +294,8 @@ Główne metody `GameStore`:
 | `excite(bubble, energy)` | `WZBUDŹ` — podbija temperaturę atomów |
 | `tick(cycles)` | Cykle termodynamiczne (serwer: `TICK`; lokalnie: emulacja w `LocalBackend`) |
 | `list_worlds()` / `select_world()` / `detach_world()` | Zarządzanie trwałymi światami (v7.1) |
+| `health()` / `server_metrics()` | Zdrowie i metryki serwera (v7.3) |
+| `backup_world()` / `list_backups()` / `restore_world()` | Kopie zapasowe światów (v7.3) |
 | `stats()` | `STATYSTYKI` (`world`, `session_isolated`, `session_label`) |
 
 Przykład integracji w aplikacji:
@@ -477,6 +495,8 @@ Dostępne tylko przez tunel (klient lub RPC), obsługiwane w `cynober_server.py`
 | `STATYSTYKI` | Atomy, bąble; `world`, `session_isolated`, `persistent_worlds`, `worlds_dir` |
 | `LISTA ŚWIATÓW` | Katalog trwałych światów (v7.1) |
 | `UTWÓRZ / WYBIERZ / ODŁĄCZ / USUŃ ŚWIAT` | Zarządzanie trwałymi światami (v7.1) |
+| `ZDROWIE` / `METRYKI SERWERA` | Operacje serwera (v7.3) |
+| `KOPIA ZAPASOWA / LISTA KOPII / PRZYWRÓĆ ŚWIAT` | Backup i restore światów (v7.3) |
 | `ZAPISZ ŚWIAT` | Zapis aktywnego świata na dysk |
 | `TICK [n]` | `n` cykli termodynamicznych (domyślnie 1) |
 | `ZAPISZ [ścieżka]` | Zapis do `.kafd`; w świecie bez ścieżki → `ZAPISZ ŚWIAT` |
@@ -962,7 +982,7 @@ Skrypt **wieloliniowy** (więcej niż jedna komenda, bez wiodącego `BEGIN`) jes
 
 ## 14. Testy
 
-Projekt zawiera **264 testów** w katalogu `tests/` (stan na serwer v7.1 + KarminQL v6.9). Część wymaga uruchomionego serwera w procesie testowym (harness w `test_server_rpc.py`).
+Projekt zawiera **269 testów** w katalogu `tests/` (stan na serwer v7.3 + KarminQL v6.9). Część wymaga uruchomionego serwera w procesie testowym (harness w `test_server_rpc.py`).
 
 ### Uruchomienie wszystkich testów
 
@@ -1002,6 +1022,7 @@ python -m unittest tests.test_v70 -v
 | `tests/test_v70.py` | Izolacja sandbox per połączenie RPC (v7.0) |
 | `tests/test_v71.py` | Trwałe światy: współdzielenie, reconnect, LISTA/USUŃ (v7.1) |
 | `tests/test_v72.py` | Auth: ZALOGUJ, role reader/writer/admin, ACL (v7.2) |
+| `tests/test_v73.py` | Ops: ZDROWIE, METRYKI, backup/restore światów (v7.3) |
 | `tests/test_game_store.py` | GameStore: lokalnie + RPC, trwały świat, izolacja sandbox |
 | `tests/test_client_config.py` | Profile połączeń, argv/env, zapis JSON |
 | `tests/test_rate_limit.py` | Limity połączeń i zapytań na serwerze |
@@ -1044,7 +1065,8 @@ DBase/
 ├── README.md                  ← szybki start i status projektu
 ├── cynober_manual.md          ← ten podręcznik
 ├── HSL_Paper_v1_1_0_EN.md     ← specyfikacja HSL (teoria)
-├── cynober_server.py          ← serwer TCP v7.1 (sesje + trwałe światy)
+├── cynober_server.py          ← serwer TCP v7.3 (sesje + światy + ops)
+├── cynober_ops.py             ← metryki, zdrowie, backup światów (v7.3)
 ├── cynober_worlds.py          ← rejestr światów (.kafd + .meta.json)
 ├── cynober_world_auth.py      ← auth.json, role, ACL, audyt (v7.2)
 ├── Cynober_db.py              ← klient CLI v1.8.0
@@ -1108,11 +1130,11 @@ DBase/
 | Brak HTTP/ODBC | Integracja tylko przez własny klient TCP / Python |
 | HSS N=15 | Prototyp kryptograficzny; podnieść parametry przed ekspozycją na internet |
 
-### Planowany kierunek (v7.3+)
+### Planowany kierunek (v7.4+)
 
-1. **Operacje** — metryki, backup/restore E2E, dokumentacja wdrożeniowa
-3. **Hardening** — HSS N=256, adapter QKD, opcjonalny TLS overlay
-4. **Replikacja** — gossip / synchronizacja między węzłami
+1. **Hardening** — HSS N=256, adapter QKD, opcjonalny TLS overlay
+2. **Replikacja** — gossip / synchronizacja między węzłami
+3. **REST/ODBC** — integracja poza własnym klientem TCP
 
 ### Pliki tożsamości węzła (poza repozytorium)
 

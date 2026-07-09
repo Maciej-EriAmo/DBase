@@ -9,7 +9,7 @@ Relacyjno-grafowa baza danych na termodynamicznym rdzeniu **KarmazynOS**, z tran
 | Komponent | Wersja | Plik |
 |-----------|--------|------|
 | KarminQL | v6.9 | `cynober_query_engine.py` |
-| Serwer RPC | v7.2 | `cynober_server.py` |
+| Serwer RPC | v7.3 | `cynober_server.py` |
 | Klient CLI | v1.8.0 | `Cynober_db.py` |
 | Protokół | Cynober-Secure-1.2 | `cynober_rpc.py` |
 | GameStore (adapter aplikacyjny) | — | `game_store.py` |
@@ -31,7 +31,8 @@ Pełna składnia i API: [`cynober_manual.md`](cynober_manual.md)
 | **Analityka / ETL** | KarminQL + `read_karmin()` → pandas, CSV, `.kafd` | ★★★★☆ |
 | **Zdalny dostęp (sandbox)** | CLI lub własny klient RPC przez tunel HSS+HSL | ★★★★☆ |
 | **Gry / pamięć narracyjna** | `GameStore` + demo — NPC, questy, graf, termodynamika | ★★★★★ |
-| **Wspólna baza zespołu** | Trwałe światy v7.1 + auth/role v7.2 (`ZALOGUJ`, reader/writer/admin) | ★★★★☆ |
+| **Wspólna baza zespołu** | Trwałe światy v7.1 + auth v7.2 + ops v7.3 (metryki, backup) | ★★★★☆ |
+| **CRPG hack and slash** | `crpg_world_setup.py` — seed świata gry na trwałym serwerze | ★★★★★ |
 
 ## Co widać w demo, a co nie
 
@@ -89,6 +90,9 @@ python examples/game_memory_demo.py --local
 
 # demo na trwałym świecie serwera (współdzielony stan między sesjami)
 python examples/game_memory_demo.py --world rivendell --create-world
+
+# seed świata CRPG (bohater, potwory, loot, questy)
+python examples/crpg_world_setup.py --world dungeon --create-world
 ```
 
 ## Architektura (skrót)
@@ -112,7 +116,7 @@ python -m unittest discover -s tests -v
 python -m pytest tests/ -q
 ```
 
-Stan: **264 testów** (kernel, KarminQL v6.0–v6.9, HSS, HSL, RPC, sesje v7.0, światy v7.1, GameStore).
+Stan: **269 testów** (kernel, KarminQL v6.0–v6.9, HSS, HSL, RPC, sesje v7.0–v7.3, GameStore).
 
 ## Status i ograniczenia
 
@@ -120,15 +124,14 @@ Projekt jest w **fazie użytkowej dla early adopterów** — działa end-to-end,
 
 **Co działa:**
 - KarminQL v6.9 z rozbudowanym dialektem SQL-owym (JOIN, CTE, okna, JSON, EXPLAIN, indeksy)
-- Serwer v7.1: **izolacja sesji** (sandbox) + **trwałe światy** (`LISTA ŚWIATÓW`, `WYBIERZ/UTWÓRZ ŚWIAT`, zapis `.kafd` w `~/.cynober_worlds`)
+- Serwer v7.3: **izolacja sesji** (sandbox) + **trwałe światy** + **auth/role** + **operacje** (`ZDROWIE`, `METRYKI SERWERA`, backup/restore światów)
 - Tunel HSS + HSL + opcjonalny PSK/QKD-seed
 - Trwałość plikowa: `ZAPISZ` / `WCZYTAJ` (`.kafd`) w ramach sesji
 - Integracja pandas, CSV, `GameStore` dla gier i prototypów
 
 **Czego brakuje do pracy zawodowej w zespole:**
-- Auth per użytkownik i role (światy są współdzielone, ale bez kont)
-- Uwierzytelnienie **per użytkownik** (dziś: PSK/QKD = hasło sieci)
-- REST/ODBC, metryki operacyjne, HA — poza zakresem obecnej wersji
+- REST/ODBC, HA / replikacja — poza zakresem obecnej wersji
+- PSK/QKD to hasło sieci; auth użytkowników wymaga `auth.json` na serwerze
 - HSS domyślnie **N=15, Q=256** — podnoszenie parametrów w `karmazyn_hss.py`
 - Metadane TCP widoczne; częściowa ochrona DoS (rate limit)
 
@@ -136,7 +139,7 @@ Projekt jest w **fazie użytkowej dla early adopterów** — działa end-to-end,
 
 Stack jest warstwowy — można wnieść kawałek bez znajomości całości. Przydatne obszary:
 
-- **Auth i role** na trwałych światach v7.1
+- **Replikacja / gossip** między węzłami (`karmazyn_gossip.py`)
 - **NTT / N=256** w `karmazyn_hss.py` (Kyber-class KEM)
 - **Adapter QKD** zamiast `KARM_QKD_SEED` (ten sam KDF, inne źródło)
 - **Hardening** — TLS overlay, capability tokens, rotacja epoki w locie, auth per użytkownik

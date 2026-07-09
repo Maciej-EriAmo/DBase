@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-cynober_server.py — Bezpieczny Serwer Bazy Danych Cynober DB (v7.2)
+cynober_server.py — Bezpieczny Serwer Bazy Danych Cynober DB (v7.3)
 ==========================================================================
 Zastępuje serwer HTTP. Wykorzystuje protokół TCP oraz warstwę kryptograficzną
 z karmazyn_handshake.py (Ring-LWE / ECDH / PBKDF2) do zabezpieczenia zapytań.
@@ -8,6 +8,7 @@ z karmazyn_handshake.py (Ring-LWE / ECDH / PBKDF2) do zabezpieczenia zapytań.
 v7.0: każde połączenie RPC dostaje własny Store + KarminEngine (izolacja sesji).
 v7.1: trwałe, nazwane światy — WYBIERZ ŚWIAT / UTWÓRZ ŚWIAT (współdzielony stan).
 v7.2: auth na światach — ZALOGUJ, role reader/writer/admin, ACL w auth.json.
+v7.3: operacje — ZDROWIE, METRYKI SERWERA, kopie zapasowe światów.
 """
 
 from __future__ import annotations
@@ -20,6 +21,14 @@ import time
 
 import karmazyn_kernel as kernel
 from cynober_lambda_bridge import KarminLambdaBridge
+from cynober_ops import (
+    get_server_metrics,
+    is_ops_admin_query,
+    is_ops_query,
+    is_ops_write_query,
+    try_ops_command,
+    world_from_ops_query,
+)
 from cynober_world_auth import (
     ROLE_ADMIN,
     ROLE_READER,
@@ -101,6 +110,10 @@ class CynoberFacade:
         auth_resp = self._try_auth_command(stripped, upper)
         if auth_resp is not None:
             return auth_resp
+
+        ops_resp = self._try_ops_command(stripped, upper)
+        if ops_resp is not None:
+            return ops_resp
 
         deny = self._check_permission(stripped, upper)
         if deny is not None:
@@ -218,7 +231,74 @@ class CynoberFacade:
 
         return None
 
+    def _try_ops_command(self, stripped: str, upper: str) -> list | None:
+        if not is_ops_query(stripped, upper):
+            return None
+
+        deny = self._check_ops_permission(stripped, upper)
+        if deny is not None:
+            self._auth.audit(
+                user=self._auth_user,
+                world=world_from_ops_query(stripped),
+                action="DENY",
+                query=stripped,
+                allowed=False,
+            )
+            return deny
+
+        resp = try_ops_command(
+            stripped,
+            upper,
+            self._registry,
+            active_sessions=_session_manager.active_count,
+            auth_enabled=self._auth.enabled,
+        )
+        if resp and resp[0].get("status") == "ok":
+            self._auth.audit(
+                user=self._auth_user,
+                world=world_from_ops_query(stripped),
+                action=resp[0].get("action", "OPS"),
+                query=stripped,
+                allowed=True,
+            )
+        return resp
+
+    def _check_ops_permission(self, stripped: str, upper: str) -> list | None:
+        if not self._auth.enabled:
+            return None
+        if upper in ("ZDROWIE", "METRYKI SERWERA"):
+            return None
+
+        world = world_from_ops_query(stripped)
+        if world is None:
+            return None
+
+        if not self._auth_user:
+            return [{"status": "error", "message": "Wymagane logowanie: ZALOGUJ \"user\" TOKEN \"...\"."}]
+
+        if is_ops_admin_query(stripped):
+            if not self._auth.has_min_role(self._auth_user, world, ROLE_ADMIN):
+                return [{
+                    "status": "error",
+                    "message": f"PRZYWRÓĆ ŚWIAT wymaga roli admin w '{world}'.",
+                }]
+            return None
+
+        if is_ops_write_query(stripped):
+            if not self._auth.has_min_role(self._auth_user, world, ROLE_WRITER):
+                return [{
+                    "status": "error",
+                    "message": f"KOPIA ZAPASOWA wymaga roli writer w '{world}'.",
+                }]
+            return None
+
+        if not self._auth.has_min_role(self._auth_user, world, ROLE_READER):
+            return [{"status": "error", "message": f"Brak dostępu do świata '{world}'."}]
+        return None
+
     def _check_permission(self, stripped: str, upper: str) -> list | None:
+        if is_ops_query(stripped, upper):
+            return None
         if not self._auth.enabled:
             return None
 
@@ -533,6 +613,7 @@ def handle_client(conn: socket.socket, addr, query_limit: SessionQueryLimiter | 
         tunnel_ready = True
         session_label = remote_caps.get("session_id") or f"{addr[0]}:{addr[1]}"
         session_facade = _session_manager.create(session_label)
+        get_server_metrics().record_connection()
         psk_note = " [PSK]" if os.environ.get("KARM_PSK") else ""
         hsl_note = " + HSL" if hsl_link else ""
         qkd_note = " + QKD" if hsl_link and hsl_link.qkd_hybrid else ""
@@ -553,6 +634,7 @@ def handle_client(conn: socket.socket, addr, query_limit: SessionQueryLimiter | 
             ok, rl_msg = query_limit.allow()
             if not ok:
                 print(f"[Cynober] Rate limit zapytań {addr}: {rl_msg}")
+                get_server_metrics().record_rate_limit()
                 send_encrypted_response(
                     conn, crypto, error_result(rl_msg, action="RATE_LIMIT"), hsl_link
                 )
@@ -566,6 +648,7 @@ def handle_client(conn: socket.socket, addr, query_limit: SessionQueryLimiter | 
             except Exception as e:
                 results = error_result(f"Błąd wewnętrzny serwera: {e}", action="SERVER")
 
+            get_server_metrics().record_query(results)
             send_encrypted_response(conn, crypto, results, hsl_link)
 
     except (ConnectionError, EOFError, TimeoutError):
@@ -599,7 +682,7 @@ def run_server(host='0.0.0.0', port=8080):
     worlds_dir = get_world_registry().base_dir
     print("=" * 60)
     auth = get_auth_store(worlds_dir)
-    print(f"  Cynober DB SECURE Server v7.2 działa na porcie {port}")
+    print(f"  Cynober DB SECURE Server v7.3 działa na porcie {port}")
     print("  Nasłuch w standardzie Karmazyn Handshake RPC.")
     print("  Izolacja sesji: osobny executor na każde połączenie TCP.")
     print(f"  Trwałe światy: {worlds_dir}")

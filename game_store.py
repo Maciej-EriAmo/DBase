@@ -138,6 +138,29 @@ class GameStore:
         row = self.run_line("KTO JESTEM", strict=True)
         return {k: v for k, v in row.items() if k not in ("status", "action")}
 
+    def health(self) -> dict:
+        row = self.run_line("ZDROWIE", strict=True)
+        return row.get("data", {})
+
+    def server_metrics(self) -> dict:
+        row = self.run_line("METRYKI SERWERA", strict=True)
+        return row.get("data", {})
+
+    def backup_world(self, name: str) -> dict:
+        row = self.run_line(f'KOPIA ZAPASOWA ŚWIATA "{_esc(name)}"', strict=True)
+        return {k: v for k, v in row.items() if k not in ("status", "action")}
+
+    def list_backups(self, name: str) -> List[dict]:
+        row = self.run_line(f'LISTA KOPII ŚWIATA "{_esc(name)}"', strict=True)
+        return list(row.get("backups", []))
+
+    def restore_world(self, name: str, backup_id: str) -> dict:
+        row = self.run_line(
+            f'PRZYWRÓĆ ŚWIAT "{_esc(name)}" Z KOPII "{_esc(backup_id)}"',
+            strict=True,
+        )
+        return {k: v for k, v in row.items() if k not in ("status", "action")}
+
     def seed_demo_world(self) -> None:
         """NPC, gracz, quest, relacje i pamięć tekstowa (JSON w cechach)."""
         self.run(
