@@ -2,7 +2,7 @@
 
 Relacyjno-grafowa baza danych na termodynamicznym rdzeniu **KarmazynOS**, z transportem **Cynober-Secure-1.2** i warstwą **HSL** (Holographic Session Links). Telefon w Termux może gadać z serwerem na PC; zapytania **KarminQL** lecą po tunelu chronionym **Ring-LWE (HSS)** i **HSL** — splątanie jako certyfikat sesji, nie tylko szyfrowanie payloadu.
 
-> *Ruch TCP widać, ale payload to szum. HSL nie zastępuje TLS — wiąże kontekst sesji (Φ², epoka, PrismMask). Slot `KARM_QKD_SEED` to dziś symulacja hybrydy z siecią kwantową; jutro ten sam punkt w KDF, inne źródło. **N=15** w HSS to świadomy prototyp (lekkość, Termux) — KEM skaluje się bez ruszania RPC.*
+> *Ruch TCP widać, ale payload to szum. Transport jest **post-quantum oriented**: Ring-LWE (HSS) na handshake + **HSL** wiąże sesję (Φ², epoka, PrismMask, opcjonalny QKD-seed). Nie planujemy równoległego HTTP/REST — jeden protokół, więcej klientów na tym samym wire. **N=15** w HSS to prototyp (Termux); KEM skaluje się bez ruszania RPC.*
 
 ## Wersje (stan repozytorium)
 
@@ -22,7 +22,7 @@ Pełna składnia i API: [`cynober_manual.md`](cynober_manual.md)
 |----------|------|
 | **KarmazynOS** | Termodynamiczny silnik pamięci — atomy, bąble, reach-GC |
 | **Cynober / KarminQL** | Baza i język zapytań (relacyjno-grafowy model) |
-| **Protokół Karmazyn** | HSS (Ring-LWE KEM) → HSL (sesja, AAD, opcjonalnie QKD) → Cynober-RPC |
+| **Protokół Karmazyn** | Jedyny transport: HSS (Ring-LWE KEM) → HSL (sesja post-kwantowa, AAD, QKD) → Cynober-RPC |
 
 ## Do czego to służy
 
@@ -130,20 +130,31 @@ Projekt jest w **fazie użytkowej dla early adopterów** — działa end-to-end,
 - Integracja pandas, CSV, `GameStore` dla gier i prototypów
 
 **Czego brakuje do pracy zawodowej w zespole:**
-- REST/ODBC — poza zakresem obecnej wersji; replikacja HA-lite jest w v7.4 (peers.json + sync plików .kafd)
-- PSK/QKD to hasło sieci; auth użytkowników wymaga `auth.json` na serwerze
-- HSS domyślnie **N=15, Q=256** — podnoszenie parametrów w `karmazyn_hss.py`
+- Oficjalny **pakiet klienta** (SDK) — dziś: CLI + `GameStore` + `tests/rpc_client.py`
+- **Hardening bezpieczeństwa** — profile `proto`/`production`, podniesienie parametrów HSS (N=256)
+- PSK/QKD to hasło sieci; konta użytkowników wymagają `auth.json` na serwerze
 - Metadane TCP widoczne; częściowa ochrona DoS (rate limit)
+
+## Mapa drogowa (jeden protokół)
+
+**Zasada:** jeden wire — **Cynober-Secure-1.2** (TCP + HSS + HSL + KarminQL). Bez równoległego REST/ODBC/HTTP — kolejne porty i dialekty rozproszyłyby adopcję; zamiast tego **więcej cienkich klientów** na tym samym tunelu.
+
+| Wersja | Kierunek | Cel |
+|--------|----------|-----|
+| v7.4 ✓ | Replikacja światów | HA-lite: `PULL`/`PUSH`/`SYNC`, `peers.json` |
+| **v7.5** | **Bezpieczeństwo** | Profile wdrożeniowe, wzmocnienie HSS (N=256 / NTT), adapter QKD, capability tokens |
+| **v7.6** | **Klient SDK** | Stabilne API (`pip install`), przewodnik „zespół w 15 min”, bindingi językowe na tym samym handshake |
+| v7.7+ | Gossip pełny | Synchronizacja BubbleVFS / phi-space (`karmazyn_gossip.py`) — nadal po RPC |
+
+**Dlaczego nie REST:** HTTP dałby znajome narzędzia, ale drugi silnik transportu i gorsze wykorzystanie HSL. Produktem jest **Cynober end-to-end** — post-quantum oriented tunnel + KarminQL + światy, nie „JSON API obok”.
 
 ## Szukam współpracy
 
 Stack jest warstwowy — można wnieść kawałek bez znajomości całości. Przydatne obszary:
 
-- **Replikacja / gossip** między węzłami (`karmazyn_gossip.py`)
-- **NTT / N=256** w `karmazyn_hss.py` (Kyber-class KEM)
-- **Adapter QKD** zamiast `KARM_QKD_SEED` (ten sam KDF, inne źródło)
-- **Hardening** — TLS overlay, capability tokens, rotacja epoki w locie, auth per użytkownik
-- **Gossip / replikacja** — `karmazyn_gossip.py`, synchronizacja BubbleVFS
+- **Bezpieczeństwo v7.5** — NTT / N=256 w `karmazyn_hss.py`, profile proto/production, adapter QKD
+- **Klient SDK** — biblioteka Python (PyPI), opcjonalnie Go/TypeScript na tym samym `cynober_rpc.py`
+- **Gossip** — `karmazyn_gossip.py`, synchronizacja BubbleVFS po istniejącym tunelu
 
 Jeśli chcesz dołączyć — issue, PR albo kontakt przez profil GitHub.
 

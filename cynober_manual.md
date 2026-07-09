@@ -46,20 +46,20 @@ Cynober DB to relacyjno-grafowa baza danych na termodynamicznym rdzeniu **Karmaz
 |--------|-----------|------------------|
 | Pamięć | **KarmazynOS** | Dane „żyją” termodynamicznie; nieosiągalne zimne atomy znikają (reach-GC). |
 | Zapytania | **Cynober / KarminQL** | Operacje na bąblach i grafie w tym samym modelu co jądro — nie na zewnętrznym schemacie SQL. |
-| Sieć | **HSL** | Pakiet bez właściwego stanu sesji (Φ², kontekst, seed) nie daje sensownego JSON — odszyfrowanie kończy się błędem GCM (kolaps do szumu). |
+| Sieć | **HSL** | Warstwa sesji **post-quantum oriented** (Φ², PrismMask, QKD-seed): bez właściwego stanu pakiet nie daje sensownego JSON — kolaps do szumu (GCM). Uzupełnia HSS (Ring-LWE KEM), nie zastępuje go. |
 
 ### Warstwy
 
 * **Klient** (`Cynober_db.py`) — interaktywna powłoka z tabelami i opcjonalnymi wykresami (`WYKRES` + plotly).
 * **Serwer** (`cynober_server.py`) — nasłuch TCP na porcie **8080** (domyślnie `0.0.0.0`). Każde zapytanie to ramka JSON `{"query": "..."}` w tunelu HSL.
 * **RPC** (`cynober_rpc.py`) — negocjacja wersji, anty-replay, handshake, faza HSL, kodeki ramek.
-* **HSL** (`karmazyn_hsl.py`) — tożsamość Φ², PrismMask, AAD, slot `KARM_QKD_SEED` (hybryda z siecią kwantową).
+* **HSL** (`karmazyn_hsl.py`) — tożsamość Φ², PrismMask, AAD, slot `KARM_QKD_SEED`; w praktyce **warstwa sesji post-kwantowej** (wiązanie kluczy HSS z kontekstem węzła i opcjonalnym źródłem QKD).
 * **Silnik zapytań** (`cynober_query_engine.py`) — parser i executor KarminQL.
 * **Jądro** (`karmazyn_kernel.py` → `karmazyn_substrate.py` → `karmazyn_atom.py`) — atomy z temperaturą, bąble, reach-GC.
 * **Trwałość** (`karmazyn_store.py`, `karmazyn_kafd.py`) — format pliku `.kafd`.
 * **GameStore** (`game_store.py`) — cienki adapter nad KarminQL/RPC: NPC, questy, wyszukiwanie pamięci, termodynamika.
 
-> **Uwaga:** Serwer **nie** udostępnia HTTP. Transport to wyłącznie TCP z protokołem Karmazyn (HSS + HSL).
+> **Uwaga:** Serwer **nie** udostępnia HTTP ani ODBC. **Jeden protokół łączności:** TCP + Cynober-Secure-1.2 (HSS + HSL + RPC). Integracja zespołu = klienty na tym samym wire (CLI, SDK, bindingi), nie równoległy REST.
 
 ### Izolacja sesji (v7.0) i trwałe światy (v7.1)
 
@@ -339,6 +339,18 @@ finally:
 
 Logika negocjacji: `cynober_rpc.py`; kryptografia: `karmazyn_handshake.py`, `karmazyn_hss.py`; warstwa HSL: `karmazyn_hsl.py`.
 
+### Stos post-quantum oriented (jeden transport)
+
+Cynober **nie** dokłada osobnego TLS/HTTP obok tunelu — bezpieczeństwo jest w jednym łańcuchu:
+
+| Warstwa | Plik | Rola |
+|---------|------|------|
+| **HSS** | `karmazyn_hss.py` | Handshake **post-kwantowy** (Ring-LWE KEM, domyślnie N=15 prototyp) |
+| **HSL** | `karmazyn_hsl.py` | **Sesja post-kwantowa** — Φ², PrismMask, epoka, AAD; opcjonalna hybryda QKD w KDF |
+| **RPC** | `cynober_rpc.py` | KarminQL w ramkach AES-GCM z kluczem pochodzącym z HSL |
+
+HSL to nie „certyfikat X.509”, lecz **rezonans sesji**: bez poprawnego Φ² / seeda / kontekstu odszyfrowanie kończy się błędem — to wiązanie tożsamości węzła z kanałem, zgodne z modelem post-kwantowym (klucze z KEM + kontekst kwantowy), a nie klasycznym PKI.
+
 ### Fazy połączenia
 
 1. **Powitanie (capabilities)** — wymiana JSON:
@@ -467,15 +479,16 @@ Klient wyświetli: `Tunel zabezpieczony (HSS + HSL + QKD)`. Rozjazd seeda międz
 
 **Chronione:**
 
-* Treść zapytań KarminQL — szyfrowanie HSS/ECDH + klucze ramek HSL z AAD.
+* Treść zapytań KarminQL — **stos post-quantum oriented**: HSS (Ring-LWE KEM) + klucze ramek HSL (Φ², PrismMask, AAD) + opcjonalna hybryda QKD.
 * Fałszywy kontekst (zła epoka, zły seed QKD, sfałszowany `link_cap`) — brak rezonansu, odrzucenie ramki.
 * Replay handshake — `session_id` + okno `ts` (1.1/1.2).
+* Konta na światach (v7.2) — `auth.json`, role reader/writer/admin, audyt (osobna warstwa od PSK sieci).
 
 **Nie chronione (świadome ograniczenia prototypu):**
 
 * **Metadane TCP** — port :8080, rozmiar pakietów, timing (podsłuch widzi ruch, nie KarminQL).
-* Brak TLS / X.509 — zaufanie z HSL i opcjonalnego PSK/QKD-seed, nie z CA.
-* Brak uwierzytelnienia użytkownika — PSK/QKD to hasło **sieci**, nie konta.
+* Brak klasycznego PKI (X.509 / TLS) — **świadomy wybór jednego protokołu**; zaufanie z HSL + PSK/QKD, nie z CA. Wzmocnienie w v7.5 (profile, N=256).
+* PSK/QKD to hasło **sieci**; konta użytkowników wymagają `auth.json` (opcjonalne).
 * **DoS** — częściowa ochrona: rate limit połączeń i zapytań (sekcja `server.rate_limit`); flood TCP nadal możliwy przy wielu IP.
 * Brak persystencji między sesjami — po rozłączeniu dane znikają, chyba że zapiszesz `.kafd` w sesji.
 * Zrzuty `.kafd` — Phi-Cipher (obfuskacja), nie AES z hasłem użytkownika.
@@ -1117,7 +1130,7 @@ DBase/
 │   ├── analyst_demo.py        ← pandas + JOIN (analityka)
 │   └── game_memory_demo.py    ← pamięć gry przez RPC / --local
 ├── requirements.txt           ← zależności opcjonalne
-├── tests/                     ← 257 testów
+├── tests/                     ← 274 testów
 │   ├── test_kernel.py … test_karminql.py
 │   ├── test_sql_closure.py, test_v62.py … test_v69.py
 │   ├── test_v70.py, test_v71.py, test_game_store.py
@@ -1140,7 +1153,7 @@ DBase/
 | **Sieć** | Tunel HSS + HSL, profile klienta, rate limit, sandbox v7.0, trwałe światy v7.1 |
 | **Analityka** | pandas, CSV, `.kafd`, `examples/analyst_demo.py` |
 | **Aplikacje** | `GameStore` + demo gry przez RPC lub lokalnie |
-| **Jakość** | 257 testów jednostkowych i integracyjnych |
+| **Jakość** | 274 testów jednostkowych i integracyjnych |
 
 ### Ograniczenia (prototyp → produkcja)
 
@@ -1149,14 +1162,22 @@ DBase/
 | Sandbox = efemeryczna baza | Bez `WYBIERZ ŚWIAT` rozłączenie kasuje stan |
 | Auth opcjonalne | Bez `auth.json` światy są otwarte; z auth — role w ACL |
 | PSK/QKD = hasło sieci | Brak kont użytkowników i ról |
-| Brak HTTP/ODBC | Integracja tylko przez własny klient TCP / Python |
-| HSS N=15 | Prototyp kryptograficzny; podnieść parametry przed ekspozycją na internet |
+| Jeden protokół (świadomy wybór) | Brak HTTP/REST/ODBC — integracja przez klienty na Cynober-Secure-1.2 |
+| HSS N=15 | Prototyp KEM; podnieść N/NTT w ramach v7.5 (bezpieczeństwo) |
+| SDK w rozwoju | Dziś: CLI, `GameStore`, `tests/rpc_client.py` — docelowo pakiet PyPI |
 
-### Planowany kierunek (v7.5+)
+### Mapa drogowa (jeden protokół)
 
-1. **Hardening** — HSS N=256, adapter QKD, opcjonalny TLS overlay
-2. **Gossip pełny** — synchronizacja BubbleVFS / phi-space (`karmazyn_gossip.py`)
-3. **REST/ODBC** — integracja poza własnym klientem TCP
+**Zasada:** nie mnożymy transportów (REST, ODBC, HTTP). Adopcja zespołu = **więcej klientów na tym samym tunelu** HSS+HSL+RPC, nie drugi port nasłuchu.
+
+| Wersja | Obszar | Zakres |
+|--------|--------|--------|
+| v7.4 ✓ | Replikacja | `PULL`/`PUSH`/`SYNC`, `peers.json` — ten sam RPC między węzłami |
+| **v7.5** | **Bezpieczeństwo** | Profile `proto` / `production`; HSS N=256 + NTT; adapter QKD; capability tokens; rotacja epoki |
+| **v7.6** | **Klient SDK** | Stabilne API Python (PyPI), dokumentacja wdrożeniowa, opcjonalne bindingi (Go/TS) — ten sam handshake |
+| v7.7+ | Gossip | `karmazyn_gossip.py` — BubbleVFS / phi-space nad RPC |
+
+**Czego nie planujemy:** REST gateway, ODBC, równoległy TLS/HTTP — rozproszyłyby adopcję i osłabiły model HSL jako jedynej warstwy sesji post-kwantowej.
 
 ### Pliki tożsamości węzła (poza repozytorium)
 
