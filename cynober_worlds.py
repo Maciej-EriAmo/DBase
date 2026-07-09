@@ -1,9 +1,12 @@
 #!/usr/bin/env python3
 """
-cynober_worlds.py — trwałe, nazwane światy na serwerze Cynober (v7.1)
+cynober_worlds.py — trwałe, nazwane światy na serwerze Cynober (v7.1+)
 =======================================================================
 Każdy świat = współdzielony Store + KarminEngine, zapisany jako .kafd na dysku.
 Wiele sesji RPC może dołączyć do tego samego świata (wspólny stan, lock na zapis).
+
+v7.8: auto-flush dirty, utrwalony inv_index/atom_index w .meta.json,
+      Proca dla payloadów COLD (katalog proca/<świat>/).
 """
 
 from __future__ import annotations
@@ -11,6 +14,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
 import threading
 import time
 from dataclasses import dataclass, field
@@ -22,6 +26,7 @@ from cynober_lambda_bridge import KarminLambdaBridge
 from cynober_query_engine import KarminType
 
 WORLD_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_\-]{0,63}$")
+META_INDEX_VERSION = 1
 
 DEFAULT_WORLDS_DIR = Path.home() / ".cynober_worlds"
 
@@ -50,6 +55,48 @@ def _kafd_path(base: Path, name: str) -> Path:
     return base / f"{name}.kafd"
 
 
+def _proca_dir(base: Path, name: str) -> Path:
+    path = base / "proca" / name
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def export_query_indexes(api) -> dict[str, Any]:
+    """Serializacja inv_index / atom_index do .meta.json."""
+    return {
+        "version": META_INDEX_VERSION,
+        "inv_index": {
+            key: {val: sorted(bubs) for val, bubs in vals.items()}
+            for key, vals in api._inv_index.items()
+        },
+        "atom_index": {
+            aid: sorted(bubs) for aid, bubs in api._atom_index.items()
+        },
+    }
+
+
+def restore_query_indexes(api, data: dict[str, Any] | None) -> bool:
+    """Przywróć indeksy z meta; False gdy brak danych."""
+    if not data or not isinstance(data, dict):
+        return False
+    inv = data.get("inv_index")
+    atom = data.get("atom_index")
+    if not isinstance(inv, dict) or not isinstance(atom, dict):
+        return False
+    ns = api.active_ns
+    shell = api.namespaces[ns]
+    shell["inv_index"] = {
+        key: {val: set(bubs) for val, bubs in vals.items()}
+        for key, vals in inv.items()
+        if isinstance(vals, dict)
+    }
+    shell["atom_index"] = {
+        aid: set(bubs) for aid, bubs in atom.items()
+        if isinstance(bubs, list)
+    }
+    return True
+
+
 def rebuild_all_indexes(api) -> None:
     """Odtwarza inv_index i atom_index po wczytaniu z .kafd."""
     ns = api.active_ns
@@ -70,11 +117,28 @@ def rebuild_all_indexes(api) -> None:
             api._update_index(bubble_name, key, val, add=True)
 
 
-def save_runtime_to_kafd(bridge: KarminLambdaBridge, path: Path | str) -> int:
+def _proca_index_for(proca_dir: Path | str | None):
+    if proca_dir is None:
+        return None
+    from karmazyn_proca import ProcaIndex
+
+    idx = ProcaIndex(fields_dir=str(proca_dir))
+    idx.load_sources_from_disk()
+    return idx
+
+
+def save_runtime_to_kafd(
+    bridge: KarminLambdaBridge,
+    path: Path | str,
+    *,
+    proca_dir: Path | str | None = None,
+    proca_cold: bool = True,
+) -> int:
     import karmazyn_store
 
     store = bridge.store
     engine = bridge.engine
+    proca_index = _proca_index_for(proca_dir) if proca_cold else None
     syn_ids: List[str] = []
     try:
         for nazwa, b in engine.api._bubble_index.items():
@@ -84,18 +148,31 @@ def save_runtime_to_kafd(bridge: KarminLambdaBridge, path: Path | str) -> int:
         kinds = list({a.S for a in store.reg.atoms() if a.S})
         if "__bubble__" not in kinds:
             kinds.append("__bubble__")
-        return karmazyn_store.save_documents(store, str(path), kinds=kinds)
+        return karmazyn_store.save_documents(
+            store,
+            str(path),
+            kinds=kinds,
+            proca_index=proca_index,
+            proca_cold_only=bool(proca_cold and proca_index is not None),
+        )
     finally:
         for sid in syn_ids:
             store.reg.delete(sid)
 
 
-def load_runtime_from_kafd(bridge: KarminLambdaBridge, path: Path | str) -> int:
+def load_runtime_from_kafd(
+    bridge: KarminLambdaBridge,
+    path: Path | str,
+    *,
+    proca_dir: Path | str | None = None,
+    query_indexes: dict[str, Any] | None = None,
+) -> int:
     import karmazyn_store
 
     store = bridge.store
     engine = bridge.engine
-    loaded = karmazyn_store.load_documents(store, str(path))
+    proca_index = _proca_index_for(proca_dir)
+    loaded = karmazyn_store.load_documents(store, str(path), proca_index=proca_index)
     for a in list(store.reg.atoms()):
         if a.S != "__bubble__":
             continue
@@ -106,7 +183,8 @@ def load_runtime_from_kafd(bridge: KarminLambdaBridge, path: Path | str) -> int:
             store.set_root(b)
             engine.api._bubble_index[nazwa] = b
         store.reg.delete(a.id)
-    rebuild_all_indexes(engine.api)
+    if not restore_query_indexes(engine.api, query_indexes):
+        rebuild_all_indexes(engine.api)
     return loaded
 
 
@@ -179,6 +257,7 @@ class WorldRegistry:
         bubbles = 0
         if cached is not None:
             bubbles = len(cached.runtime.engine.api._bubble_index)
+        qi = meta.get("query_indexes") or {}
         return {
             "name": name,
             "exists_on_disk": kafd.is_file(),
@@ -187,6 +266,7 @@ class WorldRegistry:
             "bubbles": bubbles or meta.get("bubbles", 0),
             "created_at": meta.get("created_at", cached.created_at if cached else None),
             "modified_at": meta.get("modified_at", cached.modified_at if cached else None),
+            "indexed_keys": sorted((qi.get("inv_index") or {}).keys()),
         }
 
     def _create_runtime(self) -> WorldRuntime:
@@ -197,7 +277,12 @@ class WorldRegistry:
         kafd = _kafd_path(self._base, name)
         meta = _load_meta(_meta_path(self._base, name))
         if kafd.is_file():
-            load_runtime_from_kafd(runtime.bridge, kafd)
+            load_runtime_from_kafd(
+                runtime.bridge,
+                kafd,
+                proca_dir=_proca_dir(self._base, name),
+                query_indexes=meta.get("query_indexes"),
+            )
         user_indexes = set(meta.get("user_indexes", []))
         for key in user_indexes:
             runtime.engine.api._user_indexes.add(key)
@@ -264,6 +349,18 @@ class WorldRegistry:
             world.dirty = False
             return {"name": name, "saved": saved}
 
+    def flush_all_dirty(self) -> List[dict]:
+        """Zapisuje wszystkie załadowane światy z flagą dirty (auto-flush)."""
+        with self._lock:
+            dirty_names = [n for n, w in self._worlds.items() if w.dirty]
+        flushed: List[dict] = []
+        for name in dirty_names:
+            try:
+                flushed.append(self.flush(name))
+            except ValueError:
+                pass
+        return flushed
+
     def delete(self, name: str) -> None:
         name = validate_world_name(name)
         with self._lock:
@@ -277,22 +374,34 @@ class WorldRegistry:
             kafd.unlink()
         if meta.is_file():
             meta.unlink()
+        proca = self._base / "proca" / name
+        if proca.is_dir():
+            shutil.rmtree(proca, ignore_errors=True)
 
     def _persist(self, world: World) -> int:
-        kafd = _kafd_path(self._base, world.name)
-        saved = save_runtime_to_kafd(world.runtime.bridge, kafd)
-        world.modified_at = time.time()
-        bubbles = len(world.runtime.engine.api._bubble_index)
-        meta = {
-            "name": world.name,
-            "created_at": world.created_at,
-            "modified_at": world.modified_at,
-            "bubbles": bubbles,
-            "user_indexes": sorted(world.runtime.engine.api._user_indexes),
-        }
-        _save_meta(_meta_path(self._base, world.name), meta)
-        world.user_indexes = set(meta["user_indexes"])
-        return saved
+        with world.runtime.lock:
+            kafd = _kafd_path(self._base, world.name)
+            proca = _proca_dir(self._base, world.name)
+            saved = save_runtime_to_kafd(
+                world.runtime.bridge,
+                kafd,
+                proca_dir=proca,
+                proca_cold=True,
+            )
+            api = world.runtime.engine.api
+            bubbles = len(api._bubble_index)
+            meta = {
+                "name": world.name,
+                "created_at": world.created_at,
+                "modified_at": time.time(),
+                "bubbles": bubbles,
+                "user_indexes": sorted(api._user_indexes),
+                "query_indexes": export_query_indexes(api),
+            }
+            _save_meta(_meta_path(self._base, world.name), meta)
+            world.modified_at = meta["modified_at"]
+            world.user_indexes = set(meta["user_indexes"])
+            return saved
 
     @property
     def loaded_count(self) -> int:

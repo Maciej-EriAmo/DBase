@@ -13,6 +13,7 @@ v7.4: replikacja — LISTA WĘZŁÓW, PULL/PUSH/SYNC światów między serwerami
 v7.5: profile HSS (proto/standard/production), konfiguracja KARM_HSS_PROFILE.
 v7.6: cynober_client.py — oficjalny SDK klienta (jeden protokół).
 v7.7: pro — QKD adapter, capability tokens, rotacja epoki, NTT, gossip phi, PyPI.
+v7.8: auto-flush światów, utrwalony indeks zapytań, Proca dla COLD.
 """
 
 from __future__ import annotations
@@ -74,6 +75,7 @@ from cynober_rpc import (
     send_encrypted_response,
     send_handshake_error,
 )
+from cynober_auto_flush import AutoFlushWorker, load_auto_flush_config
 from cynober_rate_limit import (
     SessionQueryLimiter,
     ServerRateLimiter,
@@ -774,18 +776,25 @@ def handle_client(conn: socket.socket, addr, query_limit: SessionQueryLimiter | 
 
 
 def run_server(host='0.0.0.0', port=8080):
+    from cynober_client_config import get_server_config
+    from cynober_ops import SERVER_VERSION
+
     srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     srv.bind((host, port))
     srv.listen(5)
     limiter = _get_rate_limiter()
     rl = limiter.cfg
-    worlds_dir = get_world_registry().base_dir
+    registry = get_world_registry()
+    worlds_dir = registry.base_dir
+    af_cfg = load_auto_flush_config(get_server_config())
+    auto_flush = AutoFlushWorker(registry, af_cfg["interval_sec"])
+    auto_flush.start()
     print("=" * 60)
     auth = get_auth_store(worlds_dir)
     peers = get_peer_registry(worlds_dir)
     hss_prof = os.environ.get("KARM_HSS_PROFILE", "proto")
-    print(f"  Cynober DB SECURE Server v7.6 działa na porcie {port}")
+    print(f"  Cynober DB SECURE Server v{SERVER_VERSION} działa na porcie {port}")
     print(f"  Profil HSS: {hss_prof}")
     print("  Nasłuch w standardzie Karmazyn Handshake RPC.")
     print("  Izolacja sesji: osobny executor na każde połączenie TCP.")
@@ -802,6 +811,10 @@ def run_server(host='0.0.0.0', port=8080):
               f"ip={rl['max_connections_per_ip']} "
               f"conn/min={rl['max_new_connections_per_ip_per_min']} "
               f"q/min={rl['max_queries_per_minute']}")
+    if auto_flush.enabled:
+        print(f"  Auto-flush światów: co {af_cfg['interval_sec']}s (dirty → .kafd)")
+    else:
+        print("  Auto-flush światów: wyłączony (CYNOBER_AUTO_FLUSH_SEC=0)")
     print("=" * 60)
 
     try:
@@ -830,6 +843,10 @@ def run_server(host='0.0.0.0', port=8080):
             t.start()
     except KeyboardInterrupt:
         print("\nZamykanie serwera...")
+        auto_flush.stop()
+        flushed = auto_flush.flush_now()
+        if flushed:
+            print(f"[Cynober] Końcowy flush: {len(flushed)} światów")
         srv.close()
 
 

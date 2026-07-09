@@ -15,7 +15,7 @@ import struct
 import tempfile
 import time
 import hashlib
-from typing import Iterable, Optional
+from typing import Any, Iterable, Optional
 
 try:
     from karmazyn_kafd import vfs_pack, vfs_unpack
@@ -146,12 +146,25 @@ def _atomic_write(path: str, data: bytes) -> None:
             except OSError: pass
 
 
+def _atom_phi_vector(phi, atom) -> Optional[Any]:
+    vec = getattr(atom, "vector", None)
+    if vec is not None and len(vec) > 0:
+        return vec
+    av = getattr(phi, "atom_vector", None)
+    if callable(av):
+        return av(atom)
+    return None
+
+
 def save_documents(phi, path: str,
                    kinds: Iterable[str] = DOC_KINDS,
-                   proca_index=None) -> int:
+                   proca_index=None,
+                   proca_cold_only: bool = False) -> int:
     """Zapisz atomy z opcjonalną deduplikacją ProcaIndex i szyfrowaniem Phi."""
     if not _KAFD_OK:
         raise RuntimeError("Brak karmazyn_kafd — nie można zapisać na dysk")
+
+    from karmazyn_atom import T_HOT
 
     kinds = tuple(kinds)
     atoms_dict = {}
@@ -160,12 +173,16 @@ def save_documents(phi, path: str,
             override_data = None
             data = atom.metadata.get("data", b"")
             
-            # Deduplikacja Proca
+            # Deduplikacja Proca (opcjonalnie tylko dla nie-HOT)
             if proca_index and len(data) > 0:
-                phi_vec = getattr(atom, 'vector', None)
-                typ, res = proca_index.register_or_deduplicate(atom.id, data, phi_vec, float(atom.T))
-                if typ == "coordinate":
-                    override_data = res.to_json_bytes()
+                use_proca = not proca_cold_only or float(atom.T) < T_HOT
+                if use_proca:
+                    phi_vec = _atom_phi_vector(phi, atom)
+                    typ, res = proca_index.register_or_deduplicate(
+                        atom.id, data, phi_vec, float(atom.T)
+                    )
+                    if typ == "coordinate":
+                        override_data = res.to_json_bytes()
 
             atoms_dict[atom.id] = _encode_atom(atom, override_data)
 
@@ -184,7 +201,7 @@ def save_documents(phi, path: str,
     return len(atoms_dict)
 
 
-def load_documents(phi, path: str) -> int:
+def load_documents(phi, path: str, proca_index=None) -> int:
     """Wczytaj atomy (z automatycznym deszyfrowaniem Phi)."""
     if not _KAFD_OK:
         raise RuntimeError("Brak karmazyn_kafd — nie można odczytać z dysku")
@@ -222,6 +239,17 @@ def load_documents(phi, path: str) -> int:
         if isinstance(m, dict):
             atom.metadata.update(m)
         if data:
+            if proca_index is not None:
+                try:
+                    from karmazyn_proca import ProcaCoordinate
+
+                    if ProcaCoordinate.is_proca_json(data):
+                        coord = ProcaCoordinate.from_json_bytes(data, aid)
+                        resolved = proca_index.resolve_coordinate(coord)
+                        if resolved is not None:
+                            data = resolved
+                except Exception:
+                    pass
             atom.metadata["data"] = data
         n += 1
     return n

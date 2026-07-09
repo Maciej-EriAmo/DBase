@@ -27,6 +27,7 @@ def default_hss_profile() -> str:
 
 
 def default_server_config() -> dict[str, Any]:
+    from cynober_auto_flush import default_auto_flush_config
     from cynober_rate_limit import default_rate_limit_config
 
     return {
@@ -35,6 +36,7 @@ def default_server_config() -> dict[str, Any]:
         "note": "Nasłuch na wszystkich interfejsach (LAN / Termux)",
         "hss_profile": default_hss_profile(),
         "rate_limit": default_rate_limit_config(),
+        "auto_flush": default_auto_flush_config(),
     }
 
 
@@ -64,6 +66,8 @@ def _migrate_config(data: dict[str, Any]) -> dict[str, Any]:
             srv["rate_limit"] = default_server_config()["rate_limit"]
         if "hss_profile" not in srv:
             srv["hss_profile"] = default_hss_profile()
+        if "auto_flush" not in srv or not isinstance(srv.get("auto_flush"), dict):
+            srv["auto_flush"] = default_server_config()["auto_flush"]
     data["version"] = CONFIG_VERSION
     return data
 

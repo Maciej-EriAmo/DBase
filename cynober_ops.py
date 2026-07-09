@@ -18,12 +18,22 @@ from cynober_worlds import (
     WorldRegistry,
     _kafd_path,
     _meta_path,
+    _proca_dir,
     load_runtime_from_kafd,
     save_runtime_to_kafd,
     validate_world_name,
 )
 
-SERVER_VERSION = "7.7"
+
+def _load_meta(path: Path) -> dict:
+    if not path.is_file():
+        return {}
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+SERVER_VERSION = "7.8"
 
 _BACKUP_WORLD_RE = re.compile(
     r'^KOPIA\s+ZAPASOWA\s+ŚWIATA\s+"([^"]+)"$',
@@ -169,6 +179,9 @@ class WorldBackupManager:
         meta = _meta_path(self._registry.base_dir, name)
         if meta.is_file():
             shutil.copy2(meta, dest / f"{name}.meta.json")
+        proca_src = self._registry.base_dir / "proca" / name
+        if proca_src.is_dir():
+            shutil.copytree(proca_src, dest / "proca", dirs_exist_ok=True)
         manifest = {
             "world": name,
             "backup_id": backup_id,
@@ -220,7 +233,16 @@ class WorldBackupManager:
             world = self._registry._worlds.get(name)
             if world is not None and world.refs > 0:
                 new_rt = self._registry._create_runtime()
-                load_runtime_from_kafd(new_rt.bridge, src_kafd)
+                proca_backup = src / "proca"
+                proca_live = _proca_dir(self._registry.base_dir, name)
+                if proca_backup.is_dir():
+                    shutil.copytree(proca_backup, proca_live, dirs_exist_ok=True)
+                load_runtime_from_kafd(
+                    new_rt.bridge,
+                    src_kafd,
+                    proca_dir=proca_live,
+                    query_indexes=_load_meta(src / f"{name}.meta.json").get("query_indexes"),
+                )
                 with world.runtime.lock:
                     world.runtime = new_rt
                 world.dirty = True
@@ -231,6 +253,13 @@ class WorldBackupManager:
                 src_meta = src / f"{name}.meta.json"
                 if src_meta.is_file():
                     shutil.copy2(src_meta, _meta_path(self._registry.base_dir, name))
+                proca_backup = src / "proca"
+                if proca_backup.is_dir():
+                    shutil.copytree(
+                        proca_backup,
+                        _proca_dir(self._registry.base_dir, name),
+                        dirs_exist_ok=True,
+                    )
                 if world is not None:
                     self._registry._worlds.pop(name, None)
         return {"world": name, "backup_id": bid, "restored": True}
