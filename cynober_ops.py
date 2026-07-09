@@ -23,7 +23,7 @@ from cynober_worlds import (
     validate_world_name,
 )
 
-SERVER_VERSION = "7.4"
+SERVER_VERSION = "7.6"
 
 _BACKUP_WORLD_RE = re.compile(
     r'^KOPIA\s+ZAPASOWA\s+ŚWIATA\s+"([^"]+)"$',

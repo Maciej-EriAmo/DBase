@@ -7,7 +7,8 @@ Cynober DB to relacyjno-grafowa baza danych na termodynamicznym rdzeniu **Karmaz
 | KarminQL (silnik zapytań) | v6.9 | `cynober_query_engine.py` |
 | Most pandas | — | `cynober_pandas_bridge.py` |
 | Klient CLI | v1.8.0 | `Cynober_db.py` |
-| Serwer | v7.4 | `cynober_server.py` |
+| Serwer | v7.6 | `cynober_server.py` |
+| Klient SDK | v7.6 | `cynober_client.py` |
 | Protokół transportu | Cynober-Secure-1.2 | `cynober_rpc.py` |
 | HSL (sesje sieciowe) | HSL-1.1 | `karmazyn_hsl.py` |
 | Handshake / szyfrowanie | KSH-1.2 | `karmazyn_handshake.py` |
@@ -133,6 +134,31 @@ Synchronizacja trwałych światów między serwerami Cynober (ten sam tunel HSS+
 Opcjonalnie przy dodawaniu węzła: `UŻYTKOWNIK "repl" TOKEN "sekret"` — logowanie przy połączeniu replikacji.
 
 `GameStore`: `list_peers()`, `add_peer()`, `pull_world()`, `push_world()`, `sync_world()`.
+
+### Klient SDK (v7.6)
+
+Oficjalny klient Python — ten sam tunel HSS+HSL+RPC co CLI, bez HTTP.
+
+```python
+from cynober_client import connect, CynoberClient
+
+with connect() as c:                    # aktywny profil ~/.karmazyn_client.json
+    print(c.query_line("ZDROWIE"))
+
+c = connect(profile="zespol")           # nazwany profil
+c = connect("192.168.1.42", 8080)       # host + port
+```
+
+| API | Opis |
+|-----|------|
+| `connect(host, port)` / `connect(profile=…)` | Handshake + profil z JSON |
+| `CynoberClient.query(text)` | Pełna odpowiedź RPC (`results`, `status`) |
+| `CynoberClient.query_line(text)` | Ostatni wiersz z `results` |
+| Context manager | `with connect() as c:` — auto `close()` |
+
+Szybki test zespołu: `python examples/team_connect.py` (lub `--profile nazwa`).
+
+Profil w `~/.karmazyn_client.json` może zawierać `hss_profile` (jak sekcja `server`) — ustawiane w `cynober_konfigurator.py`. `GameStore.connect_rpc()` korzysta z tego samego klienta.
 
 ---
 
@@ -1024,7 +1050,7 @@ Skrypt **wieloliniowy** (więcej niż jedna komenda, bez wiodącego `BEGIN`) jes
 
 ## 14. Testy
 
-Projekt zawiera **280 testów** w katalogu `tests/` (stan na serwer v7.4 + KarminQL v6.9). Część wymaga uruchomionego serwera w procesie testowym (harness w `test_server_rpc.py`).
+Projekt zawiera **283 testów** w katalogu `tests/` (stan na serwer v7.6 + KarminQL v6.9). Część wymaga uruchomionego serwera w procesie testowym (harness w `test_server_rpc.py`).
 
 ### Uruchomienie wszystkich testów
 
@@ -1067,10 +1093,11 @@ python -m unittest tests.test_v70 -v
 | `tests/test_v72.py` | Auth: ZALOGUJ, role reader/writer/admin, ACL (v7.2) |
 | `tests/test_v73.py` | Ops: ZDROWIE, METRYKI, backup/restore światów (v7.3) |
 | `tests/test_v74.py` | Replikacja: peers, PUSH/PULL/SYNC E2E (v7.4) |
+| `tests/test_cynober_client.py` | Oficjalny klient SDK: connect, context manager (v7.6) |
 | `tests/test_game_store.py` | GameStore: lokalnie + RPC, trwały świat, izolacja sandbox |
 | `tests/test_client_config.py` | Profile połączeń, argv/env, zapis JSON |
 | `tests/test_rate_limit.py` | Limity połączeń i zapytań na serwerze |
-| `tests/rpc_client.py` | Pomocniczy klient RPC dla testów integracyjnych |
+| `tests/rpc_client.py` | Re-export `cynober_client` (kompatybilność testów) |
 
 ### Czego testy **nie** obejmują (na razie)
 
@@ -1109,7 +1136,8 @@ DBase/
 ├── README.md                  ← szybki start i status projektu
 ├── cynober_manual.md          ← ten podręcznik
 ├── HSL_Paper_v1_1_0_EN.md     ← specyfikacja HSL (teoria)
-├── cynober_server.py          ← serwer TCP v7.4 (sesje + światy + ops + repl)
+├── cynober_server.py          ← serwer TCP v7.6 (sesje + światy + ops + repl)
+├── cynober_client.py          ← oficjalny klient SDK (v7.6)
 ├── cynober_ops.py             ← metryki, zdrowie, backup światów (v7.3+)
 ├── cynober_replicate.py       ← replikacja światów, peers.json (v7.4)
 ├── cynober_worlds.py          ← rejestr światów (.kafd + .meta.json)
@@ -1138,9 +1166,10 @@ DBase/
 ├── karmazyn_atomstore.py      ← kontrakt AtomStore
 ├── examples/
 │   ├── analyst_demo.py        ← pandas + JOIN (analityka)
-│   └── game_memory_demo.py    ← pamięć gry przez RPC / --local
+│   ├── game_memory_demo.py    ← pamięć gry przez RPC / --local
+│   └── team_connect.py        ← szybki test połączenia zespołu (v7.6)
 ├── requirements.txt           ← zależności opcjonalne
-├── tests/                     ← 274 testów
+├── tests/                     ← 283 testów
 │   ├── test_kernel.py … test_karminql.py
 │   ├── test_sql_closure.py, test_v62.py … test_v69.py
 │   ├── test_v70.py, test_v71.py, test_game_store.py
@@ -1163,7 +1192,7 @@ DBase/
 | **Sieć** | Tunel HSS + HSL, profile klienta, rate limit, sandbox v7.0, trwałe światy v7.1 |
 | **Analityka** | pandas, CSV, `.kafd`, `examples/analyst_demo.py` |
 | **Aplikacje** | `GameStore` + demo gry przez RPC lub lokalnie |
-| **Jakość** | 274 testów jednostkowych i integracyjnych |
+| **Jakość** | 283 testów jednostkowych i integracyjnych |
 
 ### Ograniczenia (prototyp → produkcja)
 
@@ -1173,8 +1202,8 @@ DBase/
 | Auth opcjonalne | Bez `auth.json` światy są otwarte; z auth — role w ACL |
 | PSK/QKD = hasło sieci | Brak kont użytkowników i ról |
 | Jeden protokół (świadomy wybór) | Brak HTTP/REST/ODBC — integracja przez klienty na Cynober-Secure-1.2 |
-| HSS N=15 | Prototyp KEM; podnieść N/NTT w ramach v7.5 (bezpieczeństwo) |
-| SDK w rozwoju | Dziś: CLI, `GameStore`, `tests/rpc_client.py` — docelowo pakiet PyPI |
+| HSS N=15 (domyślny) | Profile `standard`/`production` dostępne; NTT w v7.5+ |
+| SDK | `cynober_client.py` — docelowo pakiet PyPI + bindingi |
 
 ### Mapa drogowa (jeden protokół)
 
@@ -1183,8 +1212,9 @@ DBase/
 | Wersja | Obszar | Zakres |
 |--------|--------|--------|
 | v7.4 ✓ | Replikacja | `PULL`/`PUSH`/`SYNC`, `peers.json` — ten sam RPC między węzłami |
-| **v7.5** | **Bezpieczeństwo** | Profile HSS `proto`/`standard`/`production` (N=15→128→512); adapter QKD; capability tokens; rotacja epoki; NTT (opcjonalnie) |
-| **v7.6** | **Klient SDK** | Stabilne API Python (PyPI), dokumentacja wdrożeniowa, opcjonalne bindingi (Go/TS) — ten sam handshake |
+| v7.5 ✓ (część) | Bezpieczeństwo | Profile HSS `proto`/`standard`/`production`, negocjacja w handshake |
+| **v7.6** ✓ | **Klient SDK** | `cynober_client.py`, `team_connect.py`, `hss_profile` w konfiguratorze |
+| v7.5+ | Bezpieczeństwo (reszta) | Adapter QKD; capability tokens; rotacja epoki; NTT |
 | v7.7+ | Gossip | `karmazyn_gossip.py` — BubbleVFS / phi-space nad RPC |
 
 **Czego nie planujemy:** REST gateway, ODBC, równoległy TLS/HTTP — rozproszyłyby adopcję i osłabiły model HSL jako jedynej warstwy sesji post-kwantowej.

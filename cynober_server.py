@@ -10,6 +10,8 @@ v7.1: trwałe, nazwane światy — WYBIERZ ŚWIAT / UTWÓRZ ŚWIAT (współdziel
 v7.2: auth na światach — ZALOGUJ, role reader/writer/admin, ACL w auth.json.
 v7.3: operacje — ZDROWIE, METRYKI SERWERA, kopie zapasowe światów.
 v7.4: replikacja — LISTA WĘZŁÓW, PULL/PUSH/SYNC światów między serwerami.
+v7.5: profile HSS (proto/standard/production), konfiguracja KARM_HSS_PROFILE.
+v7.6: cynober_client.py — oficjalny SDK klienta (jeden protokół).
 """
 
 from __future__ import annotations
@@ -763,7 +765,9 @@ def run_server(host='0.0.0.0', port=8080):
     print("=" * 60)
     auth = get_auth_store(worlds_dir)
     peers = get_peer_registry(worlds_dir)
-    print(f"  Cynober DB SECURE Server v7.4 działa na porcie {port}")
+    hss_prof = os.environ.get("KARM_HSS_PROFILE", "proto")
+    print(f"  Cynober DB SECURE Server v7.6 działa na porcie {port}")
+    print(f"  Profil HSS: {hss_prof}")
     print("  Nasłuch w standardzie Karmazyn Handshake RPC.")
     print("  Izolacja sesji: osobny executor na każde połączenie TCP.")
     print(f"  Trwałe światy: {worlds_dir}")

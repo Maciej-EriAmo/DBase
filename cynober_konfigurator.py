@@ -12,6 +12,7 @@ from cynober_client_config import (
     CONFIG_PATH,
     DEFAULT_PORT,
     DEFAULT_SERVER_BIND,
+    default_hss_profile,
     get_active_profile,
     get_server_config,
     list_local_ips,
@@ -73,6 +74,9 @@ def _show_profiles() -> None:
             extras.append("PSK")
         if prof.get("qkd_seed"):
             extras.append("QKD")
+        hss = prof.get("hss_profile")
+        if hss:
+            extras.append(f"HSS={hss}")
         extra = f" ({', '.join(extras)})" if extras else ""
         print(f"  {mark} {name}: {host}:{port}{extra}")
         if note:
@@ -95,6 +99,11 @@ def _edit_profile() -> None:
     note = _prompt("Opis", str(current.get("note", "")))
     psk = _prompt("KARM_PSK", str(current.get("psk", "")))
     qkd = _prompt("KARM_QKD_SEED", str(current.get("qkd_seed", "")))
+    hss_default = str(
+        current.get("hss_profile") or get_server_config().get("hss_profile") or default_hss_profile()
+    )
+    print("\nProfil HSS (proto|standard|production) — musi się zgadzać z serwerem.")
+    hss = _prompt("KARM_HSS_PROFILE", hss_default)
 
     try:
         port = int(port_s)
@@ -102,7 +111,9 @@ def _edit_profile() -> None:
         print("[!] Port musi być liczbą.")
         return
 
-    upsert_profile(name, host, port, note=note, psk=psk, qkd_seed=qkd)
+    upsert_profile(
+        name, host, port, note=note, psk=psk, qkd_seed=qkd, hss_profile=hss
+    )
     print(f"\n[OK] Profil klienta '{name}' → {host}:{port}")
 
 
@@ -150,6 +161,7 @@ def _show_server() -> None:
         print("  KARM_PSK:       (zapisany w profilu)")
     if srv.get("qkd_seed"):
         print("  KARM_QKD_SEED:  (zapisany w profilu)")
+    print(f"  KARM_HSS_PROFILE: {srv.get('hss_profile', default_hss_profile())}")
     rl = srv.get("rate_limit") or default_rate_limit_config()
     print("\n  Rate limit (ochrona przed flood):")
     print(f"    Równoczesne globalnie:     {rl.get('max_concurrent_global', 0)}")
@@ -174,6 +186,11 @@ def _edit_server() -> None:
     note = _prompt("Opis", str(srv.get("note", "")))
     psk = _prompt("KARM_PSK (jak na kliencie)", str(srv.get("psk", "")))
     qkd = _prompt("KARM_QKD_SEED (jak na kliencie)", str(srv.get("qkd_seed", "")))
+    print("\nProfil HSS (proto|standard|production) — obie strony muszą mieć ten sam.")
+    hss = _prompt(
+        "KARM_HSS_PROFILE",
+        str(srv.get("hss_profile", default_hss_profile())),
+    )
     rl_prev = srv.get("rate_limit") or default_rate_limit_config()
     print("\nLimity (Enter = zostaw, 0 = wyłącz limit):")
     try:
@@ -200,7 +217,7 @@ def _edit_server() -> None:
         print("[!] Port i limity muszą być liczbami.")
         return
     upsert_server_config(
-        bind, port, note=note, psk=psk, qkd_seed=qkd, rate_limit=rl
+        bind, port, note=note, psk=psk, qkd_seed=qkd, hss_profile=hss, rate_limit=rl
     )
     print(f"\n[OK] Serwer: nasłuch {bind}:{port}")
     if bind == "0.0.0.0":

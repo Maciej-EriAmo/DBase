@@ -284,9 +284,9 @@ def connect_rpc(
     user: Optional[str] = None,
     token: Optional[str] = None,
 ) -> GameStore:
-    from tests.rpc_client import CynoberRpcClient
+    from cynober_client import CynoberClient
 
-    client = CynoberRpcClient(host=host, port=port)
+    client = CynoberClient(host=host, port=port)
     client.connect()
     store = GameStore(RpcBackend(client))
     if user and token:

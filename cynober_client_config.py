@@ -22,6 +22,10 @@ DEFAULT_PORT = 8080
 DEFAULT_HOST = DEFAULT_CLIENT_HOST
 
 
+def default_hss_profile() -> str:
+    return "proto"
+
+
 def default_server_config() -> dict[str, Any]:
     from cynober_rate_limit import default_rate_limit_config
 
@@ -29,6 +33,7 @@ def default_server_config() -> dict[str, Any]:
         "bind_host": DEFAULT_SERVER_BIND,
         "port": DEFAULT_PORT,
         "note": "Nasłuch na wszystkich interfejsach (LAN / Termux)",
+        "hss_profile": default_hss_profile(),
         "rate_limit": default_rate_limit_config(),
     }
 
@@ -57,6 +62,8 @@ def _migrate_config(data: dict[str, Any]) -> dict[str, Any]:
         srv = data["server"]
         if "rate_limit" not in srv or not isinstance(srv.get("rate_limit"), dict):
             srv["rate_limit"] = default_server_config()["rate_limit"]
+        if "hss_profile" not in srv:
+            srv["hss_profile"] = default_hss_profile()
     data["version"] = CONFIG_VERSION
     return data
 
@@ -114,9 +121,11 @@ def upsert_profile(
     note: str = "",
     psk: str = "",
     qkd_seed: str = "",
+    hss_profile: str = "",
 ) -> None:
     cfg = load_config()
     profiles = cfg.setdefault("profiles", {})
+    prev = profiles.get(name, {}) if isinstance(profiles.get(name), dict) else {}
     entry: dict[str, Any] = {
         "host": host.strip(),
         "port": int(port),
@@ -124,8 +133,16 @@ def upsert_profile(
     }
     if psk:
         entry["psk"] = psk
+    elif prev.get("psk"):
+        entry["psk"] = prev["psk"]
     if qkd_seed:
         entry["qkd_seed"] = qkd_seed
+    elif prev.get("qkd_seed"):
+        entry["qkd_seed"] = prev["qkd_seed"]
+    if hss_profile:
+        entry["hss_profile"] = hss_profile.strip().lower()
+    elif prev.get("hss_profile"):
+        entry["hss_profile"] = prev["hss_profile"]
     profiles[name] = entry
     cfg["active"] = name
     save_config(cfg)
@@ -144,6 +161,7 @@ def upsert_server_config(
     note: str = "",
     psk: str = "",
     qkd_seed: str = "",
+    hss_profile: str = "",
     rate_limit: dict[str, int] | None = None,
 ) -> None:
     cfg = load_config()
@@ -164,16 +182,30 @@ def upsert_server_config(
         entry["qkd_seed"] = qkd_seed
     elif prev.get("qkd_seed"):
         entry["qkd_seed"] = prev["qkd_seed"]
+    if hss_profile:
+        entry["hss_profile"] = hss_profile.strip().lower()
+    elif prev.get("hss_profile"):
+        entry["hss_profile"] = prev["hss_profile"]
+    else:
+        entry["hss_profile"] = default_hss_profile()
     cfg["server"] = entry
     save_config(cfg)
 
 
+def apply_hss_profile(source: dict[str, Any]) -> None:
+    """Ustaw KARM_HSS_PROFILE z konfiguracji (nie nadpisuj istniejącego env)."""
+    prof = source.get("hss_profile")
+    if prof and not os.environ.get("KARM_HSS_PROFILE"):
+        os.environ["KARM_HSS_PROFILE"] = str(prof).strip().lower()
+
+
 def apply_secrets(source: dict[str, Any]) -> None:
-    """Ustaw KARM_PSK / KARM_QKD_SEED (nie nadpisuj istniejących env)."""
+    """Ustaw KARM_PSK / KARM_QKD_SEED / KARM_HSS_PROFILE (nie nadpisuj env)."""
     if source.get("psk") and not os.environ.get("KARM_PSK"):
         os.environ["KARM_PSK"] = str(source["psk"])
     if source.get("qkd_seed") and not os.environ.get("KARM_QKD_SEED"):
         os.environ["KARM_QKD_SEED"] = str(source["qkd_seed"])
+    apply_hss_profile(source)
 
 
 def apply_profile_secrets(profile: dict[str, Any]) -> None:
@@ -290,6 +322,7 @@ def test_connection(host: str, port: int, timeout: float = 5.0) -> tuple[bool, s
     from karmazyn_handshake import _CryptoLayer
 
     clear_replay_cache()
+    apply_hss_profile(get_server_config())
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     sock.settimeout(timeout)
     try:

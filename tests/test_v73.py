@@ -5,7 +5,7 @@ import tempfile
 import time
 import unittest
 
-from cynober_ops import reset_server_metrics_for_tests
+from cynober_ops import SERVER_VERSION, reset_server_metrics_for_tests
 from cynober_world_auth import reset_auth_store_for_tests
 from cynober_worlds import reset_world_registry_for_tests
 from tests.rpc_client import CynoberRpcClient
@@ -67,7 +67,7 @@ class TestServerOps(unittest.TestCase):
         self.assertEqual(row["status"], "ok")
         self.assertEqual(row["action"], "HEALTH")
         self.assertEqual(row["data"]["status"], "ok")
-        self.assertEqual(row["data"]["server_version"], "7.4")
+        self.assertEqual(row["data"]["server_version"], SERVER_VERSION)
         self.assertGreater(row["data"]["uptime_sec"], 0)
 
     def test_server_metrics(self):
@@ -76,7 +76,7 @@ class TestServerOps(unittest.TestCase):
         m = c.query("METRYKI SERWERA")
         data = m["results"][0]["data"]
         self.assertEqual(m["results"][0]["action"], "SERVER_METRICS")
-        self.assertEqual(data["server_version"], "7.4")
+        self.assertEqual(data["server_version"], SERVER_VERSION)
         self.assertGreaterEqual(data["queries_total"], 2)
         self.assertIn("HEALTH", data["top_actions"])
 

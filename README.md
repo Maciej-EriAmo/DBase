@@ -9,7 +9,8 @@ Relacyjno-grafowa baza danych na termodynamicznym rdzeniu **KarmazynOS**, z tran
 | Komponent | Wersja | Plik |
 |-----------|--------|------|
 | KarminQL | v6.9 | `cynober_query_engine.py` |
-| Serwer RPC | v7.4 | `cynober_server.py` |
+| Serwer RPC | v7.6 | `cynober_server.py` |
+| Klient SDK | v7.6 | `cynober_client.py` |
 | Klient CLI | v1.8.0 | `Cynober_db.py` |
 | Protokół | Cynober-Secure-1.2 | `cynober_rpc.py` |
 | GameStore (adapter aplikacyjny) | — | `game_store.py` |
@@ -31,7 +32,7 @@ Pełna składnia i API: [`cynober_manual.md`](cynober_manual.md)
 | **Analityka / ETL** | KarminQL + `read_karmin()` → pandas, CSV, `.kafd` | ★★★★☆ |
 | **Zdalny dostęp (sandbox)** | CLI lub własny klient RPC przez tunel HSS+HSL | ★★★★☆ |
 | **Gry / pamięć narracyjna** | `GameStore` + demo — NPC, questy, graf, termodynamika | ★★★★★ |
-| **Wspólna baza zespołu** | Światy v7.1 + auth v7.2 + ops v7.3 + replikacja v7.4 (PULL/PUSH/SYNC) | ★★★★☆ |
+| **Wspólna baza zespołu** | Światy v7.1 + auth v7.2 + ops v7.3 + replikacja v7.4 + SDK v7.6 | ★★★★☆ |
 | **CRPG hack and slash** | `crpg_world_setup.py` — seed świata gry na trwałym serwerze | ★★★★★ |
 
 ## Co widać w demo, a co nie
@@ -61,8 +62,11 @@ pip install -r requirements.txt
 # serwer
 python cynober_server.py
 
-# klient (drugi terminal)
+# klient CLI (drugi terminal)
 python Cynober_db.py
+
+# klient SDK (Python)
+python examples/team_connect.py
 
 # konfigurator profili (Termux / PC)
 python cynober_konfigurator.py
@@ -116,7 +120,7 @@ python -m unittest discover -s tests -v
 python -m pytest tests/ -q
 ```
 
-Stan: **280 testów** (kernel, KarminQL v6.0–v6.9, HSS, HSL, RPC, sesje v7.0–v7.4, GameStore).
+Stan: **283 testów** (kernel, KarminQL v6.0–v6.9, HSS, HSL, RPC, sesje v7.0–v7.6, GameStore, `cynober_client`).
 
 ## Status i ograniczenia
 
@@ -124,14 +128,14 @@ Projekt jest w **fazie użytkowej dla early adopterów** — działa end-to-end,
 
 **Co działa:**
 - KarminQL v6.9 z rozbudowanym dialektem SQL-owym (JOIN, CTE, okna, JSON, EXPLAIN, indeksy)
-- Serwer v7.4: **izolacja sesji** + **trwałe światy** + **auth/role** + **operacje** + **replikacja** (`PULL/PUSH/SYNC` między węzłami)
+- Serwer v7.6: **izolacja sesji** + **trwałe światy** + **auth/role** + **operacje** + **replikacja** + **SDK klienta** (`cynober_client.py`)
 - Tunel HSS + HSL + opcjonalny PSK/QKD-seed
 - Trwałość plikowa: `ZAPISZ` / `WCZYTAJ` (`.kafd`) w ramach sesji
 - Integracja pandas, CSV, `GameStore` dla gier i prototypów
 
 **Czego brakuje do pracy zawodowej w zespole:**
-- Oficjalny **pakiet klienta** (SDK) — dziś: CLI + `GameStore` + `tests/rpc_client.py`
-- **Profile HSS** — `KARM_HSS_PROFILE=standard|production` (domyślnie `proto` N=15); paper [v2.5](https://github.com/Maciej-EriAmo/holonOs/blob/main/HSS_Paper_v2.5.0_PL.md)
+- Publikacja **pakietu PyPI** — dziś: `cynober_client.py` + CLI + `GameStore`
+- **Profile HSS w produkcji** — `KARM_HSS_PROFILE=standard|production` (domyślnie `proto` N=15); paper [v2.5](https://github.com/Maciej-EriAmo/holonOs/blob/main/HSS_Paper_v2.5.0_PL.md)
 - PSK/QKD to hasło sieci; konta użytkowników wymagają `auth.json` na serwerze
 - Metadane TCP widoczne; częściowa ochrona DoS (rate limit)
 
@@ -142,8 +146,9 @@ Projekt jest w **fazie użytkowej dla early adopterów** — działa end-to-end,
 | Wersja | Kierunek | Cel |
 |--------|----------|-----|
 | v7.4 ✓ | Replikacja światów | HA-lite: `PULL`/`PUSH`/`SYNC`, `peers.json` |
-| **v7.5** | **Bezpieczeństwo** | Profile HSS `proto`/`standard`/`production` (N=15→128→512, [paper v2.5](https://github.com/Maciej-EriAmo/holonOs/blob/main/HSS_Paper_v2.5.0_PL.md)), adapter QKD, capability tokens |
-| **v7.6** | **Klient SDK** | Stabilne API (`pip install`), przewodnik „zespół w 15 min”, bindingi językowe na tym samym handshake |
+| v7.5 ✓ | Bezpieczeństwo (część) | Profile HSS `proto`/`standard`/`production`, negocjacja w handshake |
+| **v7.6** ✓ | **Klient SDK** | `cynober_client.py`, `examples/team_connect.py`, profil `hss_profile` w konfiguratorze |
+| v7.5+ | Bezpieczeństwo (reszta) | Adapter QKD, capability tokens, rotacja epoki, NTT |
 | v7.7+ | Gossip pełny | Synchronizacja BubbleVFS / phi-space (`karmazyn_gossip.py`) — nadal po RPC |
 
 **Dlaczego nie REST:** HTTP dałby znajome narzędzia, ale drugi silnik transportu i gorsze wykorzystanie HSL. Produktem jest **Cynober end-to-end** — post-quantum oriented tunnel + KarminQL + światy, nie „JSON API obok”.
@@ -153,7 +158,7 @@ Projekt jest w **fazie użytkowej dla early adopterów** — działa end-to-end,
 Stack jest warstwowy — można wnieść kawałek bez znajomości całości. Przydatne obszary:
 
 - **Bezpieczeństwo v7.5** — profile HSS N=128/512, NTT, adapter QKD
-- **Klient SDK** — biblioteka Python (PyPI), opcjonalnie Go/TypeScript na tym samym `cynober_rpc.py`
+- **Klient SDK** — PyPI, opcjonalnie Go/TypeScript na tym samym handshake
 - **Gossip** — `karmazyn_gossip.py`, synchronizacja BubbleVFS po istniejącym tunelu
 
 Jeśli chcesz dołączyć — issue, PR albo kontakt przez profil GitHub.
