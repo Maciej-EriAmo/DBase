@@ -1,0 +1,6 @@
+include LICENSE
+include README.md
+include cynober_manual.md
+include HSL_Paper_v1_1_0_EN.md
+include requirements.txt
+recursive-include examples *.py

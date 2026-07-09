@@ -8,13 +8,13 @@ version = "7.7.0"
 description = "Cynober DB — relacyjno-grafowa baza z tunelem post-quantum HSS+HSL i KarminQL"
 readme = "README.md"
 requires-python = ">=3.10"
-license = { text = "MIT" }
-authors = [{ name = "Maciej Mazur" }]
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Maciej Mazur", email = "drwisz@gmail.com" }]
 keywords = ["database", "post-quantum", "graph", "rpc", "karminql"]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
-    "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
@@ -33,6 +33,7 @@ dev = ["pytest>=7.0"]
 [project.scripts]
 cynober-server = "cynober_server:main"
 cynober-cli = "Cynober_db:main"
+cynober-konfigurator = "cynober_konfigurator:main"
 
 [project.urls]
 Homepage = "https://github.com/Maciej-EriAmo/DBase"

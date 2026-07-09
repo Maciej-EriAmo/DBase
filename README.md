@@ -53,23 +53,36 @@ Pełna składnia i API: [`cynober_manual.md`](cynober_manual.md)
 
 ## Szybki start
 
-Wymagania: **Python 3.10+**. Rdzeń i KarminQL działają na samym stdlib.
+Wymagania: **Python 3.10+**.
+
+### Z PyPI (zalecane dla zespołu)
 
 ```bash
-# opcjonalnie — pełny stos kryptograficzny i pandas
-pip install -r requirements.txt
+pip install cynober-db
+cynober-server          # terminal 1 — serwer RPC
+cynober-cli             # terminal 2 — klient KarminQL
+cynober-konfigurator    # profile Termux / LAN / firewall
+```
 
-# serwer
-python cynober_server.py
+Opcjonalnie analityka i wykresy: `pip install "cynober-db[viz]"`.
 
-# klient CLI (drugi terminal)
-python Cynober_db.py
+### Z repozytorium (dev)
 
-# klient SDK (Python)
-python examples/team_connect.py
+```bash
+git clone https://github.com/Maciej-EriAmo/DBase.git && cd DBase
+pip install -e ".[dev]"
+python -m unittest discover -s tests -q
+cynober-server
+```
 
-# konfigurator profili (Termux / PC)
-python cynober_konfigurator.py
+### Publikacja (maintainer)
+
+```powershell
+pip install build twine
+# Token PyPI: https://pypi.org/manage/account/token/
+$env:TWINE_USERNAME = "__token__"
+$env:TWINE_PASSWORD = "pypi-AgEI..."   # jednorazowo w sesji
+.\scripts\publish_pypi.ps1
 ```
 
 Opcjonalne zmienne (obie strony muszą się zgadzać):
@@ -133,14 +146,8 @@ Projekt jest w **fazie użytkowej dla early adopterów** — działa end-to-end,
 - Trwałość plikowa: `ZAPISZ` / `WCZYTAJ` (`.kafd`) w ramach sesji
 - Integracja pandas, CSV, `GameStore` dla gier i prototypów
 
-**Instalacja pakietu (lokalnie / PyPI):**
-```bash
-pip install -e .
-cynober-server
-```
-
 **Czego brakuje do pełnej produkcji:**
-- Publikacja na **PyPI.org** (pakiet gotowy: `pyproject.toml`)
+- Pierwszy upload na **pypi.org** (`scripts/publish_pypi.ps1` — wymaga API token)
 - **Profile HSS w produkcji** — `KARM_HSS_PROFILE=standard|production` (domyślnie `proto` N=15); paper [v2.5](https://github.com/Maciej-EriAmo/holonOs/blob/main/HSS_Paper_v2.5.0_PL.md)
 - PSK/QKD to hasło sieci; konta użytkowników wymagają `auth.json` na serwerze
 - Metadane TCP widoczne; częściowa ochrona DoS (rate limit)
