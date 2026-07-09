@@ -2,7 +2,7 @@
 
 **Maciej Mazur** — Independent AI Researcher | Warsaw, Poland
 GitHub: Maciej-EriAmo/HolonOS
-Version: 1.1.0 | Date: 2026-05-07 | License: CC BY 4.0
+Version: 1.2.0 | Date: 2026-07-09 | License: CC BY 4.0
 
 ---
 
@@ -324,16 +324,19 @@ This deployment model targets metropolitan quantum testbeds — for instance, th
 
 | Component | Language | Status |
 |---|---|---|
-| `hss_demo.py` | Python | ✅ v2.9 — 20/20 tests |
+| **Cynober DB** (`karmazyn_hsl.py`, `cynober_rpc.py`) | Python | ✅ v7.7 — HSL-1.1 E2E over TCP; **294** automated tests; PyPI [`cynober-db`](https://pypi.org/project/cynober-db/) |
+| `karmazyn_hss.py` + `karmazyn_hss_ntt.py` | Python | ✅ HSS v2.5 profiles + negacyclic NTT (`proto` / `standard` / `production`) |
+| `karmazyn_qkd.py` | Python | ✅ QKD seed adapter (env / file / pipe) for hybrid §6.4 |
+| `hss_demo.py` (HolonOS) | Python | ✅ v2.9 — 20/20 tests |
 | `holonP.py` | Python | ✅ v5.11 — production |
 | `holon_fs.py` | Python | ✅ production |
 | `holo_lsm.c` (reference) | C | ✅ v3.4 — HSS aligned |
 | `holo_lsm_ent.c` (enterprise) | C | ✅ v4.4 — hardened |
 | Android/Kotlin port | Kotlin | 📅 Q2 2026 |
 | FUSE deployment | C | 📅 Q3 2026 |
-| HSL network daemon | Python → C | 📅 Q3 2026 |
+| HSL kernel daemon (HolonOS) | C | 📅 Q3 2026 |
 
-The Python demonstrator runs on ARM64 (Samsung A54) in Termux, consuming ~30 MB RAM, with zero GPU dependency.
+**Primary reference implementation.** [Cynober DB](https://github.com/Maciej-EriAmo/DBase) deploys HSL as the sole transport for a team-scale database: one wire protocol (**Cynober-Secure-1.2** = HSS KEM handshake + HSL session tunnel + KarminQL RPC). No parallel TLS/HTTP/ODBC layer. Clients run on ARM64 (Termux, Samsung A54) and LAN desktops; typical footprint ~30 MB RAM, zero GPU dependency. See **Appendix B** for protocol-level detail.
 
 ---
 
@@ -371,13 +374,13 @@ In HSL, the message space looks uniform over $R_q$ until decrypted with the matc
 
 ## 9. Future Work
 
-1. **NTT-based Ring-LWE** — replace $O(N^2)$ polynomial multiplication with $O(N \log N)$ Number-Theoretic Transform for production performance at $N = 256$ (Kyber parameters).
-2. **HSL routing protocol** — formal specification of how HSL packets propagate through a network of session-state nodes, including handling of epoch transitions mid-route.
+1. **NTT-based Ring-LWE** — ✅ *partial (2026-07):* negacyclic NTT in `karmazyn_hss_ntt.py` for `standard` ($N{=}128$, $Q{=}3329$) and `production` ($N{=}512$, $Q{=}12289$) HSS profiles; `proto` ($N{=}15$) remains coefficient-domain. Constant-time hardening and $N{=}256$ Kyber-class profile remain open.
+2. **HSL routing protocol** — ✅ *partial:* epoch rotation (`KARM_HSL_EPOCH_SEC`, default 3600s) and `qkd_fp` link binding in Cynober-Secure-1.2; formal mid-route epoch transition spec still open.
 3. **Quantum Random Number Generator** — seed `base_secret` from true quantum entropy (e.g., ANU QRNG) for higher long-term entropy assurance.
 4. **Formal security proof** — explicit reduction from Decision-RLWE to HSL session indistinguishability.
 5. **Double Ratchet for sessions** — per-message forward secrecy within an epoch, analogous to the Signal Protocol.
-6. **Cross-node Vacuum Decay** — distributed FEP garbage collection across HSL networks.
-7. **Hybrid QKD/HSL field demonstrator** — interoperability test on a metropolitan QKD testbed (e.g., DT Berlin or equivalent).
+6. **Cross-node Vacuum Decay** — distributed FEP garbage collection across HSL networks; ✅ *partial:* phi-space gossip (`cynober_gossip.py`, v7.7) over existing RPC tunnel.
+7. **Hybrid QKD/HSL field demonstrator** — ✅ *partial:* `karmazyn_qkd.py` adapter slot (env / file / pipe) wired into `hybrid_link_seed()`; metropolitan hardware QKD link (e.g., DT Berlin) still open.
 
 ---
 
@@ -412,6 +415,46 @@ This construction satisfies HSL's requirements: (i) min-entropy $\geq 256$ bits;
 
 ---
 
+## Appendix B — Cynober DB Reference Implementation (v7.7)
+
+*Informative. Describes the production HSL stack in [DBase](https://github.com/Maciej-EriAmo/DBase); not a normative protocol delta.*
+
+### B.1 Stack
+
+| Layer | Module | Role |
+|---|---|---|
+| Transport | `cynober_server.py` / `cynober_client.py` | TCP listener; SDK `connect()` / context manager |
+| Handshake | `karmazyn_handshake.py` + `karmazyn_hss.py` | Ring-LWE KEM; profile negotiation via `hss_profile` field |
+| Session | `karmazyn_hsl.py` | $\Phi^2$ node identity, link resonance, PrismMask/AAD, epoch rotation |
+| Hybrid seed | `karmazyn_qkd.py` | Optional QKD slot → `hybrid_link_seed()` (§6.4) |
+| Application | `cynober_rpc.py` | JSON-RPC over HSL ciphertext; capability token `cap` for `rpc:query` |
+
+Wire version: **Cynober-Secure-1.2**. Handshake advertises `hss_profile` (`proto` \| `standard` \| `production`); mismatch aborts before RPC.
+
+### B.2 HSS Profiles (aligned with HSS Paper v2.5)
+
+| Profile | $N$ | $Q$ | Deployment |
+|---|---|---|---|
+| `proto` | 15 | 256 | Termux / dev; backward-compatible default |
+| `standard` | 128 | 3329 | Team LAN; Kyber-class modulus |
+| `production` | 512 | 12289 | Server deployments; NTT enabled when $q \equiv 1 \pmod{2N}$ |
+
+Selection: `KARM_HSS_PROFILE` or `~/.karmazyn_client.json` → `hss_profile`. NTT: auto for `standard`/`production` unless `KARM_HSS_USE_NTT=0`.
+
+### B.3 HSL Session Features
+
+- **$\Phi^2$ identity:** persisted at `~/.karmazyn_phi2`; `commit` in `hsl_link` frame (hash only, no plaintext export).
+- **Epoch rotation:** `s_target = KDF(link_seed, epoch)` with `epoch = ⌊t / T_epoch⌋`; `KARM_HSL_EPOCH_SEC` (default 3600).
+- **Capability tokens:** `cap = capability_token(s_target, task, prisms)`; RPC requires resonance with `rpc:query` (v7.5+).
+- **QKD fingerprint:** optional `qkd_fp` in link frame detects seed mismatch before query execution.
+- **PSK overlay:** `KARM_PSK` mixed into link seed for closed networks.
+
+### B.4 Verification
+
+294 automated tests (`python -m unittest discover -s tests`) cover HSL sessions, HSS handshake across all profiles, NTT KEM, QKD adapter, RPC+capability, world replication, and gossip phi export. Package published as **`cynober-db` 7.7.0** on PyPI.
+
+---
+
 ## References
 
 1. Mazur, M. (2026a). *Holographic Session Spaces*. Zenodo. DOI: 10.5281/zenodo.19548693
@@ -429,6 +472,7 @@ This construction satisfies HSL's requirements: (i) min-entropy $\geq 256$ bits;
 13. Wheeler, J. A. (1989). Information, physics, quantum: The search for links. *Proceedings of the 3rd International Symposium on Foundations of Quantum Mechanics*.
 14. Friston, K. (2010). The free-energy principle: a unified brain theory. *Nature Reviews Neuroscience*, 11(2).
 15. Hawking, S. W. (1975). Particle creation by black holes. *Communications in Mathematical Physics*, 43(3).
+16. Mazur, M. (2026f). *Cynober DB: HSL Reference Implementation*. GitHub: Maciej-EriAmo/DBase. PyPI: https://pypi.org/project/cynober-db/
 
 ---
 
