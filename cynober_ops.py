@@ -33,7 +33,7 @@ def _load_meta(path: Path) -> dict:
     except (OSError, json.JSONDecodeError):
         return {}
 
-SERVER_VERSION = "7.8"
+SERVER_VERSION = "7.9"
 
 _BACKUP_WORLD_RE = re.compile(
     r'^KOPIA\s+ZAPASOWA\s+ŚWIATA\s+"([^"]+)"$',
@@ -242,6 +242,7 @@ class WorldBackupManager:
                     src_kafd,
                     proca_dir=proca_live,
                     query_indexes=_load_meta(src / f"{name}.meta.json").get("query_indexes"),
+                    lazy=False,
                 )
                 with world.runtime.lock:
                     world.runtime = new_rt

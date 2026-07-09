@@ -14,6 +14,7 @@ v7.5: profile HSS (proto/standard/production), konfiguracja KARM_HSS_PROFILE.
 v7.6: cynober_client.py — oficjalny SDK klienta (jeden protokół).
 v7.7: pro — QKD adapter, capability tokens, rotacja epoki, NTT, gossip phi, PyPI.
 v7.8: auto-flush światów, utrwalony indeks zapytań, Proca dla COLD.
+v7.9: lazy load manifestu, ROZWIJ / WYBIERZ CEL, auto-unfold przy POKAŻ.
 """
 
 from __future__ import annotations
@@ -59,6 +60,7 @@ from cynober_world_auth import (
 from cynober_worlds import (
     World,
     WorldRuntime,
+    default_unfold_radius,
     get_world_registry,
     load_runtime_from_kafd,
     save_runtime_to_kafd,
@@ -90,8 +92,22 @@ _MUTATING_PREFIXES = (
     "UTWÓRZ WIDOK", "USUŃ WIDOK", "WYMAGAJ", "USUŃ WYMAGANIE",
 )
 _WORLD_QUOTED = re.compile(
-    r'^(?:WYBIERZ|UTWÓRZ|USUŃ)\s+ŚWIAT\s+"([^"]+)"$',
+    r'^(?:UTWÓRZ|USUŃ)\s+ŚWIAT\s+"([^"]+)"$',
     re.IGNORECASE,
+)
+_WORLD_ATTACH_RE = re.compile(
+    r'^WYBIERZ\s+ŚWIAT\s+"([^"]+)"(?:\s+CEL\s+"([^"]+)")?(?:\s+PROMIEŃ\s+(\d+))?$',
+    re.IGNORECASE,
+)
+_UNFOLD_RE = re.compile(
+    r'^ROZWIJ\s+"([^"]+)"(?:\s+PROMIEŃ\s+(\d+))?$',
+    re.IGNORECASE,
+)
+_AUTO_UNFOLD_PATTERNS = (
+    re.compile(r'^POKAŻ\s+"([^"]+)"', re.IGNORECASE),
+    re.compile(r'^WSTRZYKNIJ\b.*\bDO\s+"([^"]+)"', re.IGNORECASE),
+    re.compile(r'^UTRWAL\s+"([^"]+)"', re.IGNORECASE),
+    re.compile(r'^ZAKTUALIZUJ\b.*\bW\s+"([^"]+)"', re.IGNORECASE),
 )
 
 
@@ -163,6 +179,7 @@ class CynoberFacade:
                 )
             return world_resp
 
+        self._auto_unfold_before_query(stripped)
         rt = self._runtime()
         with rt.lock:
             results = self._execute_on_runtime(rt, stripped, upper)
@@ -512,13 +529,38 @@ class CynoberFacade:
             except ValueError as e:
                 return [{"status": "error", "message": str(e)}]
 
+        m = _UNFOLD_RE.match(stripped)
+        if m:
+            if self._world is None:
+                return [{"status": "error", "message": "Brak aktywnego świata (użyj WYBIERZ ŚWIAT)."}]
+            seed = m.group(1)
+            rad = int(m.group(2)) if m.group(2) else None
+            try:
+                info = self._registry.unfold(self._world.name, [seed], radius=rad)
+                return [{"status": "ok", "action": "UNFOLD", **info}]
+            except ValueError as e:
+                return [{"status": "error", "message": str(e)}]
+
+        m = _WORLD_ATTACH_RE.match(stripped)
+        if m:
+            name = validate_world_name(m.group(1))
+            cel = m.group(2)
+            rad = int(m.group(3)) if m.group(3) else None
+            try:
+                return self._attach_world(
+                    name,
+                    create_if_missing=True,
+                    unfold_seed=cel,
+                    unfold_radius=rad,
+                )
+            except ValueError as e:
+                return [{"status": "error", "message": str(e)}]
+
         m = _WORLD_QUOTED.match(stripped)
         if m:
             name = validate_world_name(m.group(1))
             cmd = upper.split()[0]
             try:
-                if cmd == "WYBIERZ":
-                    return self._attach_world(name, create_if_missing=True)
                 if cmd == "UTWÓRZ":
                     return self._attach_world(name, create_if_missing=False, force_create=True)
                 if cmd == "USUŃ":
@@ -534,6 +576,8 @@ class CynoberFacade:
         *,
         create_if_missing: bool = False,
         force_create: bool = False,
+        unfold_seed: str | None = None,
+        unfold_radius: int | None = None,
     ) -> list:
         if self._world is not None:
             if self._world.name == name:
@@ -561,13 +605,40 @@ class CynoberFacade:
 
         self._world = world
         bubbles = len(world.runtime.engine.api._bubble_index)
-        return [{
+        out: dict = {
             "status": "ok",
             "action": "ATTACH_WORLD",
             "world": name,
             "bubbles": bubbles,
             "created": force_create or bubbles == 0,
-        }]
+            "folded_atoms": len(world.runtime.folded_atoms),
+        }
+        if unfold_seed:
+            try:
+                unfold_info = self._registry.unfold(
+                    name, [unfold_seed], radius=unfold_radius
+                )
+                out.update(unfold_info)
+            except ValueError:
+                pass
+        return [out]
+
+    def _auto_unfold_before_query(self, query: str) -> None:
+        if self._world is None:
+            return
+        stripped = query.strip()
+        for pat in _AUTO_UNFOLD_PATTERNS:
+            m = pat.match(stripped)
+            if m:
+                try:
+                    self._registry.unfold(
+                        self._world.name,
+                        [m.group(1)],
+                        radius=1,
+                    )
+                except ValueError:
+                    pass
+                return
 
     def _delete_world(self, name: str) -> list:
         if self._world is not None and self._world.name == name:
@@ -600,6 +671,8 @@ class CynoberFacade:
                 "loaded_worlds": self._registry.loaded_count,
                 "active_sessions": _session_manager.active_count,
                 "worlds_dir": str(self._registry.base_dir),
+                "folded_atoms": len(rt.folded_atoms) if self._world else 0,
+                "unfold_radius_default": default_unfold_radius(),
                 "auth_enabled": self._auth.enabled,
                 "auth_user": self._auth_user,
                 "auth_role": self._auth.role_for(self._auth_user, self.world_name),
@@ -627,7 +700,7 @@ class CynoberFacade:
             parts = query.split(maxsplit=1)
             path = parts[1].strip() if len(parts) > 1 else "zrzut_cynober.kafd"
             try:
-                loaded = load_runtime_from_kafd(bridge, path)
+                loaded, _ = load_runtime_from_kafd(bridge, path, lazy=False)
                 return [{"status": "ok", "action": "LOAD", "file": path, "loaded": loaded}]
             except Exception as e:
                 return [{"status": "error", "message": f"Błąd odczytu: {e}"}]

@@ -25,6 +25,8 @@ except ImportError:
 
 DOC_KINDS = ("document", "version", "__bubble__")
 STORE_META = "karmazyn_store_v1.3_encrypted"
+FOLDED_META_KEY = "_folded"
+FOLD_SRC_KEY = "_fold_src"
 
 # ─── KRYPTOGRAFIA PHI (Transparentny Szyfr Strumieniowy) ────────────────────
 
@@ -129,6 +131,32 @@ def _is_doc_atom(atom, kinds: Iterable[str]) -> bool:
 
 # ─── ATOMOWY ZAPIS I/O ──────────────────────────────────────────────────────
 
+def _read_decrypted_kafd(path: str) -> bytes:
+    """Odczytaj plik .kafd i zwróć odszyfrowany blob KAFD."""
+    with open(path, "rb") as f:
+        encrypted_blob = f.read()
+    try:
+        return _apply_phi_cipher(encrypted_blob)
+    except Exception as e:
+        raise RuntimeError(f"Błąd kryptograficzny (uszkodzony plik lub nieznany klucz): {e}") from e
+
+
+def _resolve_payload_data(data: bytes, aid: str, proca_index) -> bytes:
+    if not data or proca_index is None:
+        return data
+    try:
+        from karmazyn_proca import ProcaCoordinate
+
+        if ProcaCoordinate.is_proca_json(data):
+            coord = ProcaCoordinate.from_json_bytes(data, aid)
+            resolved = proca_index.resolve_coordinate(coord)
+            if resolved is not None:
+                return resolved
+    except Exception:
+        pass
+    return data
+
+
 def _atomic_write(path: str, data: bytes) -> None:
     d = os.path.dirname(os.path.abspath(path))
     os.makedirs(d, exist_ok=True)
@@ -201,57 +229,173 @@ def save_documents(phi, path: str,
     return len(atoms_dict)
 
 
+def _ingest_atom_bytes(
+    phi,
+    aid: str,
+    atom_bytes: bytes,
+    *,
+    proca_index=None,
+    fold_below_T: float | None = None,
+    fold_src: str = "",
+) -> tuple[bool, bool]:
+    """
+    Zarejestruj atom z bajtów KAFD store.
+    Zwraca (utworzono, zwinięty).
+    """
+    from karmazyn_atom import T_HOT
+
+    try:
+        head, data = _decode_atom(atom_bytes)
+    except Exception:
+        return False, False
+
+    S = head.get("S", "")
+    T = float(head.get("T", 50.0))
+    atom = _make_atom(phi, aid, S, head.get("E", ""), T)
+    m = head.get("meta", {})
+    if isinstance(m, dict):
+        atom.metadata.update(m)
+
+    fold = (
+        fold_below_T is not None
+        and S != "__bubble__"
+        and T < fold_below_T
+        and len(data) > 0
+    )
+    if fold:
+        atom.metadata[FOLDED_META_KEY] = True
+        if fold_src:
+            atom.metadata[FOLD_SRC_KEY] = fold_src
+        return True, True
+
+    if data:
+        atom.metadata["data"] = _resolve_payload_data(data, aid, proca_index)
+    return True, False
+
+
+def load_documents_lazy(
+    phi,
+    path: str,
+    proca_index=None,
+    *,
+    fold_below_T: float | None = None,
+) -> tuple[int, set[str]]:
+    """
+    Wczytaj manifest: nagłówki wszystkich atomów; payload tylko HOT / __bubble__.
+    Zwraca (liczba atomów, zbiór zwiniętych id).
+    """
+    if not _KAFD_OK:
+        raise RuntimeError("Brak karmazyn_kafd — nie można odczytać z dysku")
+    if not os.path.exists(path):
+        return 0, set()
+
+    from karmazyn_atom import T_HOT
+    from karmazyn_kafd import KAFDReader
+
+    if fold_below_T is None:
+        fold_below_T = T_HOT
+
+    try:
+        blob = _read_decrypted_kafd(path)
+    except RuntimeError:
+        try:
+            with open(path, "rb") as f:
+                blob = f.read()
+        except OSError:
+            return 0, set()
+
+    reader = KAFDReader(blob)
+    if not reader._valid:
+        return 0, set()
+
+    folded: set[str] = set()
+    n = 0
+    for aid in reader.atom_ids:
+        entry = reader.get_entry(aid)
+        if entry is None:
+            continue
+        raw = reader._get_data(entry)
+        ok, is_folded = _ingest_atom_bytes(
+            phi,
+            aid,
+            raw,
+            proca_index=proca_index,
+            fold_below_T=fold_below_T,
+            fold_src=path,
+        )
+        if ok:
+            n += 1
+            if is_folded:
+                folded.add(aid)
+    return n, folded
+
+
+def load_folded_atoms(phi, path: str, atom_ids: set[str], proca_index=None) -> int:
+    """Dociągnij payload zwiniętych atomów z pliku .kafd."""
+    if not atom_ids or not _KAFD_OK or not os.path.exists(path):
+        return 0
+
+    from karmazyn_kafd import KAFDReader
+
+    try:
+        blob = _read_decrypted_kafd(path)
+    except RuntimeError:
+        with open(path, "rb") as f:
+            blob = f.read()
+
+    reader = KAFDReader(blob)
+    loaded = 0
+    for aid in atom_ids:
+        entry = reader.get_entry(aid)
+        if entry is None:
+            continue
+        try:
+            head, data = _decode_atom(reader._get_data(entry))
+        except Exception:
+            continue
+        atom = phi.get_atom(aid) if hasattr(phi, "get_atom") else None
+        reg = getattr(phi, "reg", None)
+        if atom is None and reg is not None:
+            atom = reg.get(aid)
+        if atom is None:
+            continue
+        if data:
+            atom.metadata["data"] = _resolve_payload_data(data, aid, proca_index)
+        atom.metadata.pop(FOLDED_META_KEY, None)
+        atom.metadata.pop(FOLD_SRC_KEY, None)
+        loaded += 1
+    return loaded
+
+
 def load_documents(phi, path: str, proca_index=None) -> int:
-    """Wczytaj atomy (z automatycznym deszyfrowaniem Phi)."""
+    """Wczytaj wszystkie atomy (pełny load, bez zwijania)."""
     if not _KAFD_OK:
         raise RuntimeError("Brak karmazyn_kafd — nie można odczytać z dysku")
     if not os.path.exists(path):
         return 0
 
-    with open(path, "rb") as f:
-        encrypted_blob = f.read()
-
-    # Deszyfrowanie w locie przed przekazaniem do rozpakowania
     try:
-        decrypted_blob = _apply_phi_cipher(encrypted_blob)
-    except Exception as e:
-        raise RuntimeError(f"Błąd kryptograficzny (uszkodzony plik lub nieznany klucz): {e}")
+        decrypted_blob = _read_decrypted_kafd(path)
+    except RuntimeError:
+        with open(path, "rb") as f:
+            decrypted_blob = f.read()
 
     try:
         atoms_dict, _meta = vfs_unpack(decrypted_blob)
     except Exception:
-        # Fallback na stary, nieszyfrowany format, gdybyśmy wczytywali stare zrzuty
         try:
-            atoms_dict, _meta = vfs_unpack(encrypted_blob)
+            with open(path, "rb") as f:
+                atoms_dict, _meta = vfs_unpack(f.read())
         except Exception:
             return 0
 
     n = 0
     for aid, atom_bytes in atoms_dict.items():
-        try:
-            head, data = _decode_atom(atom_bytes)
-        except Exception:
-            continue
-        atom = _make_atom(phi, aid, head.get("S", ""),
-                          head.get("E", ""),
-                          float(head.get("T", 50.0)))
-        m = head.get("meta", {})
-        if isinstance(m, dict):
-            atom.metadata.update(m)
-        if data:
-            if proca_index is not None:
-                try:
-                    from karmazyn_proca import ProcaCoordinate
-
-                    if ProcaCoordinate.is_proca_json(data):
-                        coord = ProcaCoordinate.from_json_bytes(data, aid)
-                        resolved = proca_index.resolve_coordinate(coord)
-                        if resolved is not None:
-                            data = resolved
-                except Exception:
-                    pass
-            atom.metadata["data"] = data
-        n += 1
+        ok, _ = _ingest_atom_bytes(
+            phi, aid, atom_bytes, proca_index=proca_index, fold_below_T=None
+        )
+        if ok:
+            n += 1
     return n
 
 

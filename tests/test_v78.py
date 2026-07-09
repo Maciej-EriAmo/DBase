@@ -140,7 +140,7 @@ class TestProcaColdPersistence(unittest.TestCase):
             self.assertGreaterEqual(len(list(proca.glob("*.pfld"))), 1)
 
             bridge2 = KarminLambdaBridge(kernel.Store(thermal=True))
-            load_runtime_from_kafd(bridge2, kafd, proca_dir=proca)
+            load_runtime_from_kafd(bridge2, kafd, proca_dir=proca, lazy=False)
             for aid in (atom_a.id, atom_b.id):
                 loaded = bridge2.store.get_atom(aid)
                 self.assertIsNotNone(loaded)

@@ -117,10 +117,30 @@ class GameStore:
         row = self.run_line("LISTA ŚWIATÓW", strict=True)
         return list(row.get("worlds", []))
 
-    def select_world(self, name: str, *, create: bool = False) -> dict:
-        cmd = f'UTWÓRZ ŚWIAT "{_esc(name)}"' if create else f'WYBIERZ ŚWIAT "{_esc(name)}"'
+    def select_world(
+        self,
+        name: str,
+        *,
+        create: bool = False,
+        cel: str = "",
+        promien: int | None = None,
+    ) -> dict:
+        if create:
+            cmd = f'UTWÓRZ ŚWIAT "{_esc(name)}"'
+        elif cel:
+            cmd = f'WYBIERZ ŚWIAT "{_esc(name)}" CEL "{_esc(cel)}"'
+            if promien is not None:
+                cmd += f" PROMIEŃ {int(promien)}"
+        else:
+            cmd = f'WYBIERZ ŚWIAT "{_esc(name)}"'
         row = self.run_line(cmd, strict=True)
         return row
+
+    def unfold(self, bubble: str, promien: int | None = None) -> dict:
+        cmd = f'ROZWIJ "{_esc(bubble)}"'
+        if promien is not None:
+            cmd += f" PROMIEŃ {int(promien)}"
+        return self.run_line(cmd, strict=True)
 
     def detach_world(self) -> None:
         self.run_line("ODŁĄCZ ŚWIAT", strict=True)

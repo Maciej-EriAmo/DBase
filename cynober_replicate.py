@@ -233,7 +233,7 @@ def import_world_payload(
                 tmp.write(kafd_bytes)
                 tmp_path = tmp.name
             try:
-                load_runtime_from_kafd(new_rt.bridge, tmp_path)
+                load_runtime_from_kafd(new_rt.bridge, tmp_path, lazy=False)
             finally:
                 Path(tmp_path).unlink(missing_ok=True)
             with world.runtime.lock:

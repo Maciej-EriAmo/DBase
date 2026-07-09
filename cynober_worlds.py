@@ -7,6 +7,7 @@ Wiele sesji RPC może dołączyć do tego samego świata (wspólny stan, lock na
 
 v7.8: auto-flush dirty, utrwalony inv_index/atom_index w .meta.json,
       Proca dla payloadów COLD (katalog proca/<świat>/).
+v7.9: lazy load manifestu (zwinięte nie-HOT), ROZWIJ / CEL + promień grafu.
 """
 
 from __future__ import annotations
@@ -29,6 +30,22 @@ WORLD_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_\-]{0,63}$")
 META_INDEX_VERSION = 1
 
 DEFAULT_WORLDS_DIR = Path.home() / ".cynober_worlds"
+DEFAULT_UNFOLD_RADIUS = 2
+
+
+def lazy_load_enabled() -> bool:
+    raw = os.environ.get("CYNOBER_LAZY_LOAD", "1").strip().lower()
+    return raw not in ("0", "false", "no", "off")
+
+
+def default_unfold_radius() -> int:
+    raw = os.environ.get("CYNOBER_UNFOLD_RADIUS", "").strip()
+    if not raw:
+        return DEFAULT_UNFOLD_RADIUS
+    try:
+        return max(0, int(raw))
+    except ValueError:
+        return DEFAULT_UNFOLD_RADIUS
 
 
 def worlds_dir() -> Path:
@@ -160,19 +177,12 @@ def save_runtime_to_kafd(
             store.reg.delete(sid)
 
 
-def load_runtime_from_kafd(
+def _finalize_kafd_load(
     bridge: KarminLambdaBridge,
-    path: Path | str,
-    *,
-    proca_dir: Path | str | None = None,
-    query_indexes: dict[str, Any] | None = None,
-) -> int:
-    import karmazyn_store
-
+    query_indexes: dict[str, Any] | None,
+) -> None:
     store = bridge.store
     engine = bridge.engine
-    proca_index = _proca_index_for(proca_dir)
-    loaded = karmazyn_store.load_documents(store, str(path), proca_index=proca_index)
     for a in list(store.reg.atoms()):
         if a.S != "__bubble__":
             continue
@@ -185,7 +195,113 @@ def load_runtime_from_kafd(
         store.reg.delete(a.id)
     if not restore_query_indexes(engine.api, query_indexes):
         rebuild_all_indexes(engine.api)
-    return loaded
+
+
+def load_runtime_from_kafd(
+    bridge: KarminLambdaBridge,
+    path: Path | str,
+    *,
+    proca_dir: Path | str | None = None,
+    query_indexes: dict[str, Any] | None = None,
+    lazy: bool = False,
+) -> tuple[int, set[str]]:
+    import karmazyn_store
+
+    store = bridge.store
+    proca_index = _proca_index_for(proca_dir)
+    folded: set[str] = set()
+    if lazy and lazy_load_enabled():
+        loaded, folded = karmazyn_store.load_documents_lazy(
+            store, str(path), proca_index=proca_index
+        )
+    else:
+        loaded = karmazyn_store.load_documents(store, str(path), proca_index=proca_index)
+    _finalize_kafd_load(bridge, query_indexes)
+    return loaded, folded
+
+
+def bubble_graph_neighbors(api, bubble_name: str) -> Set[str]:
+    """Sąsiedzi w grafie relacji (1-hop)."""
+    neighbors: Set[str] = set()
+    bubble = api._bubble_index.get(bubble_name)
+    if bubble is None:
+        return neighbors
+    for key in bubble.bindings:
+        if key.startswith("rel:"):
+            parts = key.split(":", 2)
+            if len(parts) >= 3:
+                neighbors.add(parts[2])
+    for name, other in api._bubble_index.items():
+        if name == bubble_name:
+            continue
+        for key in other.bindings:
+            if key.startswith("rel:") and key.endswith(f":{bubble_name}"):
+                neighbors.add(name)
+    return neighbors
+
+
+def bfs_bubbles(api, seeds: List[str], radius: int) -> Set[str]:
+    """Bąble w promieniu radius od seedów (graf relacji)."""
+    valid_seeds = [s for s in seeds if s in api._bubble_index]
+    if not valid_seeds:
+        return set()
+    visited: Set[str] = set(valid_seeds)
+    frontier: Set[str] = set(valid_seeds)
+    for _ in range(max(0, radius)):
+        nxt: Set[str] = set()
+        for b in frontier:
+            for n in bubble_graph_neighbors(api, b):
+                if n not in visited:
+                    visited.add(n)
+                    nxt.add(n)
+        frontier = nxt
+    return visited
+
+
+def unfold_runtime(
+    runtime: WorldRuntime,
+    seeds: List[str],
+    radius: int | None = None,
+) -> dict[str, Any]:
+    """Rozwiń payload zwiniętych atomów wokół seedów (+ promień grafu)."""
+    import karmazyn_store
+
+    if radius is None:
+        radius = default_unfold_radius()
+    api = runtime.engine.api
+    bubbles = bfs_bubbles(api, seeds, radius)
+    atom_ids: Set[str] = set()
+    for bname in bubbles:
+        bubble = api._bubble_index.get(bname)
+        if bubble is None:
+            continue
+        for key, aid in bubble.bindings.items():
+            if aid and not key.startswith("hist:"):
+                atom_ids.add(aid)
+
+    to_load = atom_ids & runtime.folded_atoms
+    loaded = 0
+    if to_load and runtime.kafd_path and runtime.kafd_path.is_file():
+        proca = _proca_index_for(runtime.proca_dir)
+        loaded = karmazyn_store.load_folded_atoms(
+            runtime.store,
+            str(runtime.kafd_path),
+            to_load,
+            proca_index=proca,
+        )
+        for aid in to_load:
+            runtime.folded_atoms.discard(aid)
+            atom = runtime.store.get_atom(aid)
+            if atom is not None:
+                runtime.store.heat(atom)
+
+    return {
+        "unfolded_bubbles": sorted(bubbles),
+        "unfolded_atoms": loaded,
+        "radius": radius,
+        "seeds": list(seeds),
+        "folded_remaining": len(runtime.folded_atoms),
+    }
 
 
 def _load_meta(path: Path) -> dict:
@@ -207,6 +323,9 @@ def _save_meta(path: Path, data: dict) -> None:
 class WorldRuntime:
     bridge: KarminLambdaBridge
     lock: threading.RLock = field(default_factory=threading.RLock)
+    kafd_path: Optional[Path] = None
+    proca_dir: Optional[Path] = None
+    folded_atoms: Set[str] = field(default_factory=set)
 
     @property
     def store(self):
@@ -267,6 +386,7 @@ class WorldRegistry:
             "created_at": meta.get("created_at", cached.created_at if cached else None),
             "modified_at": meta.get("modified_at", cached.modified_at if cached else None),
             "indexed_keys": sorted((qi.get("inv_index") or {}).keys()),
+            "folded_atoms": len(cached.runtime.folded_atoms) if cached else meta.get("folded_atoms", 0),
         }
 
     def _create_runtime(self) -> WorldRuntime:
@@ -276,13 +396,18 @@ class WorldRegistry:
         runtime = self._create_runtime()
         kafd = _kafd_path(self._base, name)
         meta = _load_meta(_meta_path(self._base, name))
+        proca = _proca_dir(self._base, name)
+        runtime.kafd_path = kafd
+        runtime.proca_dir = proca
         if kafd.is_file():
-            load_runtime_from_kafd(
+            _, folded = load_runtime_from_kafd(
                 runtime.bridge,
                 kafd,
-                proca_dir=_proca_dir(self._base, name),
+                proca_dir=proca,
                 query_indexes=meta.get("query_indexes"),
+                lazy=True,
             )
+            runtime.folded_atoms = folded
         user_indexes = set(meta.get("user_indexes", []))
         for key in user_indexes:
             runtime.engine.api._user_indexes.add(key)
@@ -349,6 +474,15 @@ class WorldRegistry:
             world.dirty = False
             return {"name": name, "saved": saved}
 
+    def unfold(self, name: str, seeds: List[str], radius: int | None = None) -> dict:
+        name = validate_world_name(name)
+        with self._lock:
+            world = self._worlds.get(name)
+            if world is None:
+                raise ValueError(f"Świat '{name}' nie jest załadowany.")
+            with world.runtime.lock:
+                return unfold_runtime(world.runtime, seeds, radius=radius)
+
     def flush_all_dirty(self) -> List[dict]:
         """Zapisuje wszystkie załadowane światy z flagą dirty (auto-flush)."""
         with self._lock:
@@ -398,9 +532,12 @@ class WorldRegistry:
                 "user_indexes": sorted(api._user_indexes),
                 "query_indexes": export_query_indexes(api),
             }
+            meta["folded_atoms"] = len(world.runtime.folded_atoms)
+            meta["lazy_load"] = lazy_load_enabled()
             _save_meta(_meta_path(self._base, world.name), meta)
             world.modified_at = meta["modified_at"]
             world.user_indexes = set(meta["user_indexes"])
+            world.runtime.folded_atoms = set()
             return saved
 
     @property

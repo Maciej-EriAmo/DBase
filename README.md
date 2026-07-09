@@ -9,7 +9,7 @@ Relacyjno-grafowa baza danych na termodynamicznym rdzeniu **KarmazynOS**, z tran
 | Komponent | Wersja | Plik |
 |-----------|--------|------|
 | KarminQL | v6.9 | `cynober_query_engine.py` |
-| Serwer RPC | v7.8 | `cynober_server.py` |
+| Serwer RPC | v7.9 | `cynober_server.py` |
 | Klient SDK | v7.7 | `cynober_client.py` |
 | Klient CLI | v1.8.0 | `Cynober_db.py` |
 | Protokół | Cynober-Secure-1.2 | `cynober_rpc.py` |
@@ -133,7 +133,7 @@ python -m unittest discover -s tests -v
 python -m pytest tests/ -q
 ```
 
-Stan: **301 testów** (kernel, KarminQL v6.0–v6.9, HSS/NTT, HSL, RPC+cap, sesje v7.0–v7.8, gossip, persist, GameStore).
+Stan: **305 testów** (kernel, KarminQL v6.0–v6.9, HSS/NTT, HSL, RPC+cap, sesje v7.0–v7.9, lazy unfold, GameStore).
 
 ## Status i ograniczenia
 
