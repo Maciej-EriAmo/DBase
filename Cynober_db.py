@@ -17,6 +17,7 @@ from cynober_rpc import (
     RPC_TIMEOUT_SEC,
     HS_TIMEOUT_SEC,
     decrypt_rpc_response,
+    build_rpc_request,
     encrypt_rpc_request,
     parse_response_payload,
     perform_handshake,
@@ -113,7 +114,9 @@ class CynoberClient:
 
     def _send_query(self, query: str) -> list:
         try:
-            req_blob = json.dumps({"query": query}, ensure_ascii=False).encode('utf-8')
+            req_blob = json.dumps(
+                build_rpc_request(query, self._hsl_link), ensure_ascii=False
+            ).encode("utf-8")
             enc_req = encrypt_rpc_request(self.crypto, _compress(req_blob), self._hsl_link)
             _send_frame(self.sock, enc_req)
 
@@ -483,7 +486,7 @@ class CynoberClient:
 
         print("=" * 60 + "\n")
 
-if __name__ == "__main__":
+def main() -> None:
     from cynober_client_config import resolve_client_target
 
     host, port, profile = resolve_client_target()
@@ -491,3 +494,7 @@ if __name__ == "__main__":
         print(f"[Cynober] Profil: {profile} → {host}:{port}")
     client = CynoberClient(host=host, port=port)
     client.run()
+
+
+if __name__ == "__main__":
+    main()

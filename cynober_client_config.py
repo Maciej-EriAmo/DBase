@@ -205,6 +205,8 @@ def apply_secrets(source: dict[str, Any]) -> None:
         os.environ["KARM_PSK"] = str(source["psk"])
     if source.get("qkd_seed") and not os.environ.get("KARM_QKD_SEED"):
         os.environ["KARM_QKD_SEED"] = str(source["qkd_seed"])
+    if source.get("qkd_path") and not os.environ.get("KARM_QKD_PATH"):
+        os.environ["KARM_QKD_PATH"] = str(source["qkd_path"])
     apply_hss_profile(source)
 
 

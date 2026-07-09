@@ -19,7 +19,13 @@ from karmazyn_handshake import (
     _send_frame,
     _send_json,
 )
-from karmazyn_hsl import HSL_VERSION, HSLLink, perform_hsl_link
+from karmazyn_hsl import (
+    CAP_RPC_QUERY,
+    HSL_VERSION,
+    HSLLink,
+    perform_hsl_link,
+    verify_capability,
+)
 
 try:
     from karmazyn_handshake import _HSS_AVAILABLE, _CRYPTO_OK
@@ -300,6 +306,43 @@ def send_encrypted_response(
     _send_frame(conn, enc)
 
 
+def build_rpc_request(query: str, hsl: HSLLink | None = None) -> dict[str, Any]:
+    """Żądanie RPC z capability token (v7.5)."""
+    req: dict[str, Any] = {"query": query}
+    if hsl:
+        req["cap"] = hsl.rpc_capability(CAP_RPC_QUERY)
+        req["epoch"] = hsl.epoch
+    return req
+
+
+def _verify_rpc_capability(req: dict[str, Any], hsl: HSLLink) -> None:
+    cap = req.get("cap")
+    if not cap or not isinstance(cap, str):
+        raise ValueError("Brak capability token (cap) — wymagany HSL v7.5+")
+    hsl.ensure_epoch()
+    if verify_capability(hsl.s_target, CAP_RPC_QUERY, cap):
+        return
+    # Granica epoki — tolerancja ±1 (rozjazd zegarów)
+    if hsl._shared_key and hsl._commit_local and hsl._commit_remote:
+        from karmazyn_hsl import prism_target
+
+        for delta in (-1, 1):
+            alt = prism_target(
+                hsl._shared_key,
+                hsl._commit_local,
+                hsl._commit_remote,
+                hsl.epoch + delta,
+                task=hsl.task,
+                prisms=hsl.prisms,
+                qkd_seed=hsl._qkd_seed,
+            )
+            if verify_capability(alt, CAP_RPC_QUERY, cap):
+                hsl.epoch += delta
+                hsl.s_target = alt
+                return
+    raise ValueError("Nieprawidłowy capability token — brak rezonansu sesji")
+
+
 def decode_request(enc_req: bytes, crypto, hsl: HSLLink | None = None) -> str:
     try:
         raw = _decompress(decrypt_rpc_request(crypto, enc_req, hsl))
@@ -311,6 +354,8 @@ def decode_request(enc_req: bytes, crypto, hsl: HSLLink | None = None) -> str:
         raise ValueError(f"Niepoprawny JSON w żądaniu: {e}") from e
     if not isinstance(req, dict):
         raise ValueError("Żądanie RPC musi być obiektem JSON")
+    if hsl:
+        _verify_rpc_capability(req, hsl)
     if "query" not in req:
         raise ValueError("Brak pola 'query' w żądaniu RPC")
     query = req["query"]

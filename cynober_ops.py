@@ -23,7 +23,7 @@ from cynober_worlds import (
     validate_world_name,
 )
 
-SERVER_VERSION = "7.6"
+SERVER_VERSION = "7.7"
 
 _BACKUP_WORLD_RE = re.compile(
     r'^KOPIA\s+ZAPASOWA\s+ŚWIATA\s+"([^"]+)"$',
@@ -103,10 +103,17 @@ class ServerMetrics:
 
     def health(self) -> dict:
         with self._lock:
+            from karmazyn_hss import hss_use_ntt, resolve_hss_profile
+            from karmazyn_qkd import qkd_source_label
+
+            prof = resolve_hss_profile()
             return {
                 "status": "ok",
                 "server_version": SERVER_VERSION,
                 "uptime_sec": round(time.time() - self._started_at, 2),
+                "hss_profile": prof.name,
+                "hss_ntt": hss_use_ntt(prof),
+                "qkd_source": qkd_source_label(),
             }
 
 

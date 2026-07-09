@@ -25,6 +25,7 @@ from cynober_rpc import (
     PROTO_VERSION,
     RPC_TIMEOUT_SEC,
     SUPPORTED_VERSIONS,
+    build_rpc_request,
     decrypt_rpc_response,
     encrypt_rpc_request,
     perform_handshake,
@@ -92,7 +93,9 @@ class CynoberClient:
     def query(self, text: str) -> dict:
         if not self.sock:
             raise CynoberClientError("Nie połączono — wywołaj connect()")
-        req_blob = json.dumps({"query": text}, ensure_ascii=False).encode("utf-8")
+        req_blob = json.dumps(
+            build_rpc_request(text, self.hsl_link), ensure_ascii=False
+        ).encode("utf-8")
         enc_req = encrypt_rpc_request(self.crypto, _compress(req_blob), self.hsl_link)
         _send_frame(self.sock, enc_req)
 

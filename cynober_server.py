@@ -12,6 +12,7 @@ v7.3: operacje — ZDROWIE, METRYKI SERWERA, kopie zapasowe światów.
 v7.4: replikacja — LISTA WĘZŁÓW, PULL/PUSH/SYNC światów między serwerami.
 v7.5: profile HSS (proto/standard/production), konfiguracja KARM_HSS_PROFILE.
 v7.6: cynober_client.py — oficjalny SDK klienta (jeden protokół).
+v7.7: pro — QKD adapter, capability tokens, rotacja epoki, NTT, gossip phi, PyPI.
 """
 
 from __future__ import annotations
@@ -32,6 +33,7 @@ from cynober_ops import (
     try_ops_command,
     world_from_ops_query,
 )
+from cynober_gossip import is_gossip_query, try_gossip_command
 from cynober_replicate import (
     get_peer_registry,
     is_replicate_admin_query,
@@ -40,6 +42,7 @@ from cynober_replicate import (
     try_replicate_command,
     world_from_replicate_query,
 )
+
 from cynober_world_auth import (
     ROLE_ADMIN,
     ROLE_READER,
@@ -64,6 +67,7 @@ from cynober_worlds import (
 from cynober_rpc import (
     HS_TIMEOUT_SEC,
     SUPPORTED_VERSIONS,
+    _node_id,
     decode_request,
     error_result,
     perform_handshake,
@@ -129,6 +133,10 @@ class CynoberFacade:
         repl_resp = self._try_replicate_command(stripped, upper)
         if repl_resp is not None:
             return repl_resp
+
+        gossip_resp = self._try_gossip_command(stripped, upper)
+        if gossip_resp is not None:
+            return gossip_resp
 
         deny = self._check_permission(stripped, upper)
         if deny is not None:
@@ -308,6 +316,17 @@ class CynoberFacade:
                 allowed=True,
             )
         return resp
+
+    def _try_gossip_command(self, stripped: str, upper: str) -> list | None:
+        if not is_gossip_query(stripped, upper):
+            return None
+        rt = self._runtime()
+        return try_gossip_command(
+            stripped,
+            store=rt.bridge.store,
+            node_id=_node_id(),
+            peers=get_peer_registry(self._registry.base_dir),
+        )
 
     def _check_replicate_permission(self, stripped: str, upper: str) -> list | None:
         if not self._auth.enabled:
@@ -814,12 +833,15 @@ def run_server(host='0.0.0.0', port=8080):
         srv.close()
 
 
-if __name__ == '__main__':
+def main() -> None:
     import sys
-    from cynober_client_config import resolve_server_bind
+    from cynober_client_config import CONFIG_PATH, resolve_server_bind
 
-    from cynober_client_config import CONFIG_PATH
     bind_host, port, source = resolve_server_bind(sys.argv[1:])
     if source == "(config)":
         print(f"[Cynober] Konfiguracja serwera ({CONFIG_PATH}) → {bind_host}:{port}")
     run_server(host=bind_host, port=port)
+
+
+if __name__ == "__main__":
+    main()

@@ -82,6 +82,23 @@ PROFILES: Dict[str, HSSProfile] = {
 DEFAULT_PROFILE_NAME = "proto"
 
 
+def hss_use_ntt(profile: Optional[HSSProfile] = None) -> bool:
+    """NTT negacyclic dla profili n≥128 (domyślnie włączone gdy kompatybilne)."""
+    prof = profile or resolve_hss_profile()
+    env = os.environ.get("KARM_HSS_USE_NTT", "").strip().lower()
+    if env in ("0", "false", "no"):
+        return False
+    if env in ("1", "true", "yes"):
+        from karmazyn_hss_ntt import ntt_compatible
+
+        return ntt_compatible(prof)
+    if prof.name == "proto":
+        return False
+    from karmazyn_hss_ntt import ntt_compatible
+
+    return ntt_compatible(prof)
+
+
 def resolve_hss_profile(name: Optional[str] = None) -> HSSProfile:
     raw = (name or os.environ.get("KARM_HSS_PROFILE") or DEFAULT_PROFILE_NAME).strip().lower()
     if raw not in PROFILES:
@@ -286,13 +303,29 @@ class HSSDaemon:
     def vacuum_decay(self):
         pass
 
+    def _kem_dot(self, sk: np.ndarray, pk: np.ndarray) -> int:
+        p = self._profile
+        if hss_use_ntt(p):
+            from karmazyn_hss_ntt import kem_shared_ntt
+
+            return kem_shared_ntt(sk, pk, p)
+        return int(np.dot(sk, pk) % p.q)
+
+    def _kem_pubkey(self, sk: np.ndarray, rng: np.random.Generator) -> np.ndarray:
+        p = self._profile
+        if hss_use_ntt(p):
+            from karmazyn_hss_ntt import kem_pubkey_ntt
+
+            return (kem_pubkey_ntt(sk, p) + _kem_noise(rng, p)) % p.q
+        A = _kem_matrix_a(p)
+        return (A @ sk + _kem_noise(rng, p)) % p.q
+
     def init_session(self) -> Tuple[str, bytes]:
         token = secrets.token_hex(16)
         rng = np.random.default_rng(int.from_bytes(secrets.token_bytes(8), "big"))
         p = self._profile
         sk_a = rng.integers(0, p.sk_max, size=p.n, dtype=np.int64)
-        A = _kem_matrix_a(p)
-        pk_a = (A @ sk_a + _kem_noise(rng, p)) % p.q
+        pk_a = self._kem_pubkey(sk_a, rng)
         self._hs_init[token] = sk_a
         return token, _kem_serialize_vec(pk_a)
 
@@ -302,9 +335,8 @@ class HSSDaemon:
         token = secrets.token_hex(16)
         rng = np.random.default_rng(int.from_bytes(secrets.token_bytes(8), "big"))
         sk_b = rng.integers(0, p.sk_max, size=p.n, dtype=np.int64)
-        A = _kem_matrix_a(p)
-        pk_b = (A @ sk_b + _kem_noise(rng, p)) % p.q
-        dot_b = int(np.dot(sk_b, pk_a) % p.q)
+        pk_b = self._kem_pubkey(sk_b, rng)
+        dot_b = self._kem_dot(sk_b, pk_a)
         bucket = _kem_bucket(dot_b, p)
         shared = _kem_shared_from_bucket(bucket)
         ack = _kem_serialize_vec(pk_b) + bucket.to_bytes(4, "big")
@@ -319,7 +351,7 @@ class HSSDaemon:
             raise ValueError(f"HSS ack: oczekiwano {p.ack_bytes} B, jest {len(ack)}")
         pk_b = _kem_deserialize_vec(ack[: p.pk_bytes], p)
         hint_bucket = int.from_bytes(ack[p.pk_bytes : p.ack_bytes], "big")
-        dot_a = int(np.dot(sk_a, pk_b) % p.q)
+        dot_a = self._kem_dot(sk_a, pk_b)
         local_bucket = _kem_bucket(dot_a, p)
         if abs(local_bucket - hint_bucket) > p.recon_tolerance:
             raise ValueError(

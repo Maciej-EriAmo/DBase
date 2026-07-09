@@ -275,12 +275,14 @@ class _PeerRpc:
 
     def query(self, text: str) -> dict:
         import json
-        from cynober_rpc import decrypt_rpc_response, encrypt_rpc_request
+        from cynober_rpc import build_rpc_request, decrypt_rpc_response, encrypt_rpc_request
         from karmazyn_handshake import _compress, _decompress, _recv_frame, _send_frame
 
         if not self._sock or not self._crypto:
             raise RuntimeError("Brak połączenia z węzłem.")
-        req = json.dumps({"query": text}, ensure_ascii=False).encode("utf-8")
+        req = json.dumps(
+            build_rpc_request(text, self._hsl), ensure_ascii=False
+        ).encode("utf-8")
         enc = encrypt_rpc_request(self._crypto, _compress(req), self._hsl)
         _send_frame(self._sock, enc)
         enc_resp = _recv_frame(self._sock)

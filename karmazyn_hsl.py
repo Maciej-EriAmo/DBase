@@ -58,15 +58,11 @@ def load_qkd_seed() -> bytes | None:
     """
     k_QKD — slot na seed z QKD (paper §6.4).
 
-    Dziś: KARM_QKD_SEED (hex 64 znaki lub hasło → SHA-256).
-    Przyszłość: ten sam interfejs, inne źródło (daemon QKD, HSM, plik z testbedu).
+    Źródła: KARM_QKD_SEED, KARM_QKD_PATH, KARM_QKD_PIPE (karmazyn_qkd.py).
     """
-    env = os.environ.get("KARM_QKD_SEED", "").strip()
-    if not env:
-        return None
-    if len(env) >= 64 and all(c in "0123456789abcdefABCDEF" for c in env):
-        return bytes.fromhex(env)
-    return hashlib.sha256(env.encode("utf-8")).digest()
+    from karmazyn_qkd import load_qkd_bytes
+
+    return load_qkd_bytes()
 
 
 def qkd_seed_active() -> bool:
@@ -122,13 +118,23 @@ def _hkdf(ikm: bytes, info: bytes, length: int = 32) -> bytes:
     return bytes(out[:length])
 
 
-def hybrid_link_seed(shared_key: bytes, qkd_seed: bytes | None = None) -> bytes:
+_UNSET_QKD: Any = object()
+
+
+def hybrid_link_seed(
+    shared_key: bytes,
+    qkd_seed: bytes | None | Any = _UNSET_QKD,
+) -> bytes:
     """
     Hybryda QKD+HSL: KDF(k_QKD, handshake_key).
 
-    Gdy brak k_QKD zwraca sam shared_key (zachowanie sprzed ścieżki 3).
+    qkd_seed=None — wymuszenie trybu bez QKD (testy).
+    Brak argumentu — load_qkd_seed() (adapter/env).
     """
-    qkd = qkd_seed if qkd_seed is not None else load_qkd_seed()
+    if qkd_seed is _UNSET_QKD:
+        qkd = load_qkd_seed()
+    else:
+        qkd = qkd_seed
     if not qkd:
         return shared_key
     return _hkdf(qkd + shared_key, b"hsl-hybrid-qkd-v1")
@@ -194,11 +200,16 @@ def verify_capability(s_target: bytes, label: str, token: str) -> bool:
     return hmac.compare_digest(expected, token)
 
 
+CAP_RPC_QUERY = "rpc:query"
+CAP_RPC_ADMIN = "rpc:admin"
+CAP_PRISM_KARMINQL = "karminql:query"
+
+
 def derive_frame_key(s_target: bytes, aad: bytes) -> bytes:
     return _hkdf(s_target + aad, b"hsl-frame")
 
 
-@dataclass(frozen=True)
+@dataclass
 class HSLLink:
     epoch: int
     s_target: bytes
@@ -207,6 +218,10 @@ class HSLLink:
     task: str
     prisms: tuple[str, ...]
     qkd_hybrid: bool = False
+    _shared_key: bytes = b""
+    _commit_local: bytes = b""
+    _commit_remote: bytes = b""
+    _qkd_seed: bytes | None = None
 
     def aad_request(self) -> bytes:
         return build_aad(self.local_id, self.remote_id, self.task, self.epoch, "req")
@@ -215,10 +230,35 @@ class HSLLink:
         return build_aad(self.remote_id, self.local_id, self.task, self.epoch, "resp")
 
     def request_key(self) -> bytes:
+        self.ensure_epoch()
         return derive_frame_key(self.s_target, self.aad_request())
 
     def response_key(self) -> bytes:
+        self.ensure_epoch()
         return derive_frame_key(self.s_target, self.aad_response())
+
+    def ensure_epoch(self, now: float | None = None) -> bool:
+        """Rotacja epoki — odśwież s_target gdy minął HSL_EPOCH_SEC (obie strony synchronicznie)."""
+        new_epoch = current_epoch(now)
+        if new_epoch == self.epoch:
+            return False
+        if not self._shared_key or not self._commit_local or not self._commit_remote:
+            return False
+        self.epoch = new_epoch
+        self.s_target = prism_target(
+            self._shared_key,
+            self._commit_local,
+            self._commit_remote,
+            self.epoch,
+            task=self.task,
+            prisms=self.prisms,
+            qkd_seed=self._qkd_seed,
+        )
+        return True
+
+    def rpc_capability(self, label: str = CAP_RPC_QUERY) -> str:
+        self.ensure_epoch()
+        return capability_token(self.s_target, label)
 
 
 def link_nonce_from_caps(local_caps: dict[str, Any], remote_caps: dict[str, Any]) -> bytes:
@@ -330,4 +370,8 @@ def perform_hsl_link(
         task=HSL_TASK_DEFAULT,
         prisms=HSL_PRISMS_DEFAULT,
         qkd_hybrid=bool(qkd),
+        _shared_key=shared_key,
+        _commit_local=commit_local,
+        _commit_remote=commit_remote,
+        _qkd_seed=qkd,
     )
