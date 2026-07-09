@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-cynober_server.py — Bezpieczny Serwer Bazy Danych Cynober DB (v7.3)
+cynober_server.py — Bezpieczny Serwer Bazy Danych Cynober DB (v7.4)
 ==========================================================================
 Zastępuje serwer HTTP. Wykorzystuje protokół TCP oraz warstwę kryptograficzną
 z karmazyn_handshake.py (Ring-LWE / ECDH / PBKDF2) do zabezpieczenia zapytań.
@@ -9,6 +9,7 @@ v7.0: każde połączenie RPC dostaje własny Store + KarminEngine (izolacja ses
 v7.1: trwałe, nazwane światy — WYBIERZ ŚWIAT / UTWÓRZ ŚWIAT (współdzielony stan).
 v7.2: auth na światach — ZALOGUJ, role reader/writer/admin, ACL w auth.json.
 v7.3: operacje — ZDROWIE, METRYKI SERWERA, kopie zapasowe światów.
+v7.4: replikacja — LISTA WĘZŁÓW, PULL/PUSH/SYNC światów między serwerami.
 """
 
 from __future__ import annotations
@@ -28,6 +29,14 @@ from cynober_ops import (
     is_ops_write_query,
     try_ops_command,
     world_from_ops_query,
+)
+from cynober_replicate import (
+    get_peer_registry,
+    is_replicate_admin_query,
+    is_replicate_query,
+    is_replicate_read_query,
+    try_replicate_command,
+    world_from_replicate_query,
 )
 from cynober_world_auth import (
     ROLE_ADMIN,
@@ -114,6 +123,10 @@ class CynoberFacade:
         ops_resp = self._try_ops_command(stripped, upper)
         if ops_resp is not None:
             return ops_resp
+
+        repl_resp = self._try_replicate_command(stripped, upper)
+        if repl_resp is not None:
+            return repl_resp
 
         deny = self._check_permission(stripped, upper)
         if deny is not None:
@@ -263,6 +276,73 @@ class CynoberFacade:
             )
         return resp
 
+    def _try_replicate_command(self, stripped: str, upper: str) -> list | None:
+        if not is_replicate_query(stripped, upper):
+            return None
+
+        deny = self._check_replicate_permission(stripped, upper)
+        if deny is not None:
+            self._auth.audit(
+                user=self._auth_user,
+                world=world_from_replicate_query(stripped),
+                action="DENY",
+                query=stripped,
+                allowed=False,
+            )
+            return deny
+
+        resp = try_replicate_command(
+            stripped,
+            upper,
+            self._registry,
+            get_peer_registry(self._registry.base_dir),
+        )
+        if resp and resp[0].get("status") == "ok":
+            self._auth.audit(
+                user=self._auth_user,
+                world=world_from_replicate_query(stripped),
+                action=resp[0].get("action", "REPLICATE"),
+                query=stripped,
+                allowed=True,
+            )
+        return resp
+
+    def _check_replicate_permission(self, stripped: str, upper: str) -> list | None:
+        if not self._auth.enabled:
+            return None
+
+        if upper == "LISTA WĘZŁÓW":
+            if self._auth_user and self._auth.has_min_role(self._auth_user, "*", ROLE_READER):
+                return None
+            if not self._auth_user:
+                return [{"status": "error", "message": "Wymagane logowanie: ZALOGUJ \"user\" TOKEN \"...\"."}]
+            return [{"status": "error", "message": "LISTA WĘZŁÓW wymaga globalnej roli reader."}]
+
+        if is_replicate_admin_query(stripped) and not world_from_replicate_query(stripped):
+            if not self._auth_user:
+                return [{"status": "error", "message": "Wymagane logowanie."}]
+            if not self._auth.has_min_role(self._auth_user, "*", ROLE_ADMIN):
+                return [{"status": "error", "message": "Zarządzanie węzłami wymaga globalnej roli admin."}]
+            return None
+
+        world = world_from_replicate_query(stripped)
+        if world is None:
+            return None
+
+        if not self._auth_user:
+            return [{"status": "error", "message": "Wymagane logowanie: ZALOGUJ \"user\" TOKEN \"...\"."}]
+
+        if is_replicate_read_query(stripped, upper) and not is_replicate_admin_query(stripped):
+            if self._auth.has_min_role(self._auth_user, world, ROLE_READER):
+                return None
+            return [{"status": "error", "message": f"EKSPORT wymaga roli reader w '{world}'."}]
+
+        if self._auth.has_min_role(self._auth_user, world, ROLE_ADMIN):
+            return None
+        if is_replicate_admin_query(stripped):
+            return [{"status": "error", "message": f"Replikacja wymaga roli admin w '{world}'."}]
+        return None
+
     def _check_ops_permission(self, stripped: str, upper: str) -> list | None:
         if not self._auth.enabled:
             return None
@@ -297,7 +377,7 @@ class CynoberFacade:
         return None
 
     def _check_permission(self, stripped: str, upper: str) -> list | None:
-        if is_ops_query(stripped, upper):
+        if is_ops_query(stripped, upper) or is_replicate_query(stripped, upper):
             return None
         if not self._auth.enabled:
             return None
@@ -682,10 +762,14 @@ def run_server(host='0.0.0.0', port=8080):
     worlds_dir = get_world_registry().base_dir
     print("=" * 60)
     auth = get_auth_store(worlds_dir)
-    print(f"  Cynober DB SECURE Server v7.3 działa na porcie {port}")
+    peers = get_peer_registry(worlds_dir)
+    print(f"  Cynober DB SECURE Server v7.4 działa na porcie {port}")
     print("  Nasłuch w standardzie Karmazyn Handshake RPC.")
     print("  Izolacja sesji: osobny executor na każde połączenie TCP.")
     print(f"  Trwałe światy: {worlds_dir}")
+    n_peers = len(peers.list_peers())
+    if n_peers:
+        print(f"  Węzły replikacji: {n_peers} (peers.json)")
     if auth.enabled:
         print(f"  Auth światów: WŁĄCZONE ({auth.path})")
     else:

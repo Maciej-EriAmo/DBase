@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-cynober_ops.py — operacje serwera v7.3 (metryki, zdrowie, kopie światów)
+cynober_ops.py — operacje serwera v7.4 (metryki, zdrowie, kopie światów)
 """
 
 from __future__ import annotations
@@ -23,7 +23,7 @@ from cynober_worlds import (
     validate_world_name,
 )
 
-SERVER_VERSION = "7.3"
+SERVER_VERSION = "7.4"
 
 _BACKUP_WORLD_RE = re.compile(
     r'^KOPIA\s+ZAPASOWA\s+ŚWIATA\s+"([^"]+)"$',

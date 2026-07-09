@@ -9,7 +9,7 @@ Relacyjno-grafowa baza danych na termodynamicznym rdzeniu **KarmazynOS**, z tran
 | Komponent | Wersja | Plik |
 |-----------|--------|------|
 | KarminQL | v6.9 | `cynober_query_engine.py` |
-| Serwer RPC | v7.3 | `cynober_server.py` |
+| Serwer RPC | v7.4 | `cynober_server.py` |
 | Klient CLI | v1.8.0 | `Cynober_db.py` |
 | Protokół | Cynober-Secure-1.2 | `cynober_rpc.py` |
 | GameStore (adapter aplikacyjny) | — | `game_store.py` |
@@ -31,7 +31,7 @@ Pełna składnia i API: [`cynober_manual.md`](cynober_manual.md)
 | **Analityka / ETL** | KarminQL + `read_karmin()` → pandas, CSV, `.kafd` | ★★★★☆ |
 | **Zdalny dostęp (sandbox)** | CLI lub własny klient RPC przez tunel HSS+HSL | ★★★★☆ |
 | **Gry / pamięć narracyjna** | `GameStore` + demo — NPC, questy, graf, termodynamika | ★★★★★ |
-| **Wspólna baza zespołu** | Trwałe światy v7.1 + auth v7.2 + ops v7.3 (metryki, backup) | ★★★★☆ |
+| **Wspólna baza zespołu** | Światy v7.1 + auth v7.2 + ops v7.3 + replikacja v7.4 (PULL/PUSH/SYNC) | ★★★★☆ |
 | **CRPG hack and slash** | `crpg_world_setup.py` — seed świata gry na trwałym serwerze | ★★★★★ |
 
 ## Co widać w demo, a co nie
@@ -116,7 +116,7 @@ python -m unittest discover -s tests -v
 python -m pytest tests/ -q
 ```
 
-Stan: **269 testów** (kernel, KarminQL v6.0–v6.9, HSS, HSL, RPC, sesje v7.0–v7.3, GameStore).
+Stan: **274 testów** (kernel, KarminQL v6.0–v6.9, HSS, HSL, RPC, sesje v7.0–v7.4, GameStore).
 
 ## Status i ograniczenia
 
@@ -124,13 +124,13 @@ Projekt jest w **fazie użytkowej dla early adopterów** — działa end-to-end,
 
 **Co działa:**
 - KarminQL v6.9 z rozbudowanym dialektem SQL-owym (JOIN, CTE, okna, JSON, EXPLAIN, indeksy)
-- Serwer v7.3: **izolacja sesji** (sandbox) + **trwałe światy** + **auth/role** + **operacje** (`ZDROWIE`, `METRYKI SERWERA`, backup/restore światów)
+- Serwer v7.4: **izolacja sesji** + **trwałe światy** + **auth/role** + **operacje** + **replikacja** (`PULL/PUSH/SYNC` między węzłami)
 - Tunel HSS + HSL + opcjonalny PSK/QKD-seed
 - Trwałość plikowa: `ZAPISZ` / `WCZYTAJ` (`.kafd`) w ramach sesji
 - Integracja pandas, CSV, `GameStore` dla gier i prototypów
 
 **Czego brakuje do pracy zawodowej w zespole:**
-- REST/ODBC, HA / replikacja — poza zakresem obecnej wersji
+- REST/ODBC — poza zakresem obecnej wersji; replikacja HA-lite jest w v7.4 (peers.json + sync plików .kafd)
 - PSK/QKD to hasło sieci; auth użytkowników wymaga `auth.json` na serwerze
 - HSS domyślnie **N=15, Q=256** — podnoszenie parametrów w `karmazyn_hss.py`
 - Metadane TCP widoczne; częściowa ochrona DoS (rate limit)

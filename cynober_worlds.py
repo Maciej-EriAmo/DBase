@@ -153,8 +153,8 @@ class World:
 class WorldRegistry:
     """Rejestr trwałych światów — pamięć + dysk (.kafd + .meta.json)."""
 
-    def __init__(self, base_dir: Optional[Path] = None):
-        self._base = base_dir or worlds_dir()
+    def __init__(self, base_dir: Optional[Path | str] = None):
+        self._base = Path(base_dir) if base_dir else worlds_dir()
         self._base.mkdir(parents=True, exist_ok=True)
         self._lock = threading.Lock()
         self._worlds: Dict[str, World] = {}

@@ -67,7 +67,7 @@ class TestServerOps(unittest.TestCase):
         self.assertEqual(row["status"], "ok")
         self.assertEqual(row["action"], "HEALTH")
         self.assertEqual(row["data"]["status"], "ok")
-        self.assertEqual(row["data"]["server_version"], "7.3")
+        self.assertEqual(row["data"]["server_version"], "7.4")
         self.assertGreater(row["data"]["uptime_sec"], 0)
 
     def test_server_metrics(self):
@@ -76,7 +76,7 @@ class TestServerOps(unittest.TestCase):
         m = c.query("METRYKI SERWERA")
         data = m["results"][0]["data"]
         self.assertEqual(m["results"][0]["action"], "SERVER_METRICS")
-        self.assertEqual(data["server_version"], "7.3")
+        self.assertEqual(data["server_version"], "7.4")
         self.assertGreaterEqual(data["queries_total"], 2)
         self.assertIn("HEALTH", data["top_actions"])
 
@@ -122,14 +122,20 @@ class TestServerOps(unittest.TestCase):
         self.assertEqual(r["results"][0]["status"], "error")
 
     def test_writer_can_backup_reader_can_list(self):
+        world = f"bkp_{time.time_ns()}"
         c = self._client()
+        c.query('ZALOGUJ "admin" TOKEN "admin-secret"')
+        c.query(f'UTWÓRZ ŚWIAT "{world}"')
+        c.query(f'NADAJ "writer" ROLĘ "writer" W ŚWIECIE "{world}"')
+        c.query(f'NADAJ "reader" ROLĘ "reader" W ŚWIECIE "{world}"')
+        c.query("ODŁĄCZ ŚWIAT")
         c.query('ZALOGUJ "writer" TOKEN "w-secret"')
-        c.query('WYBIERZ ŚWIAT "ops_world"')
-        r = c.query('KOPIA ZAPASOWA ŚWIATA "ops_world"')
-        self.assertEqual(r["results"][0]["status"], "ok")
+        c.query(f'WYBIERZ ŚWIAT "{world}"')
+        r = c.query(f'KOPIA ZAPASOWA ŚWIATA "{world}"')
+        self.assertEqual(r["results"][0]["status"], "ok", r["results"][0].get("message"))
 
         c.query("WYLOGUJ")
         c.query('ZALOGUJ "reader" TOKEN "r-secret"')
-        lst = c.query('LISTA KOPII ŚWIATA "ops_world"')
+        lst = c.query(f'LISTA KOPII ŚWIATA "{world}"')
         self.assertEqual(lst["results"][0]["status"], "ok")
         self.assertGreaterEqual(len(lst["results"][0]["backups"]), 1)

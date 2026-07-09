@@ -161,6 +161,41 @@ class GameStore:
         )
         return {k: v for k, v in row.items() if k not in ("status", "action")}
 
+    def list_peers(self) -> List[dict]:
+        row = self.run_line("LISTA WĘZŁÓW", strict=True)
+        return list(row.get("peers", []))
+
+    def add_peer(
+        self,
+        name: str,
+        host: str,
+        port: int,
+        *,
+        user: Optional[str] = None,
+        token: Optional[str] = None,
+    ) -> dict:
+        cmd = f'DODAJ WĘZEŁ "{_esc(name)}" HOST "{_esc(host)}" PORT {int(port)}'
+        if user and token:
+            cmd += f' UŻYTKOWNIK "{_esc(user)}" TOKEN "{_esc(token)}"'
+        row = self.run_line(cmd, strict=True)
+        return {k: v for k, v in row.items() if k not in ("status", "action")}
+
+    def remove_peer(self, name: str) -> dict:
+        row = self.run_line(f'USUŃ WĘZEŁ "{_esc(name)}"', strict=True)
+        return {k: v for k, v in row.items() if k not in ("status", "action")}
+
+    def pull_world(self, world: str, peer: str) -> dict:
+        row = self.run_line(f'PULL ŚWIAT "{_esc(world)}" Z "{_esc(peer)}"', strict=True)
+        return {k: v for k, v in row.items() if k not in ("status", "action")}
+
+    def push_world(self, world: str, peer: str) -> dict:
+        row = self.run_line(f'PUSH ŚWIAT "{_esc(world)}" DO "{_esc(peer)}"', strict=True)
+        return {k: v for k, v in row.items() if k not in ("status", "action")}
+
+    def sync_world(self, world: str, peer: str) -> dict:
+        row = self.run_line(f'SYNC ŚWIAT "{_esc(world)}" Z "{_esc(peer)}"', strict=True)
+        return {k: v for k, v in row.items() if k not in ("status", "action")}
+
     def seed_demo_world(self) -> None:
         """NPC, gracz, quest, relacje i pamięć tekstowa (JSON w cechach)."""
         self.run(
