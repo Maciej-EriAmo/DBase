@@ -2319,16 +2319,63 @@ class SubstrateAPI:
         if bind_key not in source_bubble.bindings: raise KeyError(f"Brak relacji")
         source_bubble.bindings.pop(bind_key, None)
 
+    def live_atom_ids(self, *, keep_hist: bool = False) -> set:
+        """Atomy osiągalne z aktywnych bindings (hist opcjonalnie)."""
+        live: set = set()
+        for bubble in self._bubble_index.values():
+            for key, atom_id in bubble.bindings.items():
+                if not atom_id:
+                    continue
+                if key.startswith("hist:") and not keep_hist:
+                    continue
+                live.add(atom_id)
+        return live
+
+    def prune_dead_bindings(self) -> int:
+        """Usuń bindings wskazujące na skasowane atomy."""
+        pruned = 0
+        for bubble in self._bubble_index.values():
+            for key in list(bubble.bindings.keys()):
+                aid = bubble.bindings.get(key)
+                if aid and self.store.get_atom(aid) is None:
+                    bubble.bindings.pop(key, None)
+                    pruned += 1
+        return pruned
+
+    def gc_orphan_atoms(self, *, keep_hist: bool = False) -> int:
+        """
+        Natychmiastowe GC atomów spoza żywych bindings.
+        Nie czeka na termikę — używaj przed zapisem i po usunięciu bąbla.
+        """
+        live = self.live_atom_ids(keep_hist=keep_hist)
+        reaped = 0
+        for atom in list(self.store.reg.atoms()):
+            if atom.S == "__bubble__":
+                continue
+            if atom.id in live:
+                continue
+            self._atom_index.pop(atom.id, None)
+            self.store.reg.delete(atom.id)
+            reaped += 1
+        if reaped:
+            from cynober_worlds import rebuild_all_indexes
+            rebuild_all_indexes(self)
+        self.prune_dead_bindings()
+        return reaped
+
     def delete_bubble(self, bubble_name: str):
         bubble = self._get_bubble(bubble_name)
         for key, atom_id in bubble.bindings.items():
+            if not atom_id:
+                continue
             if not key.startswith("hist:") and not key.startswith("rel:"):
-                self._track_atom(bubble_name, atom_id, add=False)
                 atom = self.store.get_atom(atom_id)
                 if atom:
                     self._update_index(bubble_name, key, atom.metadata.get('v'), add=False)
+            self._track_atom(bubble_name, atom_id, add=False)
         self.store.unset_root(bubble)
         del self._bubble_index[bubble_name]
+        self.gc_orphan_atoms(keep_hist=False)
 
     def rename_bubble(self, old_name: str, new_name: str):
         if new_name in self._bubble_index:

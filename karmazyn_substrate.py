@@ -121,6 +121,17 @@ class Store:
         self.events.emit("atom_created", atom)
         return atom
 
+    def sync_id_counter(self) -> int:
+        """Po wczytaniu .kafd (reg.create z jawnym id) podnieś _n ponad max istniejącego aN."""
+        max_n = -1
+        for atom in self.reg.atoms():
+            aid = atom.id
+            if len(aid) > 1 and aid[0] == "a" and aid[1:].isdigit():
+                max_n = max(max_n, int(aid[1:]))
+        if max_n >= 0:
+            self._n = max(self._n, max_n + 1)
+        return self._n
+
     def _announce(self, atom):
         # Atom przekroczył próg stanu — emituj na bus. Scheduler słucha,
         # nie odpytuje (odpytanie zimnego atomu by go ogrzało).

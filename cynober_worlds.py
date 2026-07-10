@@ -194,8 +194,10 @@ def _finalize_kafd_load(
             store.set_root(b)
             engine.api._bubble_index[nazwa] = b
         store.reg.delete(a.id)
-    if not restore_query_indexes(engine.api, query_indexes):
-        rebuild_all_indexes(engine.api)
+    if hasattr(store, "sync_id_counter"):
+        store.sync_id_counter()
+    engine.api.prune_dead_bindings()
+    rebuild_all_indexes(engine.api)
 
 
 def load_runtime_from_kafd(
@@ -560,6 +562,11 @@ class WorldRegistry:
                 save_sharded_runtime,
                 sharding_enabled,
             )
+
+            api = world.runtime.engine.api
+            api.prune_dead_bindings()
+            api.gc_orphan_atoms(keep_hist=False)
+            rebuild_all_indexes(api)
 
             if sharding_enabled():
                 stats = save_sharded_runtime(

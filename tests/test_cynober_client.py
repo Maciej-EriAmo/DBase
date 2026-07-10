@@ -22,7 +22,7 @@ class TestCynoberClient(unittest.TestCase):
         with CynoberClient(port=self.port) as c:
             row = c.query_line("ZDROWIE")
             self.assertEqual(row["action"], "HEALTH")
-            self.assertEqual(row["data"]["server_version"], "8.0.1")
+            self.assertEqual(row["data"]["server_version"], "8.0.2")
 
     def test_context_manager(self):
         c = CynoberClient(port=self.port)

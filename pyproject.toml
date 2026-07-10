@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "cynober-db"
-version = "8.0.1"
+version = "8.0.2"
 description = "Cynober DB — relacyjno-grafowa baza z tunelem post-quantum HSS+HSL i KarminQL"
 readme = "README.md"
 requires-python = ">=3.10"
