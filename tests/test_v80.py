@@ -223,12 +223,20 @@ class TestShardedReplicationE2E(unittest.TestCase):
     @classmethod
     def tearDownClass(cls):
         cls.harness.stop()
-        if cls._peer_proc.poll() is None:
-            cls._peer_proc.terminate()
+        proc = cls._peer_proc
+        if proc.poll() is None:
+            proc.terminate()
             try:
-                cls._peer_proc.wait(timeout=3)
+                proc.wait(timeout=3)
             except subprocess.TimeoutExpired:
-                cls._peer_proc.kill()
+                proc.kill()
+                proc.wait(timeout=3)
+        for stream in (proc.stdout, proc.stderr):
+            if stream is not None:
+                try:
+                    stream.close()
+                except OSError:
+                    pass
         time.sleep(0.1)
         os.environ.pop("CYNOBER_WORLDS_DIR", None)
         os.environ.pop("CYNOBER_SHARDED", None)

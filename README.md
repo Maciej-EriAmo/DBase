@@ -10,7 +10,7 @@ Relacyjno-grafowa baza danych na termodynamicznym rdzeniu **KarmazynOS**, z tran
 |-----------|--------|------|
 | KarminQL | v6.9 | `cynober_query_engine.py` |
 | Jądro KarmazynOS | v1.1.0 | `karmazyn_kernel.py` / `karmazyn_substrate.py` |
-| Serwer RPC | v8.0.1 | `cynober_server.py` |
+| Serwer RPC / pakiet | v8.0.2 | `cynober_server.py` / `pyproject.toml` |
 | Klient SDK | v7.7 | `cynober_client.py` |
 | Klient CLI | v1.8.0 | `Cynober_db.py` |
 | Protokół | Cynober-Secure-1.2 | `cynober_rpc.py` |
@@ -61,7 +61,7 @@ Wymagania: **Python 3.10+**.
 ### Z PyPI (zalecane dla zespołu)
 
 ```bash
-pip install cynober-db    # PyPI: cynober-db 8.0.1+
+pip install cynober-db    # PyPI: cynober-db 8.0.2+
 cynober-server          # terminal 1 — serwer RPC
 cynober-cli             # terminal 2 — klient KarminQL
 cynober-konfigurator    # profile Termux / LAN / firewall
@@ -152,7 +152,7 @@ python -m unittest discover -s tests -v
 python -m pytest tests/ -q
 ```
 
-Stan: **313 testów** (kernel, KarminQL v6.0–v6.9, HSS/NTT, HSL, RPC+cap, sesje v7.0–v8.0, lazy unfold, shardy, GameStore).
+Stan: **322 testy** (kernel v1.1, KarminQL v6.0–v6.9, HSS/NTT, HSL, RPC+cap, sesje v7.0–v8.0, lazy unfold, shardy, GameStore).
 
 ## Status i ograniczenia
 
@@ -162,7 +162,7 @@ Projekt jest w **fazie użytkowej dla early adopterów** — działa end-to-end,
 - KarminQL v6.9 z rozbudowanym dialektem SQL-owym (JOIN, CTE, okna, JSON, EXPLAIN, indeksy)
 - **Jądro v1.1.0:** reach-GC, `retained_tomb`, dual-emit tick (`both`/`batch`/`per_atom`), publiczne API bez `Store.reg`
 - Serwer v8.0: **izolacja sesji** + **trwałe światy** + **auth/role** + **ops** + **replikacja manifest-first** + **shardy KAFD** + **lazy unfold**
-- Pakiet PyPI [`cynober-db`](https://pypi.org/project/cynober-db/) 8.0.1+
+- Pakiet PyPI [`cynober-db`](https://pypi.org/project/cynober-db/) 8.0.2+
 - Tunel HSS + HSL + opcjonalny PSK/QKD-seed
 - Trwałość: `ZAPISZ ŚWIAT`, auto-flush co 60s, kopie zapasowe z `shards/` i `proca/`
 - Integracja pandas, CSV, `GameStore` dla gier i prototypów

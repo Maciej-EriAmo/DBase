@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-cynober_ops.py — operacje serwera v7.4 (metryki, zdrowie, kopie światów)
+cynober_ops.py — operacje serwera v8.0.2 (metryki, zdrowie, kopie światów)
 """
 
 from __future__ import annotations

@@ -64,8 +64,28 @@ def _apply_phi_cipher(data: bytes) -> bytes:
 # ─── ADAPTER DIALEKTU MAGAZYNU (szew D2: Store vs PhiSpace) ──────────────────
 # karmazyn_store bywa wołany z dwoma różnymi powierzchniami:
 #   • PhiSpace     — .matrix.atoms() oraz create_atom(id, ...)
-#   • natywny Store — .atoms() oraz atom_new()/reg.create(id, ...)
-# Poniższe resolwery pozwalają obsłużyć oba bez zakładania konkretnej klasy.
+#   • natywny Store — .atoms() / create_atom(id, ...) / get_atom (bez .reg)
+# Preferuj publiczne API Store; .reg tylko jako ostatni fallback legacy
+# (dostęp do Store.reg emituje UserWarning — P6).
+
+def _legacy_reg(phi):
+    """Rejestr tylko gdy brak publicznego API (PhiSpace / stare adaptery)."""
+    if callable(getattr(phi, "atoms", None)) or callable(getattr(phi, "create_atom", None)):
+        return None
+    if callable(getattr(phi, "get_atom", None)):
+        return None
+    return getattr(phi, "reg", None)
+
+
+def _get_atom(phi, aid):
+    """Pobierz atom po id — get_atom, potem legacy reg (bez reg na Store)."""
+    if callable(getattr(phi, "get_atom", None)):
+        return phi.get_atom(aid)
+    reg = _legacy_reg(phi)
+    if reg is not None and hasattr(reg, "get"):
+        return reg.get(aid)
+    return None
+
 
 def _iter_atoms(phi):
     """Zwróć iterowalną kolekcję atomów niezależnie od dialektu magazynu."""
@@ -74,32 +94,32 @@ def _iter_atoms(phi):
         return m.atoms()
     if callable(getattr(phi, "atoms", None)):
         return phi.atoms()
-    reg = getattr(phi, "reg", None)
+    reg = _legacy_reg(phi)
     if reg is not None and hasattr(reg, "atoms"):
         return reg.atoms()
     raise AttributeError(
-        "Magazyn nie udostępnia atoms()/matrix.atoms()/reg.atoms()")
+        "Magazyn nie udostępnia atoms()/matrix.atoms() (ani legacy reg.atoms)")
 
 
 def _make_atom(phi, aid, S, E, T):
     """Utwórz atom z JAWNYM id — konieczne, bo bąble odwołują się do atomów po id.
-    Natywny Store.atom_new() sam generuje id i NIE nadaje się do wczytywania,
-    dlatego dla Store używamy rejestru (reg.create), który zachowuje id."""
+    Natywny Store.atom_new() sam generuje id i NIE nadaje się do wczytywania;
+    używamy create_atom(id, ...) (AtomStore). Legacy: reg.create."""
     if callable(getattr(phi, "create_atom", None)):
-        # AtomStore.create_atom -> id (str); reg.create -> Atom
+        # AtomStore.create_atom -> id (str) lub Atom
         created = phi.create_atom(aid, S=S, E=E, T=T)
         if isinstance(created, str):
-            atom = phi.get_atom(created) if callable(getattr(phi, "get_atom", None)) else None
+            atom = _get_atom(phi, created)
             if atom is None:
                 raise AttributeError(
                     f"create_atom({aid!r}) zwróciło id, ale get_atom nie znalazł atomu")
             return atom
         return created
-    reg = getattr(phi, "reg", None)
+    reg = _legacy_reg(phi)
     if reg is not None and hasattr(reg, "create"):
         return reg.create(aid, S=S, E=E, T=T)
     raise AttributeError(
-        "Magazyn nie potrafi utworzyć atomu z jawnym id (brak create_atom/reg.create)")
+        "Magazyn nie potrafi utworzyć atomu z jawnym id (brak create_atom)")
 
 
 # ─── SERIALIZACJA ATOMÓW ────────────────────────────────────────────────────
@@ -389,10 +409,7 @@ def load_folded_atoms(phi, path: str, atom_ids: set[str], proca_index=None) -> i
             head, data = _decode_atom(reader._get_data(entry))
         except Exception:
             continue
-        atom = phi.get_atom(aid) if hasattr(phi, "get_atom") else None
-        reg = getattr(phi, "reg", None)
-        if atom is None and reg is not None:
-            atom = reg.get(aid)
+        atom = _get_atom(phi, aid)
         if atom is None:
             continue
         if data:

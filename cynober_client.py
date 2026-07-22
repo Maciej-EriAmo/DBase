@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-cynober_client.py — oficjalny klient Cynober-Secure-1.2 (v7.6)
+cynober_client.py — oficjalny klient Cynober-Secure-1.2 (v7.7)
 ==============================================================
 Jeden protokół: TCP + HSS + HSL + KarminQL-RPC.
 

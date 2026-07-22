@@ -1,4 +1,4 @@
-"""Testy oficjalnego klienta cynober_client.py (v7.6)."""
+"""Testy oficjalnego klienta cynober_client.py (v7.7)."""
 
 import time
 import unittest
