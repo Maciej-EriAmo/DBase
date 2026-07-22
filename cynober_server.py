@@ -16,6 +16,7 @@ v7.7: pro — QKD adapter, capability tokens, rotacja epoki, NTT, gossip phi, Py
 v7.8: auto-flush światów, utrwalony indeks zapytań, Proca dla COLD.
 v7.9: lazy load manifestu, ROZWIJ / WYBIERZ CEL, auto-unfold przy POKAŻ.
 v8.0: shardy KAFD per region grafu, replikacja manifest-first.
+v8.1: gossip SOUL (bąble+bindings+atomy) nad RPC — BubbleVFS-lite.
 """
 
 from __future__ import annotations
@@ -341,11 +342,14 @@ class CynoberFacade:
         if not is_gossip_query(stripped, upper):
             return None
         rt = self._runtime()
+        api = getattr(getattr(rt, "bridge", None), "engine", None)
+        api = getattr(api, "api", None) if api is not None else None
         return try_gossip_command(
             stripped,
             store=rt.bridge.store,
             node_id=_node_id(),
             peers=get_peer_registry(self._registry.base_dir),
+            api=api,
         )
 
     def _check_replicate_permission(self, stripped: str, upper: str) -> list | None:

@@ -190,6 +190,21 @@ Opcjonalnie przy dodawaniu węzła: `UŻYTKOWNIK "repl" TOKEN "sekret"` — logo
 
 `GameStore`: `list_peers()`, `add_peer()`, `pull_world()`, `push_world()`, `sync_world()`.
 
+### Gossip PHI / SOUL (v7.7 + v8.1)
+
+Lżejsza synchronizacja **aktywnego Store** (sandbox lub wybranego świata) po tym samym RPC — bez pełnego exportu `.kafd`.
+
+| Polecenie | Opis |
+|-----------|------|
+| `GOSSIP EKSPORT PHI` | Snapshot atomów (id, S, E, T) → base64 |
+| `GOSSIP IMPORT PHI DANE "…"` | Merge: wyższe T wygrywa; **id zachowane** |
+| `GOSSIP SYNC PHI Z "peer"` | Export PHI z węzła `peers.json` + import lokalnie |
+| `GOSSIP EKSPORT SOUL` | **v8.1:** atomy + bąble + bindings (+ meta `v` / `data`) |
+| `GOSSIP IMPORT SOUL DANE "…"` | Merge SOUL (atomy + bąble w `_bubble_index`) |
+| `GOSSIP SYNC SOUL Z "peer"` | Sync SOUL z peerem |
+
+**PHI** = temperatura/tożsamość atomów. **SOUL** = BubbleVFS-lite (graf bąbli). Pełne pliki `.soul` / Proca COLD — kolejny krok.
+
 ### Klient SDK (v7.7)
 
 Oficjalny klient Python — ten sam tunel HSS+HSL+RPC co CLI, bez HTTP.
@@ -1322,7 +1337,7 @@ DBase/
 | v7.8 ✓ | Persystencja | Auto-flush, indeksy w meta, Proca COLD |
 | v7.9 ✓ | Lazy load | Manifest, `ROZWIJ`, `WYBIERZ CEL` |
 | **v8.0** ✓ | **Shardy** | Regiony grafu → `shards/`; `EKSPORT MANIFEST`, `PULL SHARD` |
-| v8.1+ | Gossip pełny | BubbleVFS (.soul) nad RPC |
+| **v8.1** ✓ (slice) | Gossip SOUL | `GOSSIP EKSPORT/IMPORT/SYNC SOUL` — bąble + bindings + atomy (id zachowane); pełne BubbleVFS `.soul` — dalej |
 
 **Czego nie planujemy:** REST gateway, ODBC, równoległy TLS/HTTP — rozproszyłyby adopcję i osłabiły model HSL jako jedynej warstwy sesji post-kwantowej.
 

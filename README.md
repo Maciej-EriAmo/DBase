@@ -185,7 +185,7 @@ Projekt jest w **fazie użytkowej dla early adopterów** — działa end-to-end,
 | v7.8 ✓ | Persystencja | Auto-flush dirty, `inv_index`/`atom_index` w meta, Proca COLD |
 | v7.9 ✓ | Lazy load | Manifest przy `WYBIERZ ŚWIAT`, `ROZWIJ` / `CEL` + promień grafu |
 | **v8.0** ✓ | **Shardy** | Regiony grafu → `shards/<świat>/`; replikacja manifest-first |
-| v8.1+ | Gossip pełny | BubbleVFS (.soul) nad RPC |
+| **v8.1** ✓ (slice) | Gossip SOUL | `GOSSIP EKSPORT/IMPORT/SYNC SOUL` — bąble+bindings+atomy (BubbleVFS-lite); pełne `.soul`/Proca — dalej |
 
 **Dlaczego nie REST:** HTTP dałby znajome narzędzia, ale drugi silnik transportu i gorsze wykorzystanie HSL. Produktem jest **Cynober end-to-end** — post-quantum oriented tunnel + KarminQL + światy, nie „JSON API obok”.
 
@@ -195,7 +195,7 @@ Stack jest warstwowy — można wnieść kawałek bez znajomości całości. Prz
 
 - **Bezpieczeństwo v7.5** — profile HSS N=128/512, NTT, adapter QKD
 - **Klient SDK** — bindingi Go/TypeScript na tym samym handshake (PyPI ✓)
-- **Gossip** — `karmazyn_gossip.py`, synchronizacja BubbleVFS po istniejącym tunelu
+- **Gossip SOUL** — `cynober_gossip.py` (PHI + SOUL); pełne pliki `.soul`/Proca COLD po RPC
 
 Jeśli chcesz dołączyć — issue, PR albo kontakt przez profil GitHub.
 

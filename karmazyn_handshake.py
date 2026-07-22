@@ -81,7 +81,7 @@ except ImportError:
 PROTO_VERSION   = "KSH-1.2"
 
 # SYNCUJE:     atomy phi-space (RAM): id, T, S, E, state, age, T_max
-# NIE SYNCUJE: bąble BubbleVFS (.soul) — karmazyn_gossip.py (TODO)
+# SOUL (v8.1): bąble+bindings przez cynober_gossip GOSSIP * SOUL (BubbleVFS-lite)
 # PhiSpace API: phi.matrix.atoms() / get_atom() / create_atom()
 # PSK auth:     export KARM_PSK=haslo_sieci
 FRAME_MAX_BYTES = 64 * 1024 * 1024   # 64 MB hard cap
