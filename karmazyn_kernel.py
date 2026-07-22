@@ -43,8 +43,9 @@ v1.1.0 (runda S1→S13, 2026-07-22) — zmiany substratu widoczne przez fasade:
     zawartosc przed GC (S3); worek bez roota NIE chroni.
   - Store.reg wewnetrzny (S2): property wsteczne z jednorazowym warning.
   - Retencja: kanon `retained_tomb` w stats; klucz `archived` = alias (S4/S14).
-  - tick: jeden walk + domyslnie jeden event `tick_batch`; tryb per-atom
-    przez Store(tick_event_mode="per_atom") (S12/S13).
+  - tick: jeden walk; eventy: batch | per_atom | both (dual-emit domyslnie,
+    okres przejsciowy S12/S15). Zagniezdzony tick = no-op; reaped tylko po
+    skutecznym delete.
 """
 
 # ── Podloga: model atomu + rejestr + klasyfikacja stanu (KANON prawa T) ───────
@@ -130,6 +131,7 @@ def kernel_info() -> dict:
             # bind/lookup sa na Bubble (wynik bubble_new), NIE na Store.
             "engine_native": [
                 "atom_new", "get_atom", "has_atom", "delete_atom", "atoms", "heat",
+                "snapshot_atoms", "restore_atoms",
                 "bubble_new", "set_root", "unset_root",
                 "tick", "settle", "resonance", "stats",
                 # adapter AtomStore (te same instancje Store)
@@ -145,9 +147,9 @@ def kernel_info() -> dict:
             # S3: ochrona GC w adapterze AtomStore
             "atomstore_gc": "create_bubble(label, root=True) albo set_root/"
                             "extra_reach — worek bez roota NIE chroni przed GC",
-            # S12/S13: eventy ticka
-            "tick_events": "domyslnie 'tick_batch' (1/tick); "
-                           "Store(tick_event_mode='per_atom') -> 'tick' per atom",
+            # S12/S15: eventy ticka (dual-emit w okresie przejsciowym)
+            "tick_events": "domyslnie 'both' (tick per atom + tick_batch); "
+                           "'batch' | 'per_atom' | 'both'; zagniezdzony tick=no-op",
         },
         "open_seams": {
             "D2_two_surfaces": "engine_native ma adapter AtomStore; API natywne (atom_new) i kontrakt (create_atom) wspolistnieja",

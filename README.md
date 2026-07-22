@@ -9,6 +9,7 @@ Relacyjno-grafowa baza danych na termodynamicznym rdzeniu **KarmazynOS**, z tran
 | Komponent | Wersja | Plik |
 |-----------|--------|------|
 | KarminQL | v6.9 | `cynober_query_engine.py` |
+| Jądro KarmazynOS | v1.1.0 | `karmazyn_kernel.py` / `karmazyn_substrate.py` |
 | Serwer RPC | v8.0.1 | `cynober_server.py` |
 | Klient SDK | v7.7 | `cynober_client.py` |
 | Klient CLI | v1.8.0 | `Cynober_db.py` |
@@ -159,6 +160,7 @@ Projekt jest w **fazie użytkowej dla early adopterów** — działa end-to-end,
 
 **Co działa:**
 - KarminQL v6.9 z rozbudowanym dialektem SQL-owym (JOIN, CTE, okna, JSON, EXPLAIN, indeksy)
+- **Jądro v1.1.0:** reach-GC, `retained_tomb`, dual-emit tick (`both`/`batch`/`per_atom`), publiczne API bez `Store.reg`
 - Serwer v8.0: **izolacja sesji** + **trwałe światy** + **auth/role** + **ops** + **replikacja manifest-first** + **shardy KAFD** + **lazy unfold**
 - Pakiet PyPI [`cynober-db`](https://pypi.org/project/cynober-db/) 8.0.1+
 - Tunel HSS + HSL + opcjonalny PSK/QKD-seed

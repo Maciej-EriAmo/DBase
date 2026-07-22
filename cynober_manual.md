@@ -14,7 +14,7 @@ Cynober DB to relacyjno-grafowa baza danych na termodynamicznym rdzeniu **Karmaz
 | HSL (sesje sieciowe) | HSL-1.1 | `karmazyn_hsl.py` |
 | Handshake / szyfrowanie | KSH-1.2 | `karmazyn_handshake.py` |
 | Ring-LWE (HSS KEM) | v1.0 | `karmazyn_hss.py` |
-| Jądro KarmazynOS | v1.0.0 | `karmazyn_kernel.py` |
+| Jądro KarmazynOS | v1.1.0 | `karmazyn_kernel.py` / `karmazyn_substrate.py` |
 | Specyfikacja HSL (paper) | v1.1.0 | `HSL_Paper_v1_1_0_EN.md` |
 | GameStore (adapter aplikacyjny) | — | `game_store.py` |
 
@@ -355,6 +355,25 @@ store = kernel.Store(thermal=True)
 engine = KarminEngine(store)
 results = engine.execute('UTRWAL "Test"\nWSTRZYKNIJ "X" = 1 DO "Test"')
 ```
+
+**Jądro v1.1.0 — publiczna powierzchnia `Store` (bez `Store.reg`):**
+
+| API | Rola |
+|-----|------|
+| `atoms()` / `get_atom` / `has_atom` / `delete_atom` / `heat` | Odczyt i usuwanie atomów (reach-safe) |
+| `snapshot_atoms()` / `restore_atoms(...)` | Snapshot / rollback rejestru (transakcje) |
+| `tick()` / `settle(n)` | Stygnięcie + reach-GC; zagnieżdżony `tick` = no-op |
+| `stats()` | m.in. `retained_tomb` (alias `archived`), `reaped` |
+
+**Eventy ticka** (`Store(tick_event_mode=...)`):
+
+| Tryb | Emisja |
+|------|--------|
+| `"both"` (domyślne) | `tick` per atom **oraz** jeden `tick_batch` (okres przejściowy) |
+| `"batch"` | tylko `tick_batch` `{atoms, reaped, retained}` |
+| `"per_atom"` | tylko `emit("tick", atom)` (słuchacze progowe) |
+
+Prawo GC: temperatura mówi *kiedy*, osiągalność mówi *czy* — zimny+nieosiągalny → vacuum; zimny+osiągalny → retencja TOMB. Nie wołaj `reg.tick()` + `reg.gc()` na silniku ze scope'ami (P6).
 
 ### Praca analityczna (pandas)
 

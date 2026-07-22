@@ -87,12 +87,12 @@ class TestPersistGC(unittest.TestCase):
             api.add_property("Doc", "Plik", '"v1.txt"')
             api.update_property("Doc", "Plik", '"v2.txt"')
             api.update_property("Doc", "Plik", '"v3.txt"')
-            before = len(list(world.runtime.store.reg.atoms()))
+            before = len(list(world.runtime.store.atoms()))
             reg.flush("gc_world")
             reg2 = reset_world_registry_for_tests(tmp)
             world2 = reg2.attach("gc_world")
             api2 = world2.runtime.engine.api
-            atoms = list(world2.runtime.store.reg.atoms())
+            atoms = list(world2.runtime.store.atoms())
             plik_atoms = [a for a in atoms if a.S == "Plik"]
             self.assertEqual(len(plik_atoms), 1)
             self.assertLess(len(atoms), before)

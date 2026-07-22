@@ -163,7 +163,7 @@ def save_runtime_to_kafd(
             syn = store.atom_new(S="__bubble__", E=nazwa, value=nazwa)
             syn.metadata["bindings"] = b.bindings
             syn_ids.append(syn.id)
-        kinds = list({a.S for a in store.reg.atoms() if a.S})
+        kinds = list({a.S for a in store.atoms() if a.S})
         if "__bubble__" not in kinds:
             kinds.append("__bubble__")
         return karmazyn_store.save_documents(
@@ -175,7 +175,7 @@ def save_runtime_to_kafd(
         )
     finally:
         for sid in syn_ids:
-            store.reg.delete(sid)
+            store.delete_atom(sid)
 
 
 def _finalize_kafd_load(
@@ -184,7 +184,7 @@ def _finalize_kafd_load(
 ) -> None:
     store = bridge.store
     engine = bridge.engine
-    for a in list(store.reg.atoms()):
+    for a in list(store.atoms()):
         if a.S != "__bubble__":
             continue
         nazwa = a.E
@@ -193,7 +193,7 @@ def _finalize_kafd_load(
             b.bindings = dict(a.metadata.get("bindings", {}))
             store.set_root(b)
             engine.api._bubble_index[nazwa] = b
-        store.reg.delete(a.id)
+        store.delete_atom(a.id)
     if hasattr(store, "sync_id_counter"):
         store.sync_id_counter()
     engine.api.prune_dead_bindings()

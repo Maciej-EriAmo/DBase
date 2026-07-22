@@ -217,7 +217,7 @@ def save_sharded_runtime(
             syn = store.atom_new(S="__bubble__", E=nazwa, value=nazwa)
             syn.metadata["bindings"] = b.bindings
             syn_ids.append(syn.id)
-        kinds = list({a.S for a in store.reg.atoms() if a.S})
+        kinds = list({a.S for a in store.atoms() if a.S})
         if "__bubble__" not in kinds:
             kinds.append("__bubble__")
 
@@ -273,7 +273,7 @@ def save_sharded_runtime(
         }
     finally:
         for sid in syn_ids:
-            store.reg.delete(sid)
+            store.delete_atom(sid)
 
 
 def write_shard_bytes(base: Path, world: str, rid: str, data: bytes) -> Path:

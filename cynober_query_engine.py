@@ -1800,13 +1800,13 @@ class SubstrateAPI:
         self.active_ns = name
 
     def begin_transaction(self):
-        reg_atoms = self.store.reg._atoms
+        snap = self.store.snapshot_atoms()
         self._backup_state = {
             "ns": self.active_ns,
             "bubble_index": dict(self._bubble_index),
             "bindings": {name: b.bindings.copy() for name, b in self._bubble_index.items()},
-            "atoms": dict(reg_atoms),
-            "atom_T": {aid: a.T for aid, a in reg_atoms.items()},
+            "atoms": snap,
+            "atom_T": {aid: a.T for aid, a in snap.items()},
             "roots": list(self.store.roots),
             "bubbles": list(self.store.bubbles),
             "inv_index": {k: {v: s.copy() for v, s in vals.items()}
@@ -1837,14 +1837,7 @@ class SubstrateAPI:
             if name in bs["bindings"]:
                 b.bindings = bs["bindings"][name]
 
-        self.store.reg._atoms = dict(bs["atoms"])
-        self.store.reg._generation += 1
-
-        for aid, T in bs["atom_T"].items():
-            a = self.store.reg._atoms.get(aid)
-            if a is not None:
-                a.T = T
-                a._update_state()
+        self.store.restore_atoms(bs["atoms"], bs["atom_T"])
 
         self.store.roots[:] = bs["roots"]
         self.store.bubbles[:] = bs["bubbles"]
@@ -2349,14 +2342,14 @@ class SubstrateAPI:
         """
         live = self.live_atom_ids(keep_hist=keep_hist)
         reaped = 0
-        for atom in list(self.store.reg.atoms()):
+        for atom in list(self.store.atoms()):
             if atom.S == "__bubble__":
                 continue
             if atom.id in live:
                 continue
             self._atom_index.pop(atom.id, None)
-            self.store.reg.delete(atom.id)
-            reaped += 1
+            if self.store.delete_atom(atom.id):
+                reaped += 1
         if reaped:
             from cynober_worlds import rebuild_all_indexes
             rebuild_all_indexes(self)
