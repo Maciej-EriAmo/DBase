@@ -55,9 +55,14 @@ def capabilities(store: Any) -> dict:
     return {
         "semantic":  callable(getattr(store, "find_resonating", None)),
         "tinted":    callable(getattr(store, "resonate", None)),
-        "hrr":       callable(getattr(store, "enable_hrr", None)),
+        # Store ma resonance(); phi ma enable_hrr() — obie ścieżki HRR
+        "hrr":       (callable(getattr(store, "enable_hrr", None))
+                      or callable(getattr(store, "resonance", None))),
         "hologram":  callable(getattr(store, "archive_to_hologram", None)),
         "consolidate": callable(getattr(store, "consolidate", None)),
+        "delete":    callable(getattr(store, "delete_atom", None)),
+        "reach_gc":  callable(getattr(store, "tick", None))
+                     and callable(getattr(store, "set_root", None)),
     }
 
 

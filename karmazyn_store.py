@@ -86,7 +86,15 @@ def _make_atom(phi, aid, S, E, T):
     Natywny Store.atom_new() sam generuje id i NIE nadaje się do wczytywania,
     dlatego dla Store używamy rejestru (reg.create), który zachowuje id."""
     if callable(getattr(phi, "create_atom", None)):
-        return phi.create_atom(aid, S=S, E=E, T=T)
+        # AtomStore.create_atom -> id (str); reg.create -> Atom
+        created = phi.create_atom(aid, S=S, E=E, T=T)
+        if isinstance(created, str):
+            atom = phi.get_atom(created) if callable(getattr(phi, "get_atom", None)) else None
+            if atom is None:
+                raise AttributeError(
+                    f"create_atom({aid!r}) zwróciło id, ale get_atom nie znalazł atomu")
+            return atom
+        return created
     reg = getattr(phi, "reg", None)
     if reg is not None and hasattr(reg, "create"):
         return reg.create(aid, S=S, E=E, T=T)

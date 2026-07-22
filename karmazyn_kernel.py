@@ -32,8 +32,19 @@ Co tu JEST, a czego NIE MA (uczciwie, bo to stan rzeczy, nie marketing):
     importowac stad — to porzadkuje sie za zgoda autora, bez usuwania na sile.
 
 Prawo jadra (z substratu): temperatura mowi KIEDY, osiagalnosc mowi CZY.
-  zimny+nieosiagalny -> GC ; zimny+osiagalny -> archiwum ; cieply -> zostaje.
+  zimny+nieosiagalny -> GC ; zimny+osiagalny -> retencja TOMB (retained tomb);
+  cieply -> zostaje.
 Niesmiertelnosc = przypadek szczegolny (atom trzymany przez korzen nie ginie).
+
+v1.1.0 (runda S1→S13, 2026-07-22) — zmiany substratu widoczne przez fasade:
+  - env_of(v) moze zwrocic Bubble ALBO iterowalne po Bubble (deep reach
+    po stronie frontu — kuracja S1); rdzen dalej nie zna jezyka.
+  - create_bubble(label, atom_ids=None, root=False) — root=True chroni
+    zawartosc przed GC (S3); worek bez roota NIE chroni.
+  - Store.reg wewnetrzny (S2): property wsteczne z jednorazowym warning.
+  - Retencja: kanon `retained_tomb` w stats; klucz `archived` = alias (S4/S14).
+  - tick: jeden walk + domyslnie jeden event `tick_batch`; tryb per-atom
+    przez Store(tick_event_mode="per_atom") (S12/S13).
 """
 
 # ── Podloga: model atomu + rejestr + klasyfikacja stanu (KANON prawa T) ───────
@@ -83,7 +94,7 @@ from karmazyn_atomstore import (
     CORE_METHODS,
 )
 
-__version__ = "1.0.0"
+__version__ = "1.1.0"
 
 # Publiczna powierzchnia. Import spoza tej listy = siegniecie do wnetrza jadra.
 __all__ = [
@@ -116,13 +127,31 @@ def kernel_info() -> dict:
         "surfaces": {
             # Kanoniczna powierzchnia natywna silnika (Store). Jawna lista —
             # introspekcja Store.__dict__ pomijala metody i byla mylaca.
-            "engine_native": ["atom_new", "get_atom", "atoms", "heat", "bubble_new",
-                              "bind", "lookup", "set_root", "unset_root",
-                              "tick", "settle", "resonance", "stats"],
+            # bind/lookup sa na Bubble (wynik bubble_new), NIE na Store.
+            "engine_native": [
+                "atom_new", "get_atom", "has_atom", "delete_atom", "atoms", "heat",
+                "bubble_new", "set_root", "unset_root",
+                "tick", "settle", "resonance", "stats",
+                # adapter AtomStore (te same instancje Store)
+                "create_atom", "create_bubble", "import_to_bubble", "get_bubble",
+            ],
+            "bubble_methods": ["bind", "unbind", "lookup"],
             "adapter_contract": list(CORE_METHODS),
         },
+        "contracts": {
+            # S1 (v1.1.0): deep reach po stronie frontu
+            "env_of": "env_of(v) -> Bubble | iterowalne[Bubble] | None; "
+                      "wartosci zlozone SPLASZCZA FRONT (albo extra_reach)",
+            # S3: ochrona GC w adapterze AtomStore
+            "atomstore_gc": "create_bubble(label, root=True) albo set_root/"
+                            "extra_reach — worek bez roota NIE chroni przed GC",
+            # S12/S13: eventy ticka
+            "tick_events": "domyslnie 'tick_batch' (1/tick); "
+                           "Store(tick_event_mode='per_atom') -> 'tick' per atom",
+        },
         "open_seams": {
-            "D2_two_surfaces": "engine_native vs adapter_contract — nierozstrzygniete",
+            "D2_two_surfaces": "engine_native ma adapter AtomStore; API natywne (atom_new) i kontrakt (create_atom) wspolistnieja",
             "D3_state_for_T": "kanon tutaj; kopie w dom/js_phi/kafd/live_dom do zimportu stad",
+            "retained_tomb": "kanon: _retained_tomb + stats['retained_tomb'] (alias 'archived'); retencja id w RAM — brak thaw/kompresji",
         },
     }
