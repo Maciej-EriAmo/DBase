@@ -341,16 +341,61 @@ class CynoberFacade:
     def _try_gossip_command(self, stripped: str, upper: str) -> list | None:
         if not is_gossip_query(stripped, upper):
             return None
+
+        deny = self._check_gossip_permission(stripped, upper)
+        if deny is not None:
+            self._auth.audit(
+                user=self._auth_user,
+                world=self.world_name,
+                action="DENY",
+                query=stripped,
+                allowed=False,
+            )
+            return deny
+
         rt = self._runtime()
         api = getattr(getattr(rt, "bridge", None), "engine", None)
         api = getattr(api, "api", None) if api is not None else None
-        return try_gossip_command(
+        resp = try_gossip_command(
             stripped,
             store=rt.bridge.store,
             node_id=_node_id(),
             peers=get_peer_registry(self._registry.base_dir),
             api=api,
         )
+        if resp and resp[0].get("status") == "ok" and self._world is not None:
+            self._auth.audit(
+                user=self._auth_user,
+                world=self.world_name,
+                action=resp[0].get("action", "GOSSIP"),
+                query=stripped,
+                allowed=True,
+            )
+            # IMPORT/SYNC mutują store — oznacz świat do auto-flush
+            if not upper.startswith("GOSSIP EKSPORT"):
+                self._registry.mark_dirty(self._world.name)
+        return resp
+
+    def _check_gossip_permission(self, stripped: str, upper: str) -> list | None:
+        """GOSSIP na dołączonym świecie podlega ACL; sesja efemeryczna — bez blokady."""
+        if not self._auth.enabled:
+            return None
+        if self._world is None:
+            return None
+        if not self._auth_user:
+            return [{"status": "error", "message": "Wymagane logowanie: ZALOGUJ \"user\" TOKEN \"...\"."}]
+
+        world = self._world.name
+        is_export = upper.startswith("GOSSIP EKSPORT")
+        if is_export:
+            if self._auth.has_min_role(self._auth_user, world, ROLE_READER):
+                return None
+            return [{"status": "error", "message": f"GOSSIP EKSPORT wymaga roli reader w '{world}'."}]
+
+        # IMPORT / SYNC — zapis
+        if self._auth.has_min_role(self._auth_user, world, ROLE_WRITER):
+            return None
+        return [{"status": "error", "message": f"GOSSIP IMPORT/SYNC wymaga roli writer w '{world}'."}]
 
     def _check_replicate_permission(self, stripped: str, upper: str) -> list | None:
         if not self._auth.enabled:
@@ -473,18 +518,21 @@ class CynoberFacade:
             return None
 
         if upper.startswith("WYBIERZ ŚWIAT"):
-            m = _WORLD_QUOTED.match(stripped)
-            if m:
-                world = validate_world_name(m.group(1))
-                kafd = self._registry.base_dir / f"{world}.kafd"
-                if not kafd.is_file():
-                    if not self._auth.has_min_role(self._auth_user, "*", ROLE_ADMIN):
-                        return [{
-                            "status": "error",
-                            "message": "Tworzenie nowego świata wymaga globalnej roli admin.",
-                        }]
-                elif not self._auth.has_min_role(self._auth_user, world, ROLE_READER):
-                    return [{"status": "error", "message": f"Brak dostępu do świata '{world}'."}]
+            # WYBIERZ ma własny wzorzec (opcjonalne CEL / PROMIEŃ) — NIE _WORLD_QUOTED
+            # (ten obejmuje tylko UTWÓRZ|USUŃ). Zły regex = całkowity bypass ACL.
+            m = _WORLD_ATTACH_RE.match(stripped)
+            if not m:
+                return [{"status": "error", "message": "Niepoprawna składnia WYBIERZ ŚWIAT."}]
+            world = validate_world_name(m.group(1))
+            kafd = self._registry.base_dir / f"{world}.kafd"
+            if not kafd.is_file():
+                if not self._auth.has_min_role(self._auth_user, "*", ROLE_ADMIN):
+                    return [{
+                        "status": "error",
+                        "message": "Tworzenie nowego świata wymaga globalnej roli admin.",
+                    }]
+            elif not self._auth.has_min_role(self._auth_user, world, ROLE_READER):
+                return [{"status": "error", "message": f"Brak dostępu do świata '{world}'."}]
             return None
 
         return None
@@ -595,11 +643,13 @@ class CynoberFacade:
             self._registry.release(self._world.name)
             self._world = None
 
+        kafd = self._registry.base_dir / f"{name}.kafd"
+        existed_before = kafd.is_file()
+
         if force_create:
             world = self._registry.create(name)
         else:
-            kafd = self._registry.base_dir / f"{name}.kafd"
-            if not kafd.is_file() and not create_if_missing:
+            if not existed_before and not create_if_missing:
                 return [{
                     "status": "error",
                     "message": f"Świat '{name}' nie istnieje. Użyj UTWÓRZ ŚWIAT lub WYBIERZ z nową nazwą.",
@@ -615,7 +665,8 @@ class CynoberFacade:
             "action": "ATTACH_WORLD",
             "world": name,
             "bubbles": bubbles,
-            "created": force_create or bubbles == 0,
+            # wcześniej: bubbles==0 → created=True nawet dla istniejącego pustego świata
+            "created": force_create or not existed_before,
             "folded_atoms": len(world.runtime.folded_atoms),
         }
         if unfold_seed:

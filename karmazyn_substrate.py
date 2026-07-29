@@ -539,7 +539,8 @@ class Store:
                 self.events.emit("tick", atom)   # THRESHOLD / dual-emit
         reaped_now = 0
         retained_now = 0
-        for atom in list(self._reg.atoms()):
+        # atoms() już zwraca list() — snapshot na czas delete; bez podwójnego list().
+        for atom in self._reg.atoms():
             if atom.is_dead():                   # zimny (T < T_TOMB)
                 if atom.id in reach:
                     # osiągalny → retencja TOMB pod korzeniem (bez

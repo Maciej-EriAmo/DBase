@@ -306,7 +306,8 @@ class AtomRegistry:
             )
             AtomRegistry._p6_warned = True
         dead = []
-        for id, atom in list(self._atoms.items()):
+        # Brak mutacji _atoms w tick — GC osobno (gc()). items() bez list().
+        for id, atom in self._atoms.items():
             atom.decay(rate)
             if atom.is_dead():
                 dead.append(id)
@@ -333,14 +334,20 @@ class AtomRegistry:
         return [a for a in self._atoms.values() if a.state == state]
 
     def stats(self) -> Dict[str, int]:
-        atoms = list(self._atoms.values())
-        return {
-            "total": len(atoms),
-            "HOT":   sum(1 for a in atoms if a.is_hot),
-            "WARM":  sum(1 for a in atoms if a.is_warm),
-            "COLD":  sum(1 for a in atoms if a.is_cold),
-            "TOMB":  sum(1 for a in atoms if a.is_tomb),
-        }
+        # Jedna pętla O(N): progi T są rozłączne (is_hot/warm/cold/tomb).
+        # Liczymy z T (nie z a.state), bo T może być ustawione ręcznie.
+        out = {"total": 0, "HOT": 0, "WARM": 0, "COLD": 0, "TOMB": 0}
+        for a in self._atoms.values():
+            out["total"] += 1
+            if a.is_hot:
+                out["HOT"] += 1
+            elif a.is_warm:
+                out["WARM"] += 1
+            elif a.is_cold:
+                out["COLD"] += 1
+            else:
+                out["TOMB"] += 1
+        return out
 
     def __len__(self) -> int:
         return len(self._atoms)

@@ -18,6 +18,7 @@ def _setup_auth(base_dir: str) -> None:
             "admin": "admin-secret",
             "writer": "w-secret",
             "reader": "r-secret",
+            "outsider": "o-secret",
         },
         acl={
             "*": {"admin": "admin"},
@@ -121,6 +122,39 @@ class TestWorldAuth(unittest.TestCase):
         data = c.query("STATYSTYKI")["results"][0]["data"]
         self.assertEqual(data.get("auth_user"), "writer")
         self.assertEqual(data.get("auth_role"), "writer")
+
+    def test_outsider_cannot_attach_world(self):
+        """Regresja: ACL na WYBIERZ musi używać _WORLD_ATTACH_RE, nie _WORLD_QUOTED."""
+        c = self._client()
+        c.query('ZALOGUJ "admin" TOKEN "admin-secret"')
+        c.query('UTWÓRZ ŚWIAT "secure"')
+        c.close()
+
+        # outsider istnieje w auth.json, ale nie ma roli na "secure"
+        outsider = self._client()
+        login = outsider.query('ZALOGUJ "outsider" TOKEN "o-secret"')
+        self.assertEqual(login["results"][0]["status"], "ok")
+        r = outsider.query('WYBIERZ ŚWIAT "secure"')
+        self.assertEqual(r["results"][0]["status"], "error")
+        self.assertIn("Brak dostępu", r["results"][0]["message"])
+
+    def test_reader_cannot_gossip_import_on_world(self):
+        c = self._client()
+        c.query('ZALOGUJ "admin" TOKEN "admin-secret"')
+        c.query('UTWÓRZ ŚWIAT "secure"')
+        c.query('UTRWAL "SecretBubble"')
+        payload = c.query("GOSSIP EKSPORT SOUL")["results"][0]["data"]
+        c.close()
+
+        reader = self._client()
+        reader.query('ZALOGUJ "reader" TOKEN "r-secret"')
+        att = reader.query('WYBIERZ ŚWIAT "secure"')
+        self.assertEqual(att["results"][0]["status"], "ok")
+        exp = reader.query("GOSSIP EKSPORT SOUL")
+        self.assertEqual(exp["results"][0]["status"], "ok")
+        imp = reader.query(f'GOSSIP IMPORT SOUL DANE "{payload}"')
+        self.assertEqual(imp["results"][0]["status"], "error")
+        self.assertIn("writer", imp["results"][0]["message"])
 
 
 if __name__ == "__main__":

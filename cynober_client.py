@@ -64,11 +64,20 @@ class CynoberClient:
         if client_version not in SUPPORTED_VERSIONS:
             raise CynoberClientError(f"Nieobsługiwana wersja klienta: {client_version!r}")
 
+        # Ponowne connect() bez close() wyciekało poprzednie gniazdo.
+        if self.sock is not None:
+            self.close()
+
+        self.crypto = _CryptoLayer()
+        self.crypto_mode = None
+        self.hsl_link = None
+
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.sock.settimeout(HS_TIMEOUT_SEC)
         try:
             self.sock.connect((self.host, self.port))
         except OSError as e:
+            self.close()
             raise CynoberClientError(f"Nie można połączyć z {self.host}:{self.port}: {e}") from e
 
         hs_deadline = time.monotonic() + HS_TIMEOUT_SEC
@@ -81,10 +90,12 @@ class CynoberClient:
                 client_version=client_version,
             )
         except (ConnectionError, ConnectionResetError, OSError) as e:
+            self.close()
             raise CynoberClientError(
                 "Serwer odrzucił połączenie — sprawdź wersję protokołu i profil HSS."
             ) from e
         except RuntimeError as e:
+            self.close()
             raise CynoberClientError(str(e)) from e
 
         self.sock.settimeout(self.timeout)
@@ -93,19 +104,26 @@ class CynoberClient:
     def query(self, text: str) -> dict:
         if not self.sock:
             raise CynoberClientError("Nie połączono — wywołaj connect()")
-        req_blob = json.dumps(
-            build_rpc_request(text, self.hsl_link), ensure_ascii=False
-        ).encode("utf-8")
-        enc_req = encrypt_rpc_request(self.crypto, _compress(req_blob), self.hsl_link)
-        _send_frame(self.sock, enc_req)
+        try:
+            req_blob = json.dumps(
+                build_rpc_request(text, self.hsl_link), ensure_ascii=False
+            ).encode("utf-8")
+            enc_req = encrypt_rpc_request(self.crypto, _compress(req_blob), self.hsl_link)
+            _send_frame(self.sock, enc_req)
 
-        enc_resp = _recv_frame(self.sock)
-        if not enc_resp:
-            raise CynoberClientError("Pusta odpowiedź — serwer zamknął tunel")
-        raw_resp = _decompress(
-            decrypt_rpc_response(self.crypto, enc_resp, self.hsl_link)
-        )
-        return json.loads(raw_resp.decode("utf-8"))
+            enc_resp = _recv_frame(self.sock)
+            if not enc_resp:
+                raise CynoberClientError("Pusta odpowiedź — serwer zamknął tunel")
+            raw_resp = _decompress(
+                decrypt_rpc_response(self.crypto, enc_resp, self.hsl_link)
+            )
+            return json.loads(raw_resp.decode("utf-8"))
+        except CynoberClientError:
+            raise
+        except (TimeoutError, socket.timeout, OSError) as e:
+            raise CynoberClientError(f"Błąd tunelu RPC: {e}") from e
+        except (ValueError, json.JSONDecodeError, UnicodeDecodeError, IndexError) as e:
+            raise CynoberClientError(f"Uszkodzona odpowiedź serwera: {e}") from e
 
     def query_line(self, text: str) -> dict:
         """Ostatni wiersz z results."""
