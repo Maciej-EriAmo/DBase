@@ -711,12 +711,41 @@ class NativeBubble(Bubble):
             return None
 
 
+class _NativeRegView:
+    """Kompatybilność wsteczna store.reg dla klientów (lore-editor, skrypty).
+
+    Nie omija GC — delete idzie przez Store.delete_atom. Nowy kod: atoms()/get_atom.
+    """
+
+    __slots__ = ("_store",)
+
+    def __init__(self, store: "NativeStore"):
+        self._store = store
+
+    def atoms(self):
+        return self._store.atoms()
+
+    def get(self, aid):
+        return self._store.get_atom(aid)
+
+    def has(self, aid):
+        return self._store.has_atom(aid)
+
+    def delete(self, aid):
+        return self._store.delete_atom(aid)
+
+    def __len__(self):
+        return len(self._store.atoms())
+
+
 class NativeStore:
     """Drop-in Store: Rust GC core + Python language surface (+ HRR).
 
     Publiczne id atomów są **stringami** (kontrakt DB_karmin / KAFD / KarminQL).
     Rdzeń Rust trzyma int; mapowanie sid↔aid jest w tej warstwie.
     """
+
+    _reg_warned = False
 
     def __init__(
         self,
@@ -745,10 +774,26 @@ class NativeStore:
         self.tick_event_mode = tick_event_mode
         self.native_backend = self._core.backend_name  # pyo3 | ctypes
         self.substrate = "native"
+        self._reg_view = _NativeRegView(self)
         if env_of is not None:
             self.register_env_of(env_of, name="init")
         if extra_reach is not None:
             self.register_extra_reach(extra_reach, name="init")
+
+    @property
+    def reg(self):
+        """Alias wsteczny (lore / stare skrypty). Preferuj atoms()/delete_atom."""
+        import warnings
+
+        if not NativeStore._reg_warned:
+            warnings.warn(
+                "Store.reg jest wewnętrzny — użyj atoms()/get_atom/has_atom/"
+                "delete_atom/heat. (NativeStore: widok kompatybilny z DB_karmin)",
+                UserWarning,
+                stacklevel=2,
+            )
+            NativeStore._reg_warned = True
+        return self._reg_view
 
     def close(self):
         if getattr(self, "_core", None) is not None:
