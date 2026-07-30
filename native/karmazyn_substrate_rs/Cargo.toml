@@ -1,0 +1,20 @@
+[package]
+name = "karmazyn_substrate_rs"
+version = "0.1.0"
+edition = "2021"
+authors = ["Maciej Mazur"]
+description = "PyO3 bindings for KarmazynOS substrate (Rust reach-GC core)"
+license = "MIT"
+
+[lib]
+name = "karmazyn_substrate_rs"
+crate-type = ["cdylib"]
+
+[dependencies]
+karmazyn_substrate = { path = "../karmazyn_substrate" }
+pyo3 = { version = "0.25", features = ["extension-module"] }
+
+[profile.release]
+lto = true
+codegen-units = 1
+opt-level = 3

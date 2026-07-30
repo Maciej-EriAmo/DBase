@@ -1,0 +1,17 @@
+[build-system]
+requires = ["maturin>=1.7,<2"]
+build-backend = "maturin"
+
+[project]
+name = "karmazyn_substrate_rs"
+version = "0.1.0"
+description = "PyO3 bindings for KarmazynOS substrate"
+requires-python = ">=3.10"
+classifiers = [
+  "Programming Language :: Rust",
+  "Programming Language :: Python :: Implementation :: CPython",
+]
+
+[tool.maturin]
+module-name = "karmazyn_substrate_rs"
+manifest-path = "Cargo.toml"

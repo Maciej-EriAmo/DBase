@@ -16,3 +16,8 @@ terminals/
 # Lokalne dane testowe
 *.kafd
 .karmazyn_*
+
+# Rust / native build artifacts (źródła native/ zostają w repo)
+native/**/target/
+native/**/dist/
+agent-tools/

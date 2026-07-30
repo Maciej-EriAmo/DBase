@@ -62,6 +62,7 @@ py-modules = [
     "game_store",
     "karmazyn_atom",
     "karmazyn_atomstore",
+    "karmazyn_backend",
     "karmazyn_exec",
     "karmazyn_handshake",
     "karmazyn_hrr",
@@ -76,5 +77,10 @@ py-modules = [
     "karmazyn_substrate",
 ]
 
+[tool.setuptools.packages.find]
+include = ["native*"]
+exclude = ["native.karmazyn_substrate*", "native.karmazyn_substrate_rs*"]
+
 [tool.setuptools.package-data]
 "*" = ["*.md", "scripts/*"]
+"native" = ["*.py", "*.ps1", "*.sh", "README.md"]

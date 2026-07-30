@@ -1,0 +1,20 @@
+[package]
+name = "karmazyn_substrate"
+version = "0.1.0"
+edition = "2021"
+authors = ["Maciej Mazur"]
+description = "KarmazynOS substrate — atoms, bubbles, reach-GC (native core)"
+license = "MIT"
+repository = "https://github.com/Maciej-EriAmo/KarmazynOs"
+
+[lib]
+name = "karmazyn_substrate"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+# std only — easier on Windows without extra crates if needed later
+
+[profile.release]
+lto = true
+codegen-units = 1
+opt-level = 3

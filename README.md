@@ -10,6 +10,7 @@ Relacyjno-grafowa baza danych na termodynamicznym rdzeniu **KarmazynOS**, z tran
 |-----------|--------|------|
 | KarminQL | v6.9 | `cynober_query_engine.py` |
 | Jądro KarmazynOS | v1.1.0 | `karmazyn_kernel.py` / `karmazyn_substrate.py` |
+| Substrat Rust (DB_karmin) | 0.1.0-karmazyn-substrate | `native/` + `karmazyn_backend.py` (DEFAULT gdy most) |
 | Serwer RPC / pakiet | v8.0.2 | `cynober_server.py` / `pyproject.toml` |
 | Klient SDK | v7.7 | `cynober_client.py` |
 | Klient CLI | v1.8.0 | `Cynober_db.py` |

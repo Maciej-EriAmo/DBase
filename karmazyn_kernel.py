@@ -77,13 +77,46 @@ except Exception:
     HAS_HRR = False
 
 # ── Rdzen wlasciwy: silnik z reach-GC (atomy + bable + korzenie + rezonans) ───
-# Substrate sam degraduje lagodnie bez hrr/numpy — patrz karmazyn_substrate.
+# DB_karmin: DOMYŚLNIE NativeStore (Rust) gdy most dostępny; Python = referencja.
+# KARMAZYN_SUBSTRATE=python|native  (patrz karmazyn_backend).
 from karmazyn_substrate import (
-    Store,                  # natywna powierzchnia silnika (D2)
+    Store as PythonStore,   # referencja pure-Python
     Bubble,
     EventBus,
     VEC_DIM,                # zamrozone D = 2048
 )
+
+try:
+    from karmazyn_backend import (
+        open_store,
+        store_class,
+        substrate_backend,
+        native_available as native_substrate_available,
+        backend_info as substrate_backend_info,
+        apply_cli_substrate_flags,
+    )
+    # Produkcyjny default DB_karmin: Rust gdy most zbudowany
+    Store = store_class()
+except Exception:  # pragma: no cover
+    Store = PythonStore
+
+    def open_store(thermal=True, backend=None, **kwargs):
+        return PythonStore(thermal=thermal, **kwargs)
+
+    def store_class(backend=None):
+        return PythonStore
+
+    def substrate_backend(explicit=None):
+        return "python"
+
+    def native_substrate_available():
+        return False
+
+    def substrate_backend_info():
+        return {"backend": "python", "native_available": False, "store_class": "Store"}
+
+    def apply_cli_substrate_flags(argv=None):
+        return None
 
 # ── Kontrakt granicy: jaka powierzchnie musi miec magazyn dla aplikacji ───────
 # Czysty stdlib (Protocol) — zero zaleznosci.
@@ -106,8 +139,11 @@ __all__ = [
     # hrr (opcjonalne — None bez numpy; sprawdzaj HAS_HRR)
     "bind", "unbind", "bundle", "similarity", "normalize",
     "random_unit_vector", "name_to_vector", "HRROperations", "HAS_HRR",
-    # silnik
-    "Store", "Bubble", "EventBus", "VEC_DIM",
+    # silnik (Store = native default w DB_karmin; PythonStore = referencja)
+    "Store", "PythonStore", "Bubble", "EventBus", "VEC_DIM",
+    # przełącznik substratu
+    "open_store", "store_class", "substrate_backend", "native_substrate_available",
+    "substrate_backend_info", "apply_cli_substrate_flags",
     # kontrakt
     "AtomStore", "capabilities", "conforms", "assert_conforms", "CORE_METHODS",
     # meta
@@ -118,12 +154,19 @@ __all__ = [
 def kernel_info() -> dict:
     """Samoopis jadra — do diagnostyki i potwierdzenia, ze fasada zaladowala
     czesci. Raportuje tez, czy twarz HRR jest aktywna (zalezy od numpy)."""
+    try:
+        _sub = substrate_backend_info()
+    except Exception:
+        _sub = {"backend": "python", "native_available": False}
     return {
         "version": __version__,
         "modules": ["karmazyn_atom", "karmazyn_hrr",
-                    "karmazyn_substrate", "karmazyn_atomstore"],
+                    "karmazyn_substrate", "karmazyn_atomstore", "karmazyn_backend"],
         "vec_dim": VEC_DIM,
         "hrr_active": HAS_HRR,          # False => praca w trybie zero-zaleznosci
+        "substrate": _sub,              # native (Rust) | python — DB_karmin
+        "store_class": getattr(Store, "__name__", str(Store)),
+        "db_karmin": True,
         "law": "temperatura mowi KIEDY, osiagalnosc mowi CZY",
         "surfaces": {
             # Kanoniczna powierzchnia natywna silnika (Store). Jawna lista —
