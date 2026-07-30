@@ -1,4 +1,4 @@
-# Cynober DB — Podręcznik Użytkownika i Składnia KarminQL (v8.0.2)
+# Cynober DB — Podręcznik Użytkownika i Składnia KarminQL (v8.0.3)
 
 Cynober DB to relacyjno-grafowa baza danych na termodynamicznym rdzeniu **KarmazynOS**, z transportem **Cynober-Secure-1.2** i warstwą **HSL** (Holographic Session Links). Trzy autorskie elementy — silnik, baza, protokół — opierają się na jednej zasadzie: **struktura wynika z rezonansu stanu sesji**, a nie z zewnętrznych etykiet (adres, certyfikat, ACL).
 
@@ -7,9 +7,9 @@ Cynober DB to relacyjno-grafowa baza danych na termodynamicznym rdzeniu **Karmaz
 | KarminQL (silnik zapytań) | v6.9 | `cynober_query_engine.py` |
 | Most pandas | — | `cynober_pandas_bridge.py` |
 | Klient CLI | v1.8.0 | `Cynober_db.py` |
-| Serwer | v8.0.2 | `cynober_server.py` / `cynober_ops.SERVER_VERSION` |
+| Serwer | v8.0.3 | `cynober_server.py` / `cynober_ops.SERVER_VERSION` |
 | Klient SDK | v7.7 | `cynober_client.py` |
-| Pakiet PyPI | 8.0.2 | `cynober-db` (`pyproject.toml`) |
+| Pakiet PyPI | 8.0.3 | `cynober-db` (`pyproject.toml`) |
 | Protokół transportu | Cynober-Secure-1.2 | `cynober_rpc.py` |
 | HSL (sesje sieciowe) | HSL-1.1 | `karmazyn_hsl.py` |
 | Handshake / szyfrowanie | KSH-1.2 | `karmazyn_handshake.py` |
@@ -237,7 +237,7 @@ Profil w `~/.karmazyn_client.json` może zawierać `hss_profile` (jak sekcja `se
 ### Instalacja z PyPI
 
 ```bash
-pip install cynober-db          # aktualnie 8.0.2
+pip install cynober-db          # aktualnie 8.0.3
 python -m cynober_server        # serwer (gdy Scripts nie ma PATH)
 python -m Cynober_db            # klient CLI
 ```
@@ -1159,7 +1159,7 @@ Skrypt **wieloliniowy** (więcej niż jedna komenda, bez wiodącego `BEGIN`) jes
 
 ## 14. Testy
 
-Projekt zawiera **322 testy** w katalogu `tests/` (stan na serwer v8.0.2 + jądro v1.1.0 + KarminQL v6.9). Część wymaga uruchomionego serwera w procesie testowym (harness w `test_server_rpc.py`).
+Projekt zawiera **322 testy** w katalogu `tests/` (stan na serwer v8.0.3 + jądro v1.1.0 + KarminQL v6.9). Część wymaga uruchomionego serwera w procesie testowym (harness w `test_server_rpc.py`).
 
 ### Uruchomienie wszystkich testów
 
@@ -1249,7 +1249,7 @@ DBase/
 ├── README.md                  ← szybki start i status projektu
 ├── cynober_manual.md          ← ten podręcznik
 ├── HSL_Paper_v1_1_0_EN.md     ← specyfikacja HSL (teoria)
-├── cynober_server.py          ← serwer TCP v8.0.2 (sesje + światy + ops + repl)
+├── cynober_server.py          ← serwer TCP v8.0.3 (sesje + światy + ops + repl)
 ├── cynober_client.py          ← oficjalny klient SDK (v7.7)
 ├── cynober_auto_flush.py      ← okresowy zapis dirty światów (v7.8)
 ├── cynober_ops.py             ← metryki, zdrowie, backup światów (v7.3+)
@@ -1308,7 +1308,7 @@ DBase/
 | **Silnik** | KarminQL v6.9 — bogaty dialekt zapytań, transakcje, JSON, EXPLAIN, indeksy |
 | **Sieć** | Tunel HSS + HSL, profile klienta, rate limit, sandbox v7.0, trwałe światy v7.1 |
 | **Persystencja** | Auto-flush v7.8, lazy unfold v7.9, shardy KAFD v8.0, replikacja manifest-first |
-| **Dystrybucja** | PyPI `cynober-db` 8.0.2 (`pip install cynober-db`) |
+| **Dystrybucja** | PyPI `cynober-db` 8.0.3 (`pip install cynober-db`) |
 | **Analityka** | pandas, CSV, `.kafd`, `examples/analyst_demo.py` |
 | **Aplikacje** | `GameStore` + demo gry przez RPC lub lokalnie |
 | **Jakość** | 322 testy jednostkowe i integracyjne |

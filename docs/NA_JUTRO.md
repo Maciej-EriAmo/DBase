@@ -27,7 +27,7 @@
 
 - Kernel S15, dual-emit tick, public API Store — na `master`  
 - Gossip SOUL v8.1 slice — lokalnie / do commit jeśli jeszcze nie  
-- PyPI: latest **8.0.1**, repo **8.0.2** (do publikacji osobno)  
+- PyPI: latest **8.0.2**, repo **8.0.3** (native/Rust DB_karmin — do publikacji)  
 - lore ↔ serwer: RPC + PUSH/PULL/SYNC świata **OK**  
 
 ### Nie robić jutro (później)
