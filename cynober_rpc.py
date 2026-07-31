@@ -43,6 +43,16 @@ HS_TIMEOUT_SEC = 10.0
 REPLAY_WINDOW_SEC = 300.0
 CRYPTO_PRIORITY = ("hss", "ecdh", "simple")
 
+# Multipleks po odszyfrowaniu (Faza 3 media). Legacy = brak prefiksu kind.
+FRAME_RPC = 0x01
+FRAME_KAFS = 0x02
+FEATURE_KAFS = "kafs-stream"
+FEATURE_MEDIA_PUT = "media:put"
+FEATURE_MEDIA_GET = "media:stream"
+DEFAULT_FEATURES = (FEATURE_KAFS, FEATURE_MEDIA_PUT, FEATURE_MEDIA_GET)
+# Chunk KAFS (bajty payloadu danych, bez nagłówka)
+KAFS_CHUNK_MAX = 1024 * 1024  # 1 MiB
+
 # Anty-replay: session_id widziane w oknie czasowym (RAM, nie persystentne).
 _SEEN_SESSIONS: set[str] = set()
 _MAX_SEEN_SESSIONS = 10_000
@@ -70,7 +80,56 @@ def build_local_caps() -> dict[str, Any]:
         "node_id": _node_id(),
         "ts": time.time(),
         "session_id": secrets.token_hex(8),
+        # Faza 3: negocjacja mediów / KAFS (stary klient bez features → tylko RPC)
+        "features": list(DEFAULT_FEATURES),
     }
+
+
+def features_of(caps: dict | None) -> set[str]:
+    if not caps:
+        return set()
+    raw = caps.get("features") or []
+    if not isinstance(raw, (list, tuple)):
+        return set()
+    return {str(x) for x in raw}
+
+
+def kafs_negotiated(local_caps: dict | None, remote_caps: dict | None) -> bool:
+    """Obie strony deklarują kafs-stream → wolno multipleksować KAFS."""
+    return FEATURE_KAFS in features_of(local_caps) and FEATURE_KAFS in features_of(remote_caps)
+
+
+def pack_cleartext(kind: int, payload: bytes, *, framed: bool = False) -> bytes:
+    """
+    RPC (domyślnie): sam payload zlib/JSON — pełna kompatybilność wstecz.
+    KAFS: zawsze 0x02 || payload (wymaga kafs-stream).
+    Opcjonalnie FRAME_RPC z framed=True (0x01 || payload) — nie używane w 1.2.
+    """
+    if kind == FRAME_KAFS:
+        if not framed:
+            # KAFS i tak ma prefiks; flaga framed=True wymagana świadomie
+            pass
+        return bytes([FRAME_KAFS]) + payload
+    if framed and kind == FRAME_RPC:
+        return bytes([FRAME_RPC]) + payload
+    return payload
+
+
+def unpack_cleartext(raw: bytes) -> tuple[int, bytes]:
+    """
+    Zwraca (kind, payload).
+    - 0x02… → KAFS
+    - 0x01… → RPC z jawnym prefiksem (opcjonalny)
+    - inaczej (np. zlib 0x78…) → legacy RPC
+    """
+    if not raw:
+        return FRAME_RPC, raw
+    if raw[0] == FRAME_KAFS:
+        return FRAME_KAFS, raw[1:]
+    if raw[0] == FRAME_RPC:
+        # Jawny prefiks RPC — nie mylić z danymi (zlib = 0x78)
+        return FRAME_RPC, raw[1:]
+    return FRAME_RPC, raw
 
 
 def clear_replay_cache() -> None:
@@ -301,9 +360,43 @@ def send_encrypted_response(
     crypto,
     results: list[dict[str, Any]],
     hsl: HSLLink | None = None,
+    *,
+    framed: bool = False,
 ) -> None:
-    enc = encrypt_rpc_response(crypto, _compress(encode_response(results)), hsl)
+    # RPC zawsze legacy cleartext (zlib JSON) — kompatybilność z klientami 1.0–1.2
+    # Parametr framed ignorowany dla RPC (zarezerwowany / no-op).
+    _ = framed
+    compressed = _compress(encode_response(results))
+    clear = pack_cleartext(FRAME_RPC, compressed, framed=False)
+    enc = encrypt_rpc_response(crypto, clear, hsl)
     _send_frame(conn, enc)
+
+
+def send_encrypted_kafs(
+    conn,
+    crypto,
+    kafs_body: bytes,
+    hsl: HSLLink | None = None,
+) -> None:
+    """Wyślij ramkę KAFS (prefiks 0x02)."""
+    clear = pack_cleartext(FRAME_KAFS, kafs_body, framed=True)
+    enc = encrypt_rpc_response(crypto, clear, hsl)
+    _send_frame(conn, enc)
+
+
+def decrypt_inbound_frame(
+    enc: bytes,
+    crypto,
+    hsl: HSLLink | None = None,
+    *,
+    is_request: bool = True,
+) -> tuple[int, bytes]:
+    """Odszyfruj ramkę → (kind, clear_payload bez kind)."""
+    if is_request:
+        raw = decrypt_rpc_request(crypto, enc, hsl)
+    else:
+        raw = decrypt_rpc_response(crypto, enc, hsl)
+    return unpack_cleartext(raw)
 
 
 def build_rpc_request(query: str, hsl: HSLLink | None = None) -> dict[str, Any]:
@@ -344,10 +437,19 @@ def _verify_rpc_capability(req: dict[str, Any], hsl: HSLLink) -> None:
 
 
 def decode_request(enc_req: bytes, crypto, hsl: HSLLink | None = None) -> str:
+    """Zdekoduj żądanie RPC (kind=RPC). KAFS → ValueError z kodem dla handle_client."""
     try:
-        raw = _decompress(decrypt_rpc_request(crypto, enc_req, hsl))
+        kind, payload = decrypt_inbound_frame(enc_req, crypto, hsl, is_request=True)
     except (zlib.error, ValueError, IndexError) as e:
-        raise ValueError(f"Nie można odszyfrować lub zdekompresować ramki: {e}") from e
+        raise ValueError(f"Nie można odszyfrować ramki: {e}") from e
+    if kind == FRAME_KAFS:
+        raise ValueError("KAFS_FRAME")  # sygnał dla pętli serwera (upload)
+    if kind != FRAME_RPC:
+        raise ValueError(f"Nieznany frame_kind={kind}")
+    try:
+        raw = _decompress(payload)
+    except (zlib.error, ValueError, IndexError) as e:
+        raise ValueError(f"Nie można zdekompresować ramki RPC: {e}") from e
     try:
         req = json.loads(raw.decode("utf-8"))
     except (json.JSONDecodeError, UnicodeDecodeError) as e:
@@ -362,6 +464,52 @@ def decode_request(enc_req: bytes, crypto, hsl: HSLLink | None = None) -> str:
     if not isinstance(query, str):
         raise ValueError("Pole 'query' musi być tekstem")
     return query
+
+
+def encode_rpc_request_frame(
+    query: str,
+    crypto,
+    hsl: HSLLink | None = None,
+    *,
+    framed: bool = False,
+) -> bytes:
+    """Zbuduj zaszyfrowaną ramkę żądania RPC (zawsze legacy zlib JSON)."""
+    _ = framed
+    req_blob = json.dumps(
+        build_rpc_request(query, hsl), ensure_ascii=False
+    ).encode("utf-8")
+    compressed = _compress(req_blob)
+    clear = pack_cleartext(FRAME_RPC, compressed, framed=False)
+    return encrypt_rpc_request(crypto, clear, hsl)
+
+
+def encode_kafs_request_frame(
+    kafs_body: bytes,
+    crypto,
+    hsl: HSLLink | None = None,
+) -> bytes:
+    clear = pack_cleartext(FRAME_KAFS, kafs_body, framed=True)
+    return encrypt_rpc_request(crypto, clear, hsl)
+
+
+def decode_rpc_response_frame(
+    enc_resp: bytes,
+    crypto,
+    hsl: HSLLink | None = None,
+) -> tuple[int, Any]:
+    """
+    Zwraca (kind, data):
+      FRAME_RPC → dict JSON odpowiedzi
+      FRAME_KAFS → bytes body KAFS
+    """
+    kind, payload = decrypt_inbound_frame(enc_resp, crypto, hsl, is_request=False)
+    if kind == FRAME_KAFS:
+        return FRAME_KAFS, payload
+    try:
+        raw = _decompress(payload)
+        return FRAME_RPC, json.loads(raw.decode("utf-8"))
+    except (zlib.error, ValueError, json.JSONDecodeError, UnicodeDecodeError) as e:
+        raise ValueError(f"Uszkodzona odpowiedź RPC: {e}") from e
 
 
 def parse_response_payload(res_data: dict[str, Any]) -> tuple[list[dict[str, Any]], str | None]:

@@ -1,6 +1,7 @@
 # Plan wdrożenia docelowego: multimedia w Cynober DB (+ lore)
 
-**Status:** plan implementacyjny · **Faza 0+2 DONE** (local media + pipe/preview/CLI) · **następna: Faza 3 KAFS**  
+**Status:** plan · **Faza 0+2+3 DONE** (local media, preview, KAFS over RPC) · **następna: Faza 4 segmenty**  
+
 
 **Cel:** plik → atom w grafie → KAFD/KAFS → indeks (bąble/bindings) → z powrotem do klienta, **bez HTTP/REST**  
 **Zasada transportu:** jeden tunel Karmazyn — **sterowanie = RPC/KarminQL**, **dane binarne = KAFS**  
@@ -181,10 +182,11 @@ HSL: capability `media:stream` / `media:put` (obok `karminql:query`).
 
 **Kryteria akceptacji:**
 
-- [ ] Put/get PNG przez sieć, hash zgodny
-- [ ] Stary klient (tylko RPC) nie psuje handshake
-- [ ] Rate limit nie ginie; metryki: bytes_in/out media
-- [ ] Brak ścieżki „cały film w `query` string”
+- [x] Put/get PNG przez sieć, hash zgodny (`tests/test_media_kafs_rpc.py`)
+- [x] Stary klient (tylko RPC) nie psuje handshake (RPC bez prefiksu kind)
+- [x] Rate limit nadal na pętli zapytań; `MediaSession.bytes_in/out`
+- [x] Brak ścieżki „cały film w `query` string” (KAFS chunki ≤ 1 MiB)
+- [x] Caps `features: [kafs-stream, media:put, media:stream]`
 
 ---
 
@@ -321,8 +323,8 @@ Backward compatible: klient bez `kafs-stream` działa jak dziś (tylko graf + fu
 2. **P0** limit SOUL blobs / `include_blobs` (higiena) — **DONE**  
 3. **P1** LoreStore + panel attach (Faza 1)  
 4. **P1** podgląd lokalny (Faza 2)  
-5. **P2** caps + frame_kind + MEDIA PUT/GET (Faza 3)  
-6. **P2** test harness sieciowy media  
+5. **P2** caps + frame_kind + MEDIA PUT/GET (Faza 3) — **DONE**  
+6. **P2** test harness sieciowy media — **DONE**  
 7. **P3** A_STREAM segments (Faza 4)  
 8. **P3** lore `--rpc` stream (Faza 5)  
 9. **P3** replicate media index (Faza 6)  

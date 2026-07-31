@@ -1,26 +1,23 @@
 # Na jutro
 
-## Zrobione
+## Zrobione w bazie (media)
 
-### Faza 0 media
-- `karmazyn_media` attach/get/export, KAFD roundtrip, SOUL 64 KiB
+| Faza | Co |
+|------|-----|
+| 0 | `karmazyn_media` local attach / KAFD / SOUL limit |
+| 2 | pipe / open / CLI |
+| 3 | KAFS over RPC: caps, MEDIA PUT/GET/STAT, `CynoberClient.put_media/get_media` |
 
-### Faza 2 podgląd (DBase)
-- `pipe_to`, `materialize_temp`, `open_with_system`, `try_external_player`, `open_media`
-- CLI: `python -m karmazyn_media extract|list|open|pipe`
+## Następne w bazie: Faza 4 (opcjonalnie)
 
-## Następne w bazie: Faza 3 (KAFS over RPC)
-
-1. Handshake caps `kafs-stream`
-2. `frame_kind` RPC vs KAFS w tunelu
-3. `MEDIA PUT/GET` + klient chunked
-4. Test harness peer + PNG put/get
+- Segmenty `A_STREAM` dla plików ≫ RAM
+- mmap reader KAFD
 
 ## Później / inny repo
 
-- Faza 1 lore UI attach (lore-editor)
+- Faza 1+5 lore UI / `--rpc` stream
 - REST/HTTP — **nie**
 
 ---
 
-*Aktualizacja po Fazie 2 (lokalny podgląd).*
+*Aktualizacja po Fazie 3.*

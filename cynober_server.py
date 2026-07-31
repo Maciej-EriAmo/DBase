@@ -158,6 +158,24 @@ class CynoberFacade:
         if gossip_resp is not None:
             return gossip_resp
 
+        # MEDIA * — Faza 3 (wymaga media_session na facade z handle_client)
+        if upper.startswith("MEDIA "):
+            from cynober_media_rpc import try_media_command
+
+            ms = getattr(self, "_media_session", None)
+            kafs = bool(getattr(self, "_kafs_enabled", False))
+            if ms is None:
+                return [{
+                    "status": "error",
+                    "action": "MEDIA",
+                    "message": "Sesja MEDIA niedostępna (wewnętrzny błąd serwera).",
+                }]
+            media_resp = try_media_command(
+                self, stripped, media_session=ms, kafs_enabled=kafs
+            )
+            if media_resp is not None:
+                return media_resp
+
         deny = self._check_permission(stripped, upper)
         if deny is not None:
             self._auth.audit(
@@ -836,21 +854,42 @@ def handle_client(conn: socket.socket, addr, query_limit: SessionQueryLimiter | 
     tunnel_ready = False
     crypto_mode = "?"
     session_facade: CynoberFacade | None = None
+    framed = False
+    media_session = None
 
     try:
+        from cynober_media_rpc import (
+            MediaSession,
+            encode_kafs_data,
+            encode_kafs_end,
+            encode_kafs_err,
+            iter_chunks,
+        )
+        from cynober_rpc import (
+            FRAME_KAFS,
+            decrypt_inbound_frame,
+            kafs_negotiated,
+            send_encrypted_kafs,
+        )
+
         hs_deadline = time.monotonic() + HS_TIMEOUT_SEC
-        crypto_mode, _, remote_caps, hsl_link = perform_handshake(
+        crypto_mode, local_caps, remote_caps, hsl_link = perform_handshake(
             conn, crypto, is_server=True, deadline=hs_deadline
         )
         tunnel_ready = True
+        framed = kafs_negotiated(local_caps, remote_caps)
+        media_session = MediaSession()
         session_label = remote_caps.get("session_id") or f"{addr[0]}:{addr[1]}"
         session_facade = _session_manager.create(session_label)
+        session_facade._media_session = media_session  # type: ignore[attr-defined]
+        session_facade._kafs_enabled = framed  # type: ignore[attr-defined]
         get_server_metrics().record_connection()
         psk_note = " [PSK]" if os.environ.get("KARM_PSK") else ""
         hsl_note = " + HSL" if hsl_link else ""
         qkd_note = " + QKD" if hsl_link and hsl_link.qkd_hybrid else ""
+        kafs_note = " + KAFS" if framed else ""
         print(f"[Cynober] Tunel zabezpieczony z {addr} ({crypto_mode.upper()}) "
-              f"v{remote_caps.get('version')} sesja={session_label}{psk_note}{hsl_note}{qkd_note}")
+              f"v{remote_caps.get('version')} sesja={session_label}{psk_note}{hsl_note}{qkd_note}{kafs_note}")
 
         if query_limit is None:
             from cynober_client_config import get_server_config
@@ -868,20 +907,91 @@ def handle_client(conn: socket.socket, addr, query_limit: SessionQueryLimiter | 
                 print(f"[Cynober] Rate limit zapytań {addr}: {rl_msg}")
                 get_server_metrics().record_rate_limit()
                 send_encrypted_response(
-                    conn, crypto, error_result(rl_msg, action="RATE_LIMIT"), hsl_link
+                    conn, crypto, error_result(rl_msg, action="RATE_LIMIT"),
+                    hsl_link, framed=framed,
                 )
                 break
 
+            # KAFS upload chunk (między PUT START a PUT END)
             try:
+                kind, payload = decrypt_inbound_frame(
+                    enc_req, crypto, hsl_link, is_request=True
+                )
+            except Exception as e:
+                send_encrypted_response(
+                    conn, crypto, error_result(str(e)), hsl_link, framed=framed,
+                )
+                continue
+
+            if kind == FRAME_KAFS:
+                if not framed or media_session is None:
+                    send_encrypted_response(
+                        conn, crypto,
+                        error_result("KAFS nie wynegocjowano", action="KAFS"),
+                        hsl_link, framed=framed,
+                    )
+                    continue
+                try:
+                    media_session.feed_kafs(payload)
+                    # ciche ACK jako pusta RPC ok (klient put nie czyta ACK per chunk —
+                    # tylko błąd). Dla prostoty: brak odpowiedzi na DATA;
+                    # klient nie czeka. feed_kafs only.
+                    # Jeśli błąd — wyślij error RPC.
+                except ValueError as e:
+                    send_encrypted_response(
+                        conn, crypto,
+                        error_result(str(e), action="KAFS"),
+                        hsl_link, framed=framed,
+                    )
+                continue
+
+            # RPC
+            try:
+                # re-wrap: decode_request oczekuje pełnej zaszyfrowanej ramki
                 query = decode_request(enc_req, crypto, hsl_link)
                 results = session_facade.execute(query)
             except ValueError as e:
+                if str(e) == "KAFS_FRAME":
+                    # should not reach — handled above
+                    continue
                 results = error_result(str(e))
             except Exception as e:
                 results = error_result(f"Błąd wewnętrzny serwera: {e}", action="SERVER")
 
+            # MEDIA GET stream: wyjmij bajty przed serializacją JSON
+            stream_bytes = None
+            stream_id = ""
+            if results and isinstance(results[0], dict) and results[0].get("_stream_bytes") is not None:
+                stream_bytes = results[0].pop("_stream_bytes", None)
+                stream_id = str(results[0].get("id") or "")
+
             get_server_metrics().record_query(results)
-            send_encrypted_response(conn, crypto, results, hsl_link)
+            send_encrypted_response(
+                conn, crypto, results, hsl_link, framed=framed,
+            )
+
+            if stream_bytes is not None and framed:
+                try:
+                    seq = 0
+                    total = len(stream_bytes)
+                    for chunk in iter_chunks(stream_bytes):
+                        body = encode_kafs_data(stream_id, seq, total, chunk)
+                        send_encrypted_kafs(conn, crypto, body, hsl_link)
+                        if media_session is not None:
+                            media_session.bytes_out += len(chunk)
+                        seq += 1
+                    send_encrypted_kafs(
+                        conn, crypto, encode_kafs_end(stream_id), hsl_link
+                    )
+                except Exception as e:
+                    try:
+                        send_encrypted_kafs(
+                            conn, crypto,
+                            encode_kafs_err(stream_id, str(e)),
+                            hsl_link,
+                        )
+                    except Exception:
+                        pass
 
     except (ConnectionError, EOFError, TimeoutError):
         print(f"[Cynober] Klient {addr} rozłączył się.")

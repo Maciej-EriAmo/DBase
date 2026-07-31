@@ -48,6 +48,7 @@ py-modules = [
     "cynober_gossip",
     "cynober_konfigurator",
     "cynober_lambda_bridge",
+    "cynober_media_rpc",
     "cynober_ops",
     "cynober_pandas_bridge",
     "cynober_query_engine",

@@ -245,6 +245,35 @@ python -m karmazyn_media pipe swiat.kafd a0 | mpv -
 
 Plan: `docs/PLAN_MULTIMEDIA_WDROZENIE.md`.
 
+### Multimedia w sieci — KAFS over RPC (Faza 3)
+
+Negocjacja w caps handshake: `features` zawiera `kafs-stream`, `media:put`, `media:stream`.  
+**RPC** zostaje legacy (zlib JSON, bez prefiksu). **Dane mediów** = ramki z bajtem `0x02` (KAFS) po odszyfrowaniu.
+
+```text
+MEDIA PUT START "id" MIME "image/png" SIZE n [BĄBEL "Anna" JAKO "portret"]
+  → klient: KAFS DATA chunks (≤ 1 MiB)
+MEDIA PUT END "id"
+
+MEDIA GET "id" [OFFSET n] [LIMIT m]
+  → RPC meta + KAFS DATA… + END
+
+MEDIA STAT "id"
+```
+
+```python
+from cynober_client import connect
+
+with connect("127.0.0.1", 8080) as c:
+    assert c.kafs_enabled
+    c.put_media("pic1", open("a.png", "rb").read(), mime="image/png",
+                bubble="Anna", binding="portret")
+    data, mime, meta = c.get_media("pic1")
+    print(mime, len(data), c.media_stat("pic1"))
+```
+
+Bez `kafs-stream`: PUT odrzucony; GET małych plików (≤ 64 KiB) może wrócić `data_b64`.
+
 ### Klient SDK (v7.7)
 
 Oficjalny klient Python — ten sam tunel HSS+HSL+RPC co CLI, bez HTTP.
@@ -1245,7 +1274,8 @@ python -m unittest tests.test_v70 -v
 | `tests/test_v78.py` | Auto-flush, indeksy w meta, Proca COLD (v7.8) |
 | `tests/test_v79.py` | Lazy manifest, ROZWIJ, WYBIERZ CEL (v7.9) |
 | `tests/test_v80.py` | Shardy per region, manifest-first replikacja (v8.0) |
-| `tests/test_media_local.py` | Media Faza 0: attach/file, KAFD roundtrip, SOUL blob limit |
+| `tests/test_media_local.py` | Media Faza 0/2: attach, KAFD, SOUL limit, pipe/CLI |
+| `tests/test_media_kafs_rpc.py` | Media Faza 3: KAFS mux, PUT/GET PNG + chunked |
 | `tests/test_packaging.py` | Weryfikacja listy modułów PyPI (`py-modules`) |
 | `tests/test_cynober_client.py` | Oficjalny klient SDK: connect, context manager (v7.7) |
 | `tests/test_game_store.py` | GameStore: lokalnie + RPC, trwały świat, izolacja sandbox |
@@ -1319,7 +1349,8 @@ DBase/
 ├── karmazyn_hrr.py            ← operacje wektorowe HRR (opcjonalne)
 ├── karmazyn_handshake.py      ← KSH-1.2: transport i szyfrowanie ramek
 ├── karmazyn_store.py          ← serializacja dokumentów (kinds: media)
-├── karmazyn_media.py          ← Faza 0: attach/get/export mediów lokalnie
+├── karmazyn_media.py          ← Faza 0/2: attach/get/export + pipe/CLI
+├── cynober_media_rpc.py       ← Faza 3: MEDIA PUT/GET + KAFS chunki
 ├── karmazyn_kafd.py           ← format binarny KAFD v2.0
 ├── karmazyn_proca.py          ← deduplikacja semantyczna
 ├── karmazyn_atomstore.py      ← kontrakt AtomStore

@@ -21,19 +21,21 @@ import time
 from typing import Any, Optional
 
 from cynober_rpc import (
+    FRAME_KAFS,
+    FRAME_RPC,
     HS_TIMEOUT_SEC,
+    KAFS_CHUNK_MAX,
     PROTO_VERSION,
     RPC_TIMEOUT_SEC,
     SUPPORTED_VERSIONS,
-    build_rpc_request,
-    decrypt_rpc_response,
-    encrypt_rpc_request,
+    decode_rpc_response_frame,
+    encode_kafs_request_frame,
+    encode_rpc_request_frame,
+    kafs_negotiated,
     perform_handshake,
 )
 from karmazyn_handshake import (
     _CryptoLayer,
-    _compress,
-    _decompress,
     _recv_frame,
     _send_frame,
 )
@@ -59,6 +61,9 @@ class CynoberClient:
         self.crypto = _CryptoLayer()
         self.crypto_mode: Optional[str] = None
         self.hsl_link = None
+        self.local_caps: Optional[dict] = None
+        self.remote_caps: Optional[dict] = None
+        self.kafs_enabled: bool = False
 
     def connect(self, client_version: str = PROTO_VERSION) -> "CynoberClient":
         if client_version not in SUPPORTED_VERSIONS:
@@ -71,6 +76,9 @@ class CynoberClient:
         self.crypto = _CryptoLayer()
         self.crypto_mode = None
         self.hsl_link = None
+        self.local_caps = None
+        self.remote_caps = None
+        self.kafs_enabled = False
 
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.sock.settimeout(HS_TIMEOUT_SEC)
@@ -82,13 +90,16 @@ class CynoberClient:
 
         hs_deadline = time.monotonic() + HS_TIMEOUT_SEC
         try:
-            self.crypto_mode, _, _, self.hsl_link = perform_handshake(
-                self.sock,
-                self.crypto,
-                is_server=False,
-                deadline=hs_deadline,
-                client_version=client_version,
+            self.crypto_mode, self.local_caps, self.remote_caps, self.hsl_link = (
+                perform_handshake(
+                    self.sock,
+                    self.crypto,
+                    is_server=False,
+                    deadline=hs_deadline,
+                    client_version=client_version,
+                )
             )
+            self.kafs_enabled = kafs_negotiated(self.local_caps, self.remote_caps)
         except (ConnectionError, ConnectionResetError, OSError) as e:
             self.close()
             raise CynoberClientError(
@@ -105,25 +116,123 @@ class CynoberClient:
         if not self.sock:
             raise CynoberClientError("Nie połączono — wywołaj connect()")
         try:
-            req_blob = json.dumps(
-                build_rpc_request(text, self.hsl_link), ensure_ascii=False
-            ).encode("utf-8")
-            enc_req = encrypt_rpc_request(self.crypto, _compress(req_blob), self.hsl_link)
+            enc_req = encode_rpc_request_frame(
+                text, self.crypto, self.hsl_link, framed=self.kafs_enabled
+            )
             _send_frame(self.sock, enc_req)
 
             enc_resp = _recv_frame(self.sock)
             if not enc_resp:
                 raise CynoberClientError("Pusta odpowiedź — serwer zamknął tunel")
-            raw_resp = _decompress(
-                decrypt_rpc_response(self.crypto, enc_resp, self.hsl_link)
-            )
-            return json.loads(raw_resp.decode("utf-8"))
+            kind, data = decode_rpc_response_frame(enc_resp, self.crypto, self.hsl_link)
+            if kind != FRAME_RPC:
+                raise CynoberClientError("Oczekiwano ramki RPC, otrzymano KAFS")
+            if not isinstance(data, dict):
+                raise CynoberClientError("Uszkodzona odpowiedź serwera (nie JSON)")
+            return data
         except CynoberClientError:
             raise
         except (TimeoutError, socket.timeout, OSError) as e:
             raise CynoberClientError(f"Błąd tunelu RPC: {e}") from e
         except (ValueError, json.JSONDecodeError, UnicodeDecodeError, IndexError) as e:
             raise CynoberClientError(f"Uszkodzona odpowiedź serwera: {e}") from e
+
+    def _send_kafs(self, body: bytes) -> None:
+        if not self.sock or not self.kafs_enabled:
+            raise CynoberClientError("KAFS niedostępne na tej sesji")
+        enc = encode_kafs_request_frame(body, self.crypto, self.hsl_link)
+        _send_frame(self.sock, enc)
+
+    def _recv_kafs_until_end(self, xfer_id: str) -> bytes:
+        from cynober_media_rpc import KAFS_DATA, KAFS_END, KAFS_ERR, decode_kafs_body
+
+        parts: list[bytes] = []
+        while True:
+            enc = _recv_frame(self.sock)
+            if not enc:
+                raise CynoberClientError("Tunel zamknięty w trakcie KAFS GET")
+            kind, payload = decode_rpc_response_frame(enc, self.crypto, self.hsl_link)
+            if kind == FRAME_RPC:
+                # błąd serwera w środku streamu?
+                raise CynoberClientError(f"RPC w trakcie KAFS: {payload}")
+            msg = decode_kafs_body(payload)
+            if msg.msg_type == KAFS_ERR:
+                raise CynoberClientError(msg.error or "KAFS ERR")
+            if msg.msg_type == KAFS_END:
+                break
+            if msg.msg_type == KAFS_DATA:
+                parts.append(msg.data)
+        return b"".join(parts)
+
+    def put_media(
+        self,
+        atom_id: str,
+        data: bytes,
+        *,
+        mime: str = "application/octet-stream",
+        bubble: str = "",
+        binding: str = "",
+        chunk_size: int = KAFS_CHUNK_MAX,
+    ) -> dict:
+        """
+        Wyślij medium przez MEDIA PUT + KAFS chunki.
+        Wymaga kafs_enabled (negocjacja features).
+        """
+        from cynober_media_rpc import encode_kafs_data, iter_chunks
+
+        if not isinstance(data, (bytes, bytearray)):
+            raise CynoberClientError("put_media: data musi być bytes")
+        data = bytes(data)
+        if not self.kafs_enabled:
+            raise CynoberClientError(
+                "put_media wymaga kafs-stream (serwer/klient bez FEATURE)"
+            )
+        q = (
+            f'MEDIA PUT START "{atom_id}" MIME "{mime}" SIZE {len(data)}'
+        )
+        if bubble and binding:
+            q += f' BĄBEL "{bubble}" JAKO "{binding}"'
+        start = self.query_line(q)
+        if start.get("status") != "ok":
+            raise CynoberClientError(start.get("message") or "MEDIA PUT START failed")
+        seq = 0
+        for chunk in iter_chunks(data, chunk_size=chunk_size or KAFS_CHUNK_MAX):
+            self._send_kafs(encode_kafs_data(atom_id, seq, len(data), chunk))
+            seq += 1
+        end = self.query_line(f'MEDIA PUT END "{atom_id}"')
+        if end.get("status") != "ok":
+            raise CynoberClientError(end.get("message") or "MEDIA PUT END failed")
+        return end
+
+    def get_media(
+        self,
+        atom_id: str,
+        *,
+        offset: int = 0,
+        limit: int = 0,
+    ) -> tuple[bytes, str, dict]:
+        """Pobierz medium. Zwraca (bytes, mime, meta_row)."""
+        import base64
+
+        q = f'MEDIA GET "{atom_id}"'
+        if offset:
+            q += f" OFFSET {int(offset)}"
+        if limit:
+            q += f" LIMIT {int(limit)}"
+        row = self.query_line(q)
+        if row.get("status") != "ok":
+            raise CynoberClientError(row.get("message") or "MEDIA GET failed")
+        mime = str(row.get("mime") or "application/octet-stream")
+        if row.get("stream") and self.kafs_enabled:
+            data = self._recv_kafs_until_end(str(row.get("id") or atom_id))
+            return data, mime, row
+        b64 = row.get("data_b64")
+        if isinstance(b64, str) and b64:
+            return base64.b64decode(b64.encode("ascii")), mime, row
+        raise CynoberClientError("MEDIA GET: brak streamu KAFS i data_b64")
+
+    def media_stat(self, atom_id: str) -> dict:
+        return self.query_line(f'MEDIA STAT "{atom_id}"')
 
     def query_line(self, text: str) -> dict:
         """Ostatni wiersz z results."""
