@@ -1,24 +1,26 @@
 # Na jutro
 
-## Zrobione (Faza 0 media)
+## Zrobione
 
-- `karmazyn_media.py` — attach_bytes / attach_file / get_bytes / export_to_path
-- Export w `karmazyn_kernel` + `py-modules`
-- `tests/test_media_local.py` (roundtrip SHA256 + SOUL limit)
-- Gossip SOUL: próg 64 KiB, `media_ref`, `include_blobs`
-- Manual + `PLAN_MULTIMEDIA_WDROZENIE.md` (checkboxy Fazy 0)
+### Faza 0 media
+- `karmazyn_media` attach/get/export, KAFD roundtrip, SOUL 64 KiB
 
-## Następne: Faza 1 (lore-editor)
+### Faza 2 podgląd (DBase)
+- `pipe_to`, `materialize_temp`, `open_with_system`, `try_external_player`, `open_media`
+- CLI: `python -m karmazyn_media extract|list|open|pipe`
 
-1. `LoreStore.dodaj_media` / `lista_mediow` / `eksport_media`
-2. Panel: „Dołącz plik”, lista bindingów
-3. Zależność: `cynober-db` z `karmazyn_media` (pip install -e DBase)
+## Następne w bazie: Faza 3 (KAFS over RPC)
 
-## Nie teraz
+1. Handshake caps `kafs-stream`
+2. `frame_kind` RPC vs KAFS w tunelu
+3. `MEDIA PUT/GET` + klient chunked
+4. Test harness peer + PNG put/get
 
-- Faza 3 KAFS w tunelu
-- REST/HTTP media server
+## Później / inny repo
+
+- Faza 1 lore UI attach (lore-editor)
+- REST/HTTP — **nie**
 
 ---
 
-*Aktualizacja po implementacji Fazy 0.*
+*Aktualizacja po Fazie 2 (lokalny podgląd).*

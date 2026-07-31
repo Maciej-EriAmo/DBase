@@ -1,6 +1,7 @@
 # Plan wdrożenia docelowego: multimedia w Cynober DB (+ lore)
 
-**Status:** plan implementacyjny · **Faza 0 DONE** (`karmazyn_media` + testy)  
+**Status:** plan implementacyjny · **Faza 0+2 DONE** (local media + pipe/preview/CLI) · **następna: Faza 3 KAFS**  
+
 **Cel:** plik → atom w grafie → KAFD/KAFS → indeks (bąble/bindings) → z powrotem do klienta, **bez HTTP/REST**  
 **Zasada transportu:** jeden tunel Karmazyn — **sterowanie = RPC/KarminQL**, **dane binarne = KAFS**  
 **Poza zakresem:** osobny CDN/HTTP :8080, SQL blob store, wrzucanie filmów w JSON-RPC
@@ -139,19 +140,21 @@ HSL: capability `media:stream` / `media:put` (obok `karminql:query`).
 
 ### Faza 2 — Podgląd lokalny / pipe  
 **Cel:** odtworzenie bez HTTP.  
-**Zależność:** Faza 0–1.  
+**Zależność:** Faza 0 (Faza 1 lore UI — osobno).  
 **Czas:** 0.5 tygodnia.
 
 **Zadania:**
 
-1. Wrapper: atom → temp file **lub** `KAFDStream.pipe_to` / system player (ffplay/mpv/os.startfile).
-2. Panel: „Otwórz / Podgląd”.
-3. Opcjonalnie CLI: `python -m karmazyn_kafd_tool extract ID out.bin`.
+1. Wrapper: atom → temp file **lub** `pipe_to` / system player (ffplay/mpv/os.startfile).
+2. Panel lore: „Otwórz / Podgląd” — **później (lore)**.
+3. CLI: `python -m karmazyn_media extract|list|open|pipe`.
 
 **Kryteria akceptacji:**
 
-- [ ] PNG otwiera się w systemowym podglądzie
-- [ ] Audio/video — best-effort (zewnętrzny player), graceful fail
+- [x] `pipe_to` / `materialize_temp` / `export` (testy bez GUI)
+- [x] `open_with_system` + `try_external_player` (graceful fail gdy brak playera)
+- [x] CLI extract/list (`python -m karmazyn_media`)
+- [ ] Panel lore — poza DBase
 
 ---
 

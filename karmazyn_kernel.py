@@ -139,9 +139,14 @@ from karmazyn_media import (  # noqa: E402
     get_bytes,
     list_bindings,
     load_store as load_media_store,
+    materialize_temp,
+    open_media,
+    open_with_system,
+    pipe_to,
     restore_bubbles,
     save_store as save_media_store,
     sync_bubble_record,
+    try_external_player,
 )
 
 __version__ = "1.1.0"
@@ -162,11 +167,13 @@ __all__ = [
     "substrate_backend_info", "apply_cli_substrate_flags",
     # kontrakt
     "AtomStore", "capabilities", "conforms", "assert_conforms", "CORE_METHODS",
-    # media (Faza 0 — lokalnie)
+    # media (Faza 0 + Faza 2 podgląd lokalny)
     "MEDIA_S", "MediaError", "MediaRef",
     "attach_bytes", "attach_file", "get_bytes", "export_to_path",
     "list_bindings", "sync_bubble_record", "restore_bubbles",
     "save_media_store", "load_media_store",
+    "pipe_to", "materialize_temp", "open_with_system",
+    "try_external_player", "open_media",
     # meta
     "kernel_info", "__version__",
 ]

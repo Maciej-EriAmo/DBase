@@ -1,18 +1,21 @@
 """
-karmazyn_media.py — lokalne API mediów (Faza 0)
-================================================
+karmazyn_media.py — lokalne API mediów (Faza 0 + Faza 2 podgląd)
+================================================================
 Plik / bajty → atom w Store (+ opcjonalny bind w bąblu) → KAFD → z powrotem.
 
 Zasady (PLAN_MULTIMEDIA_WDROZENIE.md):
-  • media = atomy z metadata[\"data\"] + metadata[\"mime\"]
-  • S = \"media\" (persystencja przez karmazyn_store.save_documents)
+  • media = atomy z metadata["data"] + metadata["mime"]
+  • S = "media" (persystencja przez karmazyn_store.save_documents)
   • sieć / KAFS = Faza 3+ (tu tylko lokalnie)
   • zero HTTP, zero base64 w KarminQL
 
 Publiczna powierzchnia:
   attach_bytes, attach_file, get_bytes, export_to_path
   list_bindings, sync_bubble_record, restore_bubbles
-  save_store / load_store  (cienkie wrappery na save/load_documents)
+  save_store / load_store
+  pipe_to, materialize_temp, open_with_system, try_external_player  (Faza 2)
+
+CLI:  python -m karmazyn_media extract|list|open|pipe …
 """
 
 from __future__ import annotations
@@ -20,9 +23,13 @@ from __future__ import annotations
 import hashlib
 import mimetypes
 import os
+import shutil
+import subprocess
+import sys
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Optional, Union
+from typing import Any, BinaryIO, Optional, Union
 
 # Kind zapisany w KAFD (karmazyn_store.DOC_KINDS musi zawierać "media")
 MEDIA_S = "media"
@@ -386,3 +393,334 @@ def file_sha256(path: str | Path) -> str:
         for chunk in iter(lambda: f.read(1024 * 1024), b""):
             h.update(chunk)
     return h.hexdigest()
+
+
+# ── Faza 2: podgląd lokalny / pipe ────────────────────────────────────────────
+
+_MIME_EXT = {
+    "image/png": ".png",
+    "image/jpeg": ".jpg",
+    "image/jpg": ".jpg",
+    "image/gif": ".gif",
+    "image/webp": ".webp",
+    "image/bmp": ".bmp",
+    "audio/wav": ".wav",
+    "audio/x-wav": ".wav",
+    "audio/mpeg": ".mp3",
+    "audio/ogg": ".ogg",
+    "audio/flac": ".flac",
+    "video/mp4": ".mp4",
+    "video/webm": ".webm",
+    "video/x-matroska": ".mkv",
+    "application/pdf": ".pdf",
+    "application/octet-stream": ".bin",
+    "text/plain": ".txt",
+}
+
+
+def _ext_for_mime(mime: str) -> str:
+    mime = (mime or "").split(";")[0].strip().lower()
+    if mime in _MIME_EXT:
+        return _MIME_EXT[mime]
+    if "/" in mime:
+        sub = mime.split("/", 1)[1].split("+")[0]
+        if sub and sub.isalnum() and len(sub) <= 8:
+            return f".{sub}"
+    return ".bin"
+
+
+def pipe_to(
+    store: Any,
+    atom_id: str,
+    sink: BinaryIO,
+    *,
+    chunk_size: int = 65536,
+) -> int:
+    """
+    Przelej payload atomu do obiektu z .write(bytes) (stdout, plik, socket).
+    Zwraca liczbę wysłanych bajtów.
+    """
+    data, _mime = get_bytes(store, atom_id)
+    if chunk_size <= 0:
+        chunk_size = len(data) or 1
+    sent = 0
+    offset = 0
+    while offset < len(data):
+        chunk = data[offset : offset + chunk_size]
+        sink.write(chunk)
+        sent += len(chunk)
+        offset += chunk_size
+    if hasattr(sink, "flush"):
+        try:
+            sink.flush()
+        except Exception:
+            pass
+    return sent
+
+
+def materialize_temp(
+    store: Any,
+    atom_id: str,
+    *,
+    suffix: Optional[str] = None,
+    directory: Optional[str | Path] = None,
+    prefix: str = "karm_media_",
+) -> Path:
+    """
+    Zapisz atom do pliku tymczasowego (z sensownym rozszerzeniem MIME).
+    Wywołujący jest właścicielem pliku (może skasować).
+    """
+    data, mime = get_bytes(store, atom_id)
+    ext = suffix if suffix is not None else _ext_for_mime(mime)
+    if ext and not ext.startswith("."):
+        ext = f".{ext}"
+    dir_arg = str(directory) if directory else None
+    fd, name = tempfile.mkstemp(prefix=prefix, suffix=ext or ".bin", dir=dir_arg)
+    try:
+        with os.fdopen(fd, "wb") as f:
+            f.write(data)
+    except Exception:
+        try:
+            os.unlink(name)
+        except OSError:
+            pass
+        raise
+    return Path(name)
+
+
+def open_with_system(
+    store: Any,
+    atom_id: str,
+    *,
+    keep_temp: bool = False,
+    path: Optional[str | Path] = None,
+) -> Path:
+    """
+    Otwórz medium domyślną aplikacją systemu (bez HTTP).
+
+    Windows: os.startfile · macOS: open · Linux: xdg-open
+    Zwraca ścieżkę pliku (temp lub wskazany path).
+    Best-effort: OSError / FileNotFoundError → MediaError.
+    """
+    if path is not None:
+        out = Path(path).expanduser()
+        export_to_path(store, atom_id, out)
+    else:
+        out = materialize_temp(store, atom_id)
+
+    try:
+        if sys.platform.startswith("win"):
+            os.startfile(str(out))  # type: ignore[attr-defined]
+        elif sys.platform == "darwin":
+            subprocess.Popen(
+                ["open", str(out)],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+        else:
+            # Linux / BSD
+            opener = shutil.which("xdg-open") or shutil.which("gio")
+            if not opener:
+                raise MediaError(
+                    "Brak xdg-open — zapisz plik (export_to_path) i otwórz ręcznie."
+                )
+            cmd = [opener, str(out)] if "xdg-open" in opener else [opener, "open", str(out)]
+            subprocess.Popen(
+                cmd,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+    except MediaError:
+        if not keep_temp and path is None:
+            try:
+                out.unlink(missing_ok=True)
+            except OSError:
+                pass
+        raise
+    except OSError as e:
+        if not keep_temp and path is None:
+            try:
+                out.unlink(missing_ok=True)
+            except OSError:
+                pass
+        raise MediaError(f"Nie otwarto podglądu systemowego: {e}") from e
+
+    return out
+
+
+def try_external_player(
+    store: Any,
+    atom_id: str,
+    *,
+    players: Optional[list[str]] = None,
+    path: Optional[str | Path] = None,
+    keep_temp: bool = False,
+) -> tuple[bool, str]:
+    """
+    Best-effort odtwarzacz: mpv / ffplay / vlc / …
+    Zwraca (ok, komunikat). Nie rzuca przy braku playera.
+    """
+    order = players or ["mpv", "ffplay", "vlc", "mplayer"]
+    if path is not None:
+        out = Path(path).expanduser()
+        export_to_path(store, atom_id, out)
+        temp_created = False
+    else:
+        out = materialize_temp(store, atom_id)
+        temp_created = True
+
+    for name in order:
+        exe = shutil.which(name)
+        if not exe:
+            continue
+        try:
+            if name == "ffplay":
+                cmd = [exe, "-autoexit", "-loglevel", "error", str(out)]
+            else:
+                cmd = [exe, str(out)]
+            subprocess.Popen(
+                cmd,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            return True, f"uruchomiono {name}: {out}"
+        except OSError:
+            continue
+
+    if temp_created and not keep_temp:
+        try:
+            out.unlink(missing_ok=True)
+        except OSError:
+            pass
+    return False, (
+        f"Brak zewnętrznego playera ({', '.join(order)}). "
+        f"Użyj open_with_system lub export_to_path → {out if not temp_created else 'plik temp'}."
+    )
+
+
+def open_media(
+    store: Any,
+    atom_id: str,
+    *,
+    prefer_player: bool = False,
+    keep_temp: bool = False,
+) -> tuple[bool, str, Optional[Path]]:
+    """
+    Uniwersalny podgląd lokalny:
+      1) opcjonalnie zewnętrzny player (audio/video)
+      2) systemowy handler (obrazy, PDF, …)
+
+    Zwraca (ok, msg, path_or_None).
+    """
+    _data, mime = get_bytes(store, atom_id)
+    major = (mime or "").split("/", 1)[0].lower()
+
+    if prefer_player or major in ("audio", "video"):
+        ok, msg = try_external_player(store, atom_id, keep_temp=keep_temp)
+        if ok:
+            return True, msg, None
+        # fallback system
+    try:
+        p = open_with_system(store, atom_id, keep_temp=keep_temp)
+        return True, f"otwarto systemowo: {p}", p
+    except MediaError as e:
+        return False, str(e), None
+
+
+# ── CLI ───────────────────────────────────────────────────────────────────────
+
+def _cli_load(kafd_path: str):
+    from karmazyn_kernel import Store
+
+    store = Store(thermal=True)
+    n = load_store(store, kafd_path, restore=True)
+    return store, n
+
+
+def main(argv: Optional[list[str]] = None) -> int:
+    """
+    python -m karmazyn_media <cmd> …
+
+    extract <kafd> <atom_id> <out>
+    list    <kafd> [bubble]
+    open    <kafd> <atom_id>
+    pipe    <kafd> <atom_id>          # stdout.buffer
+    """
+    args = list(sys.argv[1:] if argv is None else argv)
+    if not args or args[0] in ("-h", "--help", "help"):
+        print(
+            "karmazyn_media — lokalne media (Faza 0/2)\n"
+            "  extract <kafd> <atom_id> <out>   zapisz payload do pliku\n"
+            "  list    <kafd> [bubble]          lista atomów media / bindingów\n"
+            "  open    <kafd> <atom_id>         podgląd systemowy / player\n"
+            "  pipe    <kafd> <atom_id>         bajty na stdout (binarnie)\n",
+            file=sys.stderr,
+        )
+        return 0
+
+    cmd = args[0].lower()
+    try:
+        if cmd == "extract":
+            if len(args) < 4:
+                print("użycie: extract <kafd> <atom_id> <out>", file=sys.stderr)
+                return 2
+            store, _n = _cli_load(args[1])
+            n = export_to_path(store, args[2], args[3])
+            print(f"OK {n} B → {args[3]}")
+            return 0
+
+        if cmd == "list":
+            if len(args) < 2:
+                print("użycie: list <kafd> [bubble]", file=sys.stderr)
+                return 2
+            store, n = _cli_load(args[1])
+            print(f"# atoms loaded: {n}")
+            if len(args) >= 3:
+                for ref in list_bindings(store, args[2]):
+                    print(
+                        f"{ref.binding} | {ref.atom_id} | {ref.mime} | {ref.size}"
+                    )
+            else:
+                for atom in store.atoms():
+                    if getattr(atom, "S", "") != MEDIA_S:
+                        continue
+                    data = atom.metadata.get("data")
+                    size = len(data) if isinstance(data, (bytes, bytearray)) else 0
+                    mime = atom.metadata.get("mime", "")
+                    print(f"{atom.id} | {atom.E} | {mime} | {size}")
+            return 0
+
+        if cmd == "open":
+            if len(args) < 3:
+                print("użycie: open <kafd> <atom_id>", file=sys.stderr)
+                return 2
+            store, _n = _cli_load(args[1])
+            ok, msg, _p = open_media(store, args[2], keep_temp=True)
+            print(msg)
+            return 0 if ok else 1
+
+        if cmd == "pipe":
+            if len(args) < 3:
+                print("użycie: pipe <kafd> <atom_id>", file=sys.stderr)
+                return 2
+            store, _n = _cli_load(args[1])
+            # binarnie na stdout
+            if hasattr(sys.stdout, "buffer"):
+                pipe_to(store, args[2], sys.stdout.buffer)
+            else:
+                data, _ = get_bytes(store, args[2])
+                sys.stdout.write(data)  # type: ignore[arg-type]
+            return 0
+
+        print(f"nieznana komenda: {cmd}", file=sys.stderr)
+        return 2
+    except MediaError as e:
+        print(f"błąd: {e}", file=sys.stderr)
+        return 1
+    except Exception as e:
+        print(f"błąd: {e}", file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

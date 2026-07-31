@@ -225,7 +225,25 @@ load_store(store2, "swiat.kafd")          # + restore bąbli z atomów __bubble_
 export_to_path(store2, ref.atom_id, "out.png")
 ```
 
-API: `attach_bytes`, `attach_file`, `get_bytes`, `export_to_path`, `list_bindings`, `sync_bubble_record`, `restore_bubbles`. Plan: `docs/PLAN_MULTIMEDIA_WDROZENIE.md`.
+API: `attach_bytes`, `attach_file`, `get_bytes`, `export_to_path`, `list_bindings`, `sync_bubble_record`, `restore_bubbles`.
+
+**Podgląd lokalny (Faza 2):** `pipe_to`, `materialize_temp`, `open_with_system`, `try_external_player`, `open_media` — bez HTTP.
+
+```python
+from karmazyn_media import pipe_to, open_media
+# pipe_to(store, atom_id, sys.stdout.buffer)  # | mpv -
+ok, msg, path = open_media(store, atom_id)     # system / mpv / ffplay
+```
+
+```bash
+python -m karmazyn_media extract swiat.kafd a0 out.png
+python -m karmazyn_media list swiat.kafd
+python -m karmazyn_media list swiat.kafd Anna
+python -m karmazyn_media open swiat.kafd a0
+python -m karmazyn_media pipe swiat.kafd a0 | mpv -
+```
+
+Plan: `docs/PLAN_MULTIMEDIA_WDROZENIE.md`.
 
 ### Klient SDK (v7.7)
 

@@ -96,6 +96,70 @@ class TestMediaLocal(unittest.TestCase):
             media.attach_file(self.store, "A", "x", "/no/such/file.zzz")
 
 
+class TestMediaPreview(unittest.TestCase):
+    """Faza 2: pipe / temp / CLI (bez GUI w CI)."""
+
+    def setUp(self) -> None:
+        self.store = kernel.Store(thermal=True)
+        self.raw = b"\x89PNG\r\n\x1a\n" + b"preview-bytes"
+        self.ref = media.attach_bytes(
+            self.store, "P", "img", self.raw, mime="image/png"
+        )
+
+    def test_pipe_to_buffer(self) -> None:
+        import io
+
+        buf = io.BytesIO()
+        n = media.pipe_to(self.store, self.ref.atom_id, buf, chunk_size=8)
+        self.assertEqual(n, len(self.raw))
+        self.assertEqual(buf.getvalue(), self.raw)
+
+    def test_materialize_temp_extension(self) -> None:
+        p = media.materialize_temp(self.store, self.ref.atom_id)
+        try:
+            self.assertTrue(p.is_file())
+            self.assertTrue(str(p).lower().endswith(".png"))
+            self.assertEqual(p.read_bytes(), self.raw)
+        finally:
+            p.unlink(missing_ok=True)
+
+    def test_export_and_open_path_only(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp) / "x.png"
+            n = media.export_to_path(self.store, self.ref.atom_id, out)
+            self.assertEqual(n, len(self.raw))
+            self.assertEqual(out.read_bytes(), self.raw)
+
+    def test_try_external_player_graceful(self) -> None:
+        # Bez playerów w PATH i tak nie może paść hard crash
+        ok, msg = media.try_external_player(
+            self.store,
+            self.ref.atom_id,
+            players=["___no_such_player_xyz___"],
+            keep_temp=False,
+        )
+        self.assertFalse(ok)
+        self.assertIn("Brak", msg)
+
+    def test_cli_extract(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            kafd = Path(tmp) / "m.kafd"
+            media.save_store(self.store, kafd)
+            out = Path(tmp) / "out.png"
+            rc = media.main(["extract", str(kafd), self.ref.atom_id, str(out)])
+            self.assertEqual(rc, 0)
+            self.assertEqual(out.read_bytes(), self.raw)
+
+    def test_cli_list(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            kafd = Path(tmp) / "m.kafd"
+            media.save_store(self.store, kafd)
+            rc = media.main(["list", str(kafd)])
+            self.assertEqual(rc, 0)
+            rc2 = media.main(["list", str(kafd), "P"])
+            self.assertEqual(rc2, 0)
+
+
 def os_urandom(n: int) -> bytes:
     import os
 
