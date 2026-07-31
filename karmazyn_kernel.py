@@ -128,6 +128,22 @@ from karmazyn_atomstore import (
     CORE_METHODS,
 )
 
+# Media lokalne (Faza 0) — plik/bajty ↔ atom ↔ KAFD
+from karmazyn_media import (  # noqa: E402
+    MEDIA_S,
+    MediaError,
+    MediaRef,
+    attach_bytes,
+    attach_file,
+    export_to_path,
+    get_bytes,
+    list_bindings,
+    load_store as load_media_store,
+    restore_bubbles,
+    save_store as save_media_store,
+    sync_bubble_record,
+)
+
 __version__ = "1.1.0"
 
 # Publiczna powierzchnia. Import spoza tej listy = siegniecie do wnetrza jadra.
@@ -146,6 +162,11 @@ __all__ = [
     "substrate_backend_info", "apply_cli_substrate_flags",
     # kontrakt
     "AtomStore", "capabilities", "conforms", "assert_conforms", "CORE_METHODS",
+    # media (Faza 0 — lokalnie)
+    "MEDIA_S", "MediaError", "MediaRef",
+    "attach_bytes", "attach_file", "get_bytes", "export_to_path",
+    "list_bindings", "sync_bubble_record", "restore_bubbles",
+    "save_media_store", "load_media_store",
     # meta
     "kernel_info", "__version__",
 ]
@@ -161,7 +182,8 @@ def kernel_info() -> dict:
     return {
         "version": __version__,
         "modules": ["karmazyn_atom", "karmazyn_hrr",
-                    "karmazyn_substrate", "karmazyn_atomstore", "karmazyn_backend"],
+                    "karmazyn_substrate", "karmazyn_atomstore", "karmazyn_backend",
+                    "karmazyn_media"],
         "vec_dim": VEC_DIM,
         "hrr_active": HAS_HRR,          # False => praca w trybie zero-zaleznosci
         "substrate": _sub,              # native (Rust) | python — DB_karmin

@@ -217,7 +217,18 @@ def import_phi_payload(store: Any, b64_data: str) -> Dict[str, Any]:
 
 # ── SOUL (BubbleVFS-lite) ─────────────────────────────────────────────────────
 
-def _serialize_atom_soul(a: Any, *, node_id: str) -> Optional[dict]:
+# Faza 0 media: domyślnie nie dmuchaj dużych blobów w JSON gossip.
+# None w include_blobs → próg; False → nigdy; True → zawsze.
+SOUL_MAX_INLINE_BLOB = 64 * 1024  # 64 KiB
+
+
+def _serialize_atom_soul(
+    a: Any,
+    *,
+    node_id: str,
+    include_blobs: bool | None = None,
+    max_inline_blob: int = SOUL_MAX_INLINE_BLOB,
+) -> Optional[dict]:
     if str(getattr(a, "S", "")) == "__bubble__":
         return None
     T = float(getattr(a, "T", 0))
@@ -233,9 +244,30 @@ def _serialize_atom_soul(a: Any, *, node_id: str) -> Optional[dict]:
         ok, val = _safe_jsonable(md["v"])
         if ok:
             meta["v"] = val
+    if "mime" in md and md["mime"] is not None:
+        meta["mime"] = str(md["mime"])
     data = md.get("data")
     if isinstance(data, (bytes, bytearray)) and data:
-        meta["data_b64"] = base64.b64encode(bytes(data)).decode("ascii")
+        raw = bytes(data)
+        size = len(raw)
+        allow = False
+        if include_blobs is True:
+            allow = True
+        elif include_blobs is False:
+            allow = False
+        else:
+            # domyślnie: tylko małe (≤ próg)
+            allow = size <= int(max_inline_blob)
+        if allow:
+            meta["data_b64"] = base64.b64encode(raw).decode("ascii")
+        else:
+            # ref dla przyszłego GOSSIP FETCH MEDIA (Faza 6)
+            cas = md.get("_cas") or hashlib.sha256(raw).digest()[:12].hex()
+            meta["media_ref"] = {
+                "size": size,
+                "mime": str(md.get("mime") or "application/octet-stream"),
+                "cas": str(cas),
+            }
     return {
         "id": aid,
         "S": str(getattr(a, "S", "")),
@@ -254,14 +286,26 @@ def serialize_soul(
     *,
     node_id: str = "local",
     api: Any = None,
+    include_blobs: bool | None = None,
+    max_inline_blob: int = SOUL_MAX_INLINE_BLOB,
 ) -> dict:
     """
     Snapshot SOUL: atomy + bąble z bindings.
     api: opcjonalnie KarminEngine.api — używa _bubble_index (kanoniczne etykiety).
+
+    include_blobs:
+      None  — domyślnie: data_b64 tylko gdy len(data) ≤ max_inline_blob (64 KiB)
+      False — nigdy nie wkładaj data_b64 (tylko media_ref)
+      True  — zawsze data_b64 (legacy / jawne pełne SOUL)
     """
     atoms: List[dict] = []
     for a in store.atoms():
-        rec = _serialize_atom_soul(a, node_id=node_id)
+        rec = _serialize_atom_soul(
+            a,
+            node_id=node_id,
+            include_blobs=include_blobs,
+            max_inline_blob=max_inline_blob,
+        )
         if rec is not None:
             atoms.append(rec)
 

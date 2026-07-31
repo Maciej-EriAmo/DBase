@@ -23,7 +23,8 @@ try:
 except ImportError:
     _KAFD_OK = False
 
-DOC_KINDS = ("document", "version", "__bubble__")
+# document/version — treść tekstowa; media — Faza 0 multimedia; __bubble__ — bindings
+DOC_KINDS = ("document", "version", "__bubble__", "media")
 STORE_META = "karmazyn_store_v1.3_encrypted"
 FOLDED_META_KEY = "_folded"
 FOLD_SRC_KEY = "_fold_src"

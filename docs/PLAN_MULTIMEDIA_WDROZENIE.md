@@ -1,6 +1,6 @@
 # Plan wdrożenia docelowego: multimedia w Cynober DB (+ lore)
 
-**Status:** plan implementacyjny  
+**Status:** plan implementacyjny · **Faza 0 DONE** (`karmazyn_media` + testy)  
 **Cel:** plik → atom w grafie → KAFD/KAFS → indeks (bąble/bindings) → z powrotem do klienta, **bez HTTP/REST**  
 **Zasada transportu:** jeden tunel Karmazyn — **sterowanie = RPC/KarminQL**, **dane binarne = KAFS**  
 **Poza zakresem:** osobny CDN/HTTP :8080, SQL blob store, wrzucanie filmów w JSON-RPC
@@ -107,11 +107,12 @@ HSL: capability `media:stream` / `media:put` (obok `karminql:query`).
 
 **Kryteria akceptacji:**
 
-- [ ] Roundtrip plik → atom → `.kafd` → atom → plik (hash SHA256)
-- [ ] Bind w bąblu widoczny w `lookup` / KarminQL po załadowaniu świata
-- [ ] Brak regresji 322+ testów
+- [x] Roundtrip plik → atom → `.kafd` → atom → plik (hash SHA256) — `tests/test_media_local.py`
+- [x] Bind w bąblu po `load_store` + `restore_bubbles` (`list_bindings`)
+- [x] Brak regresji (339+ testów, w tym media + gossip)
+- [x] SOUL: `data_b64` ≤ 64 KiB domyślnie; powyżej `media_ref`
 
-**Wersja:** `8.1.x` (slice media local) lub feature branch → merge do 8.2.0 przy Faza 3.
+**Wersja:** kod w repo (slice media local); numer pakietu PyPI może zostać 8.0.3 do kolejnego release.
 
 ---
 
@@ -313,8 +314,8 @@ Backward compatible: klient bez `kafs-stream` działa jak dziś (tylko graf + fu
 
 ## 9. Kolejność prac (backlog gotowy do sprintów)
 
-1. **P0** `karmazyn_media.attach_*` + testy roundtrip (Faza 0)  
-2. **P0** limit SOUL blobs / `include_blobs` (higiena)  
+1. **P0** `karmazyn_media.attach_*` + testy roundtrip (Faza 0) — **DONE**  
+2. **P0** limit SOUL blobs / `include_blobs` (higiena) — **DONE**  
 3. **P1** LoreStore + panel attach (Faza 1)  
 4. **P1** podgląd lokalny (Faza 2)  
 5. **P2** caps + frame_kind + MEDIA PUT/GET (Faza 3)  

@@ -71,6 +71,7 @@ py-modules = [
     "karmazyn_hss_ntt",
     "karmazyn_kafd",
     "karmazyn_kernel",
+    "karmazyn_media",
     "karmazyn_proca",
     "karmazyn_qkd",
     "karmazyn_store",

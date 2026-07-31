@@ -205,6 +205,28 @@ Lżejsza synchronizacja **aktywnego Store** (sandbox lub wybranego świata) po t
 
 **PHI** = temperatura/tożsamość atomów. **SOUL** = BubbleVFS-lite (graf bąbli). Pełne pliki `.soul` / Proca COLD — kolejny krok.
 
+**SOUL a multimedia (Faza 0):** domyślnie `data_b64` tylko dla payloadów **≤ 64 KiB**. Większe atomy dostają `media_ref` (`size`, `mime`, `cas`) zamiast base64 — duże media nie puchną gossip. Jawne pełne bloby: `serialize_soul(..., include_blobs=True)`.
+
+### Multimedia lokalne (Faza 0 — `karmazyn_media`)
+
+Plik / bajty → atom `S="media"` + bind w bąblu → `.kafd` → z powrotem. **Bez HTTP, bez sieci KAFS** (KAFS w tunelu = Faza 3).
+
+```python
+from karmazyn_kernel import Store, attach_file, get_bytes, export_to_path
+from karmazyn_media import save_store, load_store
+
+store = Store(thermal=True)
+ref = attach_file(store, "Anna", "portret", "anna.png")  # MIME z rozszerzenia
+data, mime = get_bytes(store, ref.atom_id)
+save_store(store, "swiat.kafd")
+
+store2 = Store(thermal=True)
+load_store(store2, "swiat.kafd")          # + restore bąbli z atomów __bubble__
+export_to_path(store2, ref.atom_id, "out.png")
+```
+
+API: `attach_bytes`, `attach_file`, `get_bytes`, `export_to_path`, `list_bindings`, `sync_bubble_record`, `restore_bubbles`. Plan: `docs/PLAN_MULTIMEDIA_WDROZENIE.md`.
+
 ### Klient SDK (v7.7)
 
 Oficjalny klient Python — ten sam tunel HSS+HSL+RPC co CLI, bez HTTP.
@@ -1205,6 +1227,7 @@ python -m unittest tests.test_v70 -v
 | `tests/test_v78.py` | Auto-flush, indeksy w meta, Proca COLD (v7.8) |
 | `tests/test_v79.py` | Lazy manifest, ROZWIJ, WYBIERZ CEL (v7.9) |
 | `tests/test_v80.py` | Shardy per region, manifest-first replikacja (v8.0) |
+| `tests/test_media_local.py` | Media Faza 0: attach/file, KAFD roundtrip, SOUL blob limit |
 | `tests/test_packaging.py` | Weryfikacja listy modułów PyPI (`py-modules`) |
 | `tests/test_cynober_client.py` | Oficjalny klient SDK: connect, context manager (v7.7) |
 | `tests/test_game_store.py` | GameStore: lokalnie + RPC, trwały świat, izolacja sandbox |
@@ -1270,14 +1293,15 @@ DBase/
 ├── scripts/cynober_firewall_windows.ps1
 ├── cynober_rpc.py             ← Cynober-Secure-1.2 (handshake + HSL + RPC)
 ├── cynober_query_engine.py    ← KarminQL v6.9
-├── karmazyn_kernel.py         ← publiczna fasada jądra
+├── karmazyn_kernel.py         ← publiczna fasada jądra (+ re-export media)
 ├── karmazyn_atom.py           ← model atomu + FSM temperatury
 ├── karmazyn_substrate.py      ← Store + reach-GC
 ├── karmazyn_hss.py            ← Ring-LWE KEM (post-quantum handshake)
 ├── karmazyn_hsl.py            ← HSL: Φ², PrismMask, QKD seed, AAD
 ├── karmazyn_hrr.py            ← operacje wektorowe HRR (opcjonalne)
 ├── karmazyn_handshake.py      ← KSH-1.2: transport i szyfrowanie ramek
-├── karmazyn_store.py          ← serializacja dokumentów
+├── karmazyn_store.py          ← serializacja dokumentów (kinds: media)
+├── karmazyn_media.py          ← Faza 0: attach/get/export mediów lokalnie
 ├── karmazyn_kafd.py           ← format binarny KAFD v2.0
 ├── karmazyn_proca.py          ← deduplikacja semantyczna
 ├── karmazyn_atomstore.py      ← kontrakt AtomStore
