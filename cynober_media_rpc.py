@@ -408,74 +408,198 @@ def _commit_media_atom(
     bubble: str,
     binding: str,
 ) -> None:
-    store = _runtime_store(facade)
-    # create_atom z jawnym id jeśli wolne; inaczej atom_new + nadpisanie id nie zadziała
-    existing = store.get_atom(atom_id) if callable(getattr(store, "get_atom", None)) else None
-    if existing is None and callable(getattr(store, "create_atom", None)):
-        created = store.create_atom(atom_id, S="media", E=binding or "media", T=50.0)
-        existing = store.get_atom(created if isinstance(created, str) else getattr(created, "id", atom_id))
-    if existing is None:
-        # fallback: atom_new (id wygenerowane) — nadal zapisujemy payload
-        existing = store.atom_new(S="media", E=binding or atom_id, value=None, T=50.0)
-    if hasattr(existing, "S"):
-        try:
-            existing.S = "media"
-        except Exception:
-            pass
-    existing.metadata["data"] = data
-    existing.metadata["mime"] = mime
-    existing.metadata["v"] = {
-        "kind": "media",
-        "size": len(data),
-        "mime": mime,
-        "binding": binding,
-        "bubble": bubble,
-        "requested_id": atom_id,
-    }
-    if bubble and binding and callable(getattr(store, "bubble_new", None)):
-        from karmazyn_media import ensure_bubble, sync_bubble_record
+    """Zapis payloadu: A_RAW lub A_STREAM (Faza 4) przy przekroczeniu progu."""
+    from karmazyn_media import (
+        MEDIA_S,
+        MEDIA_SEG_S,
+        ensure_bubble,
+        is_stream_atom,
+        segment_size_effective,
+        stream_threshold_effective,
+        sync_bubble_record,
+        _cas12,
+    )
+    import hashlib
 
+    store = _runtime_store(facade)
+    mime = (mime or "application/octet-stream").strip()
+    thr = stream_threshold_effective()
+    seg_sz = segment_size_effective()
+    use_stream = thr >= 0 and len(data) > thr
+
+    # usuń stare segmenty gdy nadpisujemy stream
+    old = store.get_atom(atom_id) if callable(getattr(store, "get_atom", None)) else None
+    if old is not None and is_stream_atom(old):
+        v_old = old.metadata.get("v") if isinstance(old.metadata.get("v"), dict) else {}
+        for sid in v_old.get("segments") or []:
+            try:
+                if callable(getattr(store, "atom_delete", None)):
+                    store.atom_delete(str(sid))
+                elif callable(getattr(store, "delete_atom", None)):
+                    store.delete_atom(str(sid))
+            except Exception:
+                pass
+
+    if not use_stream:
+        existing = old
+        if existing is None and callable(getattr(store, "create_atom", None)):
+            created = store.create_atom(
+                atom_id, S=MEDIA_S, E=binding or "media", T=50.0
+            )
+            existing = store.get_atom(
+                created if isinstance(created, str) else getattr(created, "id", atom_id)
+            )
+        if existing is None:
+            existing = store.atom_new(
+                S=MEDIA_S, E=binding or atom_id, value=None, T=50.0
+            )
+        if hasattr(existing, "S"):
+            try:
+                existing.S = MEDIA_S
+            except Exception:
+                pass
+        existing.metadata["data"] = data
+        existing.metadata["mime"] = mime
+        existing.metadata["_cas"] = _cas12(data)
+        existing.metadata.pop("_stream", None)
+        existing.metadata["v"] = {
+            "kind": "media",
+            "atype": "A_RAW",
+            "size": len(data),
+            "mime": mime,
+            "binding": binding,
+            "bubble": bubble,
+            "requested_id": atom_id,
+        }
+        head = existing
+    else:
+        # head ze stałym id (protokół MEDIA PUT "id")
+        head = old
+        if head is None and callable(getattr(store, "create_atom", None)):
+            created = store.create_atom(
+                atom_id, S=MEDIA_S, E=binding or "media", T=50.0
+            )
+            head = store.get_atom(
+                created if isinstance(created, str) else getattr(created, "id", atom_id)
+            )
+        if head is None:
+            head = store.atom_new(S=MEDIA_S, E=binding or atom_id, value=None, T=50.0)
+        head_id = str(getattr(head, "id", atom_id))
+        seg_ids: list[str] = []
+        offset = 0
+        idx = 0
+        while offset < len(data):
+            chunk = data[offset : offset + seg_sz]
+            seg = store.atom_new(
+                S=MEDIA_SEG_S,
+                E=f"seg{idx}:{binding or head_id}"[:120],
+                value=None,
+                T=45.0,
+            )
+            seg.metadata["data"] = chunk
+            seg.metadata["mime"] = "application/octet-stream"
+            seg.metadata["_cas"] = _cas12(chunk)
+            seg.metadata["v"] = {
+                "kind": "media_segment",
+                "parent": head_id,
+                "index": idx,
+                "size": len(chunk),
+                "offset": offset,
+            }
+            seg_ids.append(str(seg.id))
+            offset += len(chunk)
+            idx += 1
+        cas_full = hashlib.sha256(data).hexdigest()
+        head.metadata["data"] = b""
+        head.metadata["mime"] = mime
+        head.metadata["_cas"] = hashlib.sha256(data).digest()[:12].hex()
+        head.metadata["_stream"] = True
+        if hasattr(head, "S"):
+            try:
+                head.S = MEDIA_S
+            except Exception:
+                pass
+        head.metadata["v"] = {
+            "kind": "media_stream",
+            "atype": "A_STREAM",
+            "binding": binding,
+            "bubble": bubble,
+            "size": len(data),
+            "mime": mime,
+            "segment_size": seg_sz,
+            "segments": seg_ids,
+            "n_segments": len(seg_ids),
+            "sha256": cas_full,
+            "requested_id": atom_id,
+        }
+
+    if bubble and binding and callable(getattr(store, "bubble_new", None)):
         b = ensure_bubble(store, bubble, as_root=True)
         if callable(getattr(b, "bind", None)):
-            b.bind(binding, existing)
+            b.bind(binding, head)
         else:
-            b.bindings[binding] = existing.id
+            b.bindings[binding] = head.id
         sync_bubble_record(store, b)
-    # dirty world
     if getattr(facade, "_world", None) is not None:
         facade._registry.mark_dirty(facade._world.name)
 
 
 def _load_media_atom(facade: Any, atom_id: str) -> tuple[bytes, str, float]:
+    """Odczyt A_RAW lub reassemble A_STREAM (Faza 4)."""
+    from karmazyn_media import get_bytes
+
     store = _runtime_store(facade)
     atom = store.get_atom(atom_id)
     if atom is None:
         raise ValueError(f"Brak atomu „{atom_id}”.")
-    data = atom.metadata.get("data")
-    if not isinstance(data, (bytes, bytearray)):
-        raise ValueError(f"Atom „{atom_id}” nie ma metadata['data'].")
-    mime = str(atom.metadata.get("mime") or "application/octet-stream")
+    data, mime = get_bytes(store, atom_id)
     T = float(getattr(atom, "T", 50.0))
-    return bytes(data), mime, T
+    return data, mime, T
 
 
 def _media_stat(facade: Any, atom_id: str) -> dict:
     deny = _media_perm(facade, write=False)
     if deny:
         return deny[0]
-    try:
-        data, mime, T = _load_media_atom(facade, atom_id)
-    except ValueError as e:
-        return {"status": "error", "action": "MEDIA_STAT", "message": str(e)}
     store = _runtime_store(facade)
     atom = store.get_atom(atom_id)
+    if atom is None:
+        return {
+            "status": "error",
+            "action": "MEDIA_STAT",
+            "message": f"Brak atomu „{atom_id}”.",
+        }
+    from karmazyn_media import is_stream_atom
+
+    mime = str(atom.metadata.get("mime") or "application/octet-stream")
+    v = atom.metadata.get("v") if isinstance(atom.metadata.get("v"), dict) else {}
+    if v.get("mime"):
+        mime = str(v["mime"])
+    if is_stream_atom(atom):
+        size = int(v.get("size") or 0)
+        stream = True
+        n_seg = int(v.get("n_segments") or len(v.get("segments") or []))
+    else:
+        data = atom.metadata.get("data")
+        if not isinstance(data, (bytes, bytearray)):
+            return {
+                "status": "error",
+                "action": "MEDIA_STAT",
+                "message": f"Atom „{atom_id}” nie ma payloadu.",
+            }
+        size = len(data)
+        stream = False
+        n_seg = 0
+    T = float(getattr(atom, "T", 50.0))
     folded = bool((getattr(atom, "metadata", None) or {}).get("_folded"))
     return {
         "status": "ok",
         "action": "MEDIA_STAT",
         "id": atom_id,
         "mime": mime,
-        "size": len(data),
+        "size": size,
         "T": T,
         "folded": folded,
+        "stream": stream,
+        "n_segments": n_seg,
     }

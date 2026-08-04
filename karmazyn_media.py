@@ -44,6 +44,33 @@ DEFAULT_STREAM_THRESHOLD = 8 * 1024 * 1024  # 8 MiB
 DEFAULT_SEGMENT_SIZE = 1 * 1024 * 1024  # 1 MiB
 
 
+def stream_threshold_effective(override: Optional[int] = None) -> int:
+    """Próg A_STREAM: arg → env KARM_MEDIA_STREAM_THRESHOLD → default 8 MiB."""
+    if override is not None:
+        return int(override)
+    env = os.environ.get("KARM_MEDIA_STREAM_THRESHOLD")
+    if env is not None and str(env).strip() != "":
+        try:
+            return int(env)
+        except ValueError:
+            pass
+    return DEFAULT_STREAM_THRESHOLD
+
+
+def segment_size_effective(override: Optional[int] = None) -> int:
+    if override is not None and int(override) > 0:
+        return int(override)
+    env = os.environ.get("KARM_MEDIA_SEGMENT_SIZE")
+    if env is not None and str(env).strip() != "":
+        try:
+            v = int(env)
+            if v > 0:
+                return v
+        except ValueError:
+            pass
+    return DEFAULT_SEGMENT_SIZE
+
+
 class MediaError(RuntimeError):
     """Błąd API mediów (brak atomu, zły typ, pusty plik, …)."""
 
@@ -256,9 +283,9 @@ def attach_bytes(
         raise MediaError("Wymagana nazwa bindingu (np. 'portret').")
     mime = (mime or "application/octet-stream").strip() or "application/octet-stream"
 
-    use_stream = bool(force_stream) or (
-        stream_threshold >= 0 and len(raw) > int(stream_threshold)
-    )
+    thr = stream_threshold_effective(stream_threshold)
+    seg_sz = segment_size_effective(segment_size)
+    use_stream = bool(force_stream) or (thr >= 0 and len(raw) > thr)
     if use_stream:
         return _attach_stream_bytes(
             store,
@@ -269,7 +296,7 @@ def attach_bytes(
             T=T,
             as_root=as_root,
             sync_bubble=sync_bubble,
-            segment_size=segment_size,
+            segment_size=seg_sz,
             warn_over=warn_over,
         )
 
@@ -450,9 +477,9 @@ def attach_file(
         kb = max(1, size / 1024)
         T = max(20.0, 65.0 - math.log10(kb) * 10)
 
-    use_stream = bool(force_stream) or (
-        stream_threshold >= 0 and size > int(stream_threshold)
-    )
+    thr = stream_threshold_effective(stream_threshold)
+    seg_sz = segment_size_effective(segment_size)
+    use_stream = bool(force_stream) or (thr >= 0 and size > thr)
     if use_stream:
         return _attach_stream_file(
             store,
@@ -463,7 +490,7 @@ def attach_file(
             T=float(T),
             as_root=as_root,
             sync_bubble=sync_bubble,
-            segment_size=segment_size,
+            segment_size=seg_sz,
             size=size,
         )
 

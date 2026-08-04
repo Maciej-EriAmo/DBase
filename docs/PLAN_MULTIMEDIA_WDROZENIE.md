@@ -1,6 +1,6 @@
 # Plan wdrożenia docelowego: multimedia w Cynober DB (+ lore)
 
-**Status:** plan · **Faza 0+2+3+4(local) DONE** · **następna: Faza 4b stream over KAFS / Faza 1 lore / Faza 6 replicate**  
+**Status:** plan · **Faza 0+2+3+4+4b DONE** · **Faza 1 lore (API+panel) DONE w lore-editor** · **następna: Faza 6 replicate / mmap**  
 
 
 **Cel:** plik → atom w grafie → KAFD/KAFS → indeks (bąble/bindings) → z powrotem do klienta, **bez HTTP/REST**  
@@ -133,9 +133,10 @@ HSL: capability `media:stream` / `media:put` (obok `karminql:query`).
 
 **Kryteria akceptacji:**
 
-- [ ] Portret przy postaci przeżywa restart edytora
-- [ ] PUSH/PULL świata przenosi małe media (cały `.kafd`)
-- [ ] Brak zmian w workflow rozdziałów `.txt`
+- [x] Portret przy postaci przeżywa restart (`test_dodaj_media_i_eksport` + `zapisz`)
+- [x] Panel „Dołącz plik” + `LoreStore.dodaj_media` / `lista_mediow` / `eksport_media`
+- [ ] PUSH/PULL świata przenosi małe media (cały `.kafd`) — Faza 6 / team_sync smoke
+- [x] Brak zmian w workflow rozdziałów `.txt`
 
 ---
 
@@ -208,8 +209,8 @@ HSL: capability `media:stream` / `media:put` (obok `karminql:query`).
 - [x] Lokalnie: head + `media_seg`, reassemble `get_bytes` / `iter_bytes` (`tests/test_media_local.py::TestMediaStream`)
 - [x] `force_stream` / `stream_threshold` + KAFD roundtrip (segmenty w `DOC_KINDS`)
 - [x] `pipe_to` po segmentach (bez monolit w head)
-- [ ] Plik 50 MiB put/get **sieć** bez przekroczenia FRAME_MAX (Faza 4b + KAFS)
-- [ ] Restart serwera: segmenty na dysku spójne (po 4b)
+- [x] PUT/GET KAFS z reassemble stream (`test_put_get_stream_head`, próg env)
+- [ ] Plik 50 MiB E2E + restart serwera (load test / ops)
 - [ ] `ROZWIJ` nie ładuje wszystkich mediów świata naraz
 
 ---
@@ -324,13 +325,14 @@ Backward compatible: klient bez `kafs-stream` działa jak dziś (tylko graf + fu
 
 1. **P0** `karmazyn_media.attach_*` + testy roundtrip (Faza 0) — **DONE**  
 2. **P0** limit SOUL blobs / `include_blobs` (higiena) — **DONE**  
-3. **P1** LoreStore + panel attach (Faza 1)  
-4. **P1** podgląd lokalny (Faza 2)  
+3. **P1** LoreStore + panel attach (Faza 1) — **DONE** (lore-editor)  
+4. **P1** podgląd lokalny (Faza 2) — **DONE**  
 5. **P2** caps + frame_kind + MEDIA PUT/GET (Faza 3) — **DONE**  
 6. **P2** test harness sieciowy media — **DONE**  
 7. **P3** A_STREAM segments local (Faza 4) — **DONE**  
-7b. **P3** A_STREAM over KAFS MEDIA PUT/GET (Faza 4b)  
-8. **P3** lore `--rpc` stream (Faza 5)  
+7b. **P3** A_STREAM over KAFS MEDIA PUT/GET (Faza 4b) — **DONE**  
+8. **P3** lore attach UI (Faza 1) — **DONE** (lore-editor)  
+8b. **P3** lore `--rpc` stream preview (Faza 5)  
 9. **P3** replicate media index (Faza 6)  
 10. **P4** AI tools describe/list (Faza 7)
 

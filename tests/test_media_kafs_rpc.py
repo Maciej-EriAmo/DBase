@@ -116,6 +116,41 @@ class TestMediaKafsTunnel(RpcTestBase):
         st = c.media_stat("no_such_atom_xyz")
         self.assertEqual(st.get("status"), "error")
 
+    def test_put_get_stream_head(self):
+        """Faza 4b: duży PUT przy niskim progu → A_STREAM na serwerze, GET reassemble."""
+        import os
+
+        old = os.environ.get("KARM_MEDIA_STREAM_THRESHOLD")
+        old_seg = os.environ.get("KARM_MEDIA_SEGMENT_SIZE")
+        os.environ["KARM_MEDIA_STREAM_THRESHOLD"] = "500"
+        os.environ["KARM_MEDIA_SEGMENT_SIZE"] = "200"
+        try:
+            c = self._client()
+            blob = b"STREAM-RPC-" + (b"Z" * 1200)
+            end = c.put_media(
+                "stream1",
+                blob,
+                mime="application/octet-stream",
+                bubble="Kanal",
+                binding="klip",
+            )
+            self.assertEqual(end.get("status"), "ok")
+            st = c.media_stat("stream1")
+            self.assertEqual(st.get("status"), "ok")
+            self.assertTrue(st.get("stream") or st.get("n_segments", 0) > 0)
+            data, mime, _ = c.get_media("stream1")
+            self.assertEqual(data, blob)
+            self.assertEqual(mime, "application/octet-stream")
+        finally:
+            if old is None:
+                os.environ.pop("KARM_MEDIA_STREAM_THRESHOLD", None)
+            else:
+                os.environ["KARM_MEDIA_STREAM_THRESHOLD"] = old
+            if old_seg is None:
+                os.environ.pop("KARM_MEDIA_SEGMENT_SIZE", None)
+            else:
+                os.environ["KARM_MEDIA_SEGMENT_SIZE"] = old_seg
+
 
 if __name__ == "__main__":
     unittest.main()
