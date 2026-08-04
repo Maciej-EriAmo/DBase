@@ -273,6 +273,67 @@ class TestMediaStream(unittest.TestCase):
         self.assertEqual(kernel.MEDIA_SEG_S, "media_seg")
 
 
+class TestMediaAtomCanvas(unittest.TestCase):
+    """Płótno atomów: dirty paint + termiczny pump (model Luneta)."""
+
+    def test_static_and_gif_pump_dirty(self) -> None:
+        from karmazyn_media_canvas import MediaAtomCanvas, FREEZE_T, _HAS_PIL
+
+        if not _HAS_PIL:
+            self.skipTest("Pillow")
+        # minimalny 1x1 PNG
+        from PIL import Image
+        import io
+
+        def png_color(rgb, n=1):
+            im = Image.new("RGBA", (4, 4), rgb + (255,))
+            b = io.BytesIO()
+            im.save(b, format="PNG")
+            return b.getvalue()
+
+        # ręczny clip 3 klatki
+        canvas = MediaAtomCanvas()
+        frames = [png_color((i * 40, 0, 0)) for i in range(3)]
+        canvas.pump.load_frames(
+            "v1", frames, delays=[0.01, 0.01, 0.01], size=(4, 4), kind="video"
+        )
+        canvas.place("v1", 0, 0)
+        # zimny — brak dirty
+        canvas.pump._clips["v1"].T = FREEZE_T - 5
+        self.assertEqual(canvas.tick(cool=False), set())
+        # gorący — po delay dirty
+        canvas.mark_visible(["v1"])
+        import time
+
+        time.sleep(0.03)
+        dirty = canvas.tick(cool=False)
+        self.assertIn("v1", dirty)
+        self.assertIsNotNone(canvas.pump.current_png("v1"))
+
+    def test_load_png_from_store(self) -> None:
+        from karmazyn_media_canvas import MediaAtomCanvas, _HAS_PIL
+
+        if not _HAS_PIL:
+            self.skipTest("Pillow")
+        store = kernel.Store(thermal=True)
+        # valid tiny PNG via PIL
+        from PIL import Image
+        import io
+
+        im = Image.new("RGB", (8, 8), (0, 128, 255))
+        buf = io.BytesIO()
+        im.save(buf, format="PNG")
+        raw = buf.getvalue()
+        ref = media.attach_bytes(store, "B", "img", raw, mime="image/png")
+        c = MediaAtomCanvas()
+        kind = c.load_store_atom(store, ref.atom_id)
+        self.assertEqual(kind, "static")
+        c.place(ref.atom_id, 10, 10)
+        blits = c.blit_list()
+        self.assertEqual(len(blits), 1)
+        self.assertEqual(blits[0][0].atom_id, ref.atom_id)
+
+
 class TestMediaIndexAndPreview(unittest.TestCase):
     """Faza 6 indeks + Faza 5 decode (Pillow opcjonalne)."""
 

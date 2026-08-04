@@ -229,7 +229,10 @@ API: `attach_bytes`, `attach_file`, `get_bytes`, `export_to_path`, `list_binding
 
 **Duże media lokalnie (Faza 4):** powyżej `stream_threshold` (domyślnie 8 MiB) lub `force_stream=True` → head `S=media` (`_stream`, `v.segments`) + atomy `S=media_seg`. Odczyt: `get_bytes` (reassemble) / `iter_bytes` / `pipe_to` po segmentach. Head **nie** trzyma monolit `data`.
 
-**Podgląd (Faza 5, wzorzec Luneta):** `karmazyn_media_preview` — PIL → PNG, cache L1, okno Tk `PhotoImage`; audio/video → mpv/ffplay/system. API: `open_preview(store, atom_id)`, `load_preview_image`.
+**Podgląd / płótno atomów (Faza 5, model Luneta):**  
+- `karmazyn_media_canvas` — PNG/GIF/klatki wideo jako **atomy na płótnie**; `ThermalFramePump` grzeje tylko **widoczne**; `pump()` → zbiór **dirty** (maluj tylko zmiany).  
+- `open_preview` domyślnie otwiera płótno; audio → zewnętrzny player.  
+- API: `MediaAtomCanvas`, `open_atom_canvas_window`, `open_preview`.
 
 **Replikacja mediów (Faza 6):** manifest EKSPORT zawiera `media_index` (id/mime/size/cas, bez blobów). `pull_world` woła `sync_missing_media` (KAFS `get_media` braków).
 

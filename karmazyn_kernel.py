@@ -163,6 +163,16 @@ except Exception:  # pragma: no cover
     MediaPreviewCache = None  # type: ignore
     load_preview_image = None  # type: ignore
     show_image_window = None  # type: ignore
+try:
+    from karmazyn_media_canvas import (  # noqa: E402
+        MediaAtomCanvas,
+        ThermalFramePump,
+        open_atom_canvas_window,
+    )
+except Exception:  # pragma: no cover
+    MediaAtomCanvas = None  # type: ignore
+    ThermalFramePump = None  # type: ignore
+    open_atom_canvas_window = None  # type: ignore
 
 __version__ = "1.1.0"
 
@@ -192,6 +202,7 @@ __all__ = [
     "try_external_player", "open_media",
     "build_media_index", "open_preview",
     "MediaPreviewCache", "load_preview_image", "show_image_window",
+    "MediaAtomCanvas", "ThermalFramePump", "open_atom_canvas_window",
     # meta
     "kernel_info", "__version__",
 ]

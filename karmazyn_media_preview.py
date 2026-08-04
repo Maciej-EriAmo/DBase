@@ -246,12 +246,14 @@ def open_preview(
     parent: Any = None,
     prefer_external: bool = False,
     thumb_first: bool = True,
+    use_canvas: bool = True,
 ) -> Tuple[bool, str]:
     """
     Uniwersalny podgląd atomu mediów:
 
-    - image/* → decode PIL + okno Tk (Luneta-style), fallback open_with_system
-    - audio/video → try_external_player, potem system
+    - domyślnie **płótno atomów** (PNG/GIF/klatki wideo, dirty paint) — jak Luneta
+    - prefer_external: mpv/ffplay
+    - fallback: system open
     """
     try:
         data, mime = get_bytes(store, atom_id)
@@ -264,6 +266,25 @@ def open_preview(
     if atom is not None and is_stream_atom(atom):
         stream_note = " [A_STREAM]"
 
+    # Płótno: PNG + GIF + wideo jako klatki (tanie: tylko dirty/hot)
+    if use_canvas and not prefer_external and major in ("image", "video"):
+        try:
+            from karmazyn_media_canvas import open_atom_canvas_window
+
+            if open_atom_canvas_window(
+                store,
+                atom_id,
+                parent=parent,
+                title=f"Atom {atom_id}{stream_note}",
+            ):
+                return True, f"płótno atomów{stream_note}"
+        except Exception as e:
+            canvas_err = str(e)[:80]
+        else:
+            canvas_err = ""
+    else:
+        canvas_err = ""
+
     if major == "image" and not prefer_external:
         prev = load_preview_image(store, atom_id, thumb=thumb_first)
         if prev.ok and prev.png_bytes:
@@ -273,21 +294,19 @@ def open_preview(
                 parent=parent,
             ):
                 return True, f"podgląd Tk {prev.width}×{prev.height}{stream_note}"
-        # fallback system
         try:
             p = open_with_system(store, atom_id, keep_temp=False)
             return True, f"system: {p}{stream_note}"
         except MediaError as e:
-            return False, prev.error or str(e)
+            return False, prev.error or canvas_err or str(e)
 
     if major in ("audio", "video") or prefer_external:
         ok, msg = try_external_player(store, atom_id, keep_temp=False)
         if ok:
             return True, msg + stream_note
         ok2, msg2, _ = open_media(store, atom_id, prefer_player=False)
-        return ok2, (msg2 if ok2 else f"{msg}; {msg2}") + stream_note
+        return ok2, (msg2 if ok2 else f"{msg}; {msg2}; {canvas_err}") + stream_note
 
-    # inne typy (pdf, bin)
     ok, msg, _ = open_media(store, atom_id)
     return ok, msg + stream_note
 
