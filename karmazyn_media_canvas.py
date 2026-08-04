@@ -91,6 +91,47 @@ def decode_gif_frames(data: bytes, *, max_edge: int = MAX_EDGE) -> Tuple[List[by
     return pngs, delays, size
 
 
+def _decode_video_via_imageio_path(
+    path: str,
+    *,
+    max_edge: int,
+    max_frames: int,
+    fps: float,
+) -> Tuple[List[bytes], List[float], Tuple[int, int]]:
+    """MP4/WebM z dysku — imageio+ffmpeg (ścieżka pliku, nie surowe bytes)."""
+    import imageio.v3 as iio  # type: ignore
+
+    meta: dict = {}
+    try:
+        meta = dict(iio.immeta(path) or {})
+    except Exception:
+        pass
+    src_fps = float(meta.get("fps") or fps or DEFAULT_FPS)
+    if src_fps <= 0:
+        src_fps = DEFAULT_FPS
+    # target display fps ≤ DEFAULT_FPS; stride source frames
+    target = min(float(fps), src_fps)
+    stride = max(1, int(round(src_fps / target)))
+    delay = stride / src_fps
+
+    pngs: List[bytes] = []
+    delays: List[float] = []
+    size = (0, 0)
+    for i, arr in enumerate(iio.imiter(path)):
+        if i % stride != 0:
+            continue
+        if len(pngs) >= max_frames:
+            break
+        im = Image.fromarray(arr).convert("RGBA")
+        im = _resize_rgba(im, max_edge)
+        size = im.size
+        pngs.append(_frame_to_png(im))
+        delays.append(delay)
+    if not pngs:
+        raise MediaError("imageio: 0 klatek")
+    return pngs, delays, size
+
+
 def decode_video_frames(
     data: bytes,
     mime: str = "",
@@ -98,19 +139,25 @@ def decode_video_frames(
     max_edge: int = MAX_EDGE,
     max_frames: int = MAX_VIDEO_FRAMES,
     fps: float = DEFAULT_FPS,
+    path: Optional[Union[str, Path]] = None,
 ) -> Tuple[List[bytes], List[float], Tuple[int, int]]:
     """
     Wideo → klatki PNG (tanie wyświetlanie: jedna klatka / tick / atom).
 
-    Kolejność backendów:
-      1) Pillow (animowany WebP / APNG)
-      2) imageio / imageio-ffmpeg (opcjonalnie)
-      3) fallback: pierwsza klatka jako statyczny PNG jeśli to obraz
+    Kolejność:
+      1) Pillow — animowany WebP / APNG / GIF-as-bytes
+      2) imageio-ffmpeg — **plik** (path lub temp z bytes) — właściwa ścieżka MP4
+      3) fallback: statyczny PNG jeśli to obraz
     """
+    import os
+    import tempfile
+
     if not _HAS_PIL or Image is None:
         raise MediaError("Pillow wymagany do klatek wideo")
 
-    # animowany webp / apng przez PIL
+    errors: List[str] = []
+
+    # 1) animowany webp / apng przez PIL (nie MP4)
     try:
         img = Image.open(io.BytesIO(data))
         if getattr(img, "is_animated", False) and getattr(img, "n_frames", 1) > 1:
@@ -122,50 +169,71 @@ def decode_video_frames(
                 frame = _resize_rgba(img.convert("RGBA"), max_edge)
                 size = frame.size
                 pngs.append(_frame_to_png(frame))
-                delays.append(max(0.02, (img.info.get("duration") or int(1000 / fps)) / 1000.0))
+                delays.append(
+                    max(0.02, (img.info.get("duration") or int(1000 / fps)) / 1000.0)
+                )
             if pngs:
                 return pngs, delays, size
-    except Exception:
-        pass
+    except Exception as e:
+        errors.append(f"PIL:{e}")
 
-    # imageio
-    try:
-        import imageio.v3 as iio  # type: ignore
+    # 2) imageio + ffmpeg — wymaga ścieżki pliku
+    src_path: Optional[str] = None
+    tmp_path: Optional[str] = None
+    if path is not None and Path(path).is_file():
+        src_path = str(Path(path).resolve())
+    else:
+        # dopasuj rozszerzenie do mime
+        ext = ".mp4"
+        m = (mime or "").lower()
+        if "webm" in m:
+            ext = ".webm"
+        elif "quicktime" in m or "mov" in m:
+            ext = ".mov"
+        elif "matroska" in m or "mkv" in m:
+            ext = ".mkv"
+        elif "avi" in m:
+            ext = ".avi"
+        try:
+            fd, tmp_path = tempfile.mkstemp(suffix=ext, prefix="karm_vid_")
+            os.write(fd, data)
+            os.close(fd)
+            src_path = tmp_path
+        except OSError as e:
+            errors.append(f"temp:{e}")
+            src_path = None
 
-        frames = iio.imread(data, index=None)
-        # frames may be ndarray list or single
-        import numpy as np
+    if src_path:
+        try:
+            return _decode_video_via_imageio_path(
+                src_path,
+                max_edge=max_edge,
+                max_frames=max_frames,
+                fps=fps,
+            )
+        except Exception as e:
+            errors.append(f"imageio:{e}")
+        finally:
+            if tmp_path:
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
 
-        if not isinstance(frames, np.ndarray):
-            raise MediaError("imageio: nieoczekiwany format")
-        # (T,H,W,C) or (H,W,C)
-        if frames.ndim == 3:
-            frames = frames[None, ...]
-        pngs, delays = [], []
-        size = (0, 0)
-        step = max(1, frames.shape[0] // max_frames) if frames.shape[0] > max_frames else 1
-        for i in range(0, frames.shape[0], step):
-            if len(pngs) >= max_frames:
-                break
-            arr = frames[i]
-            im = Image.fromarray(arr).convert("RGBA")
-            im = _resize_rgba(im, max_edge)
-            size = im.size
-            pngs.append(_frame_to_png(im))
-            delays.append(1.0 / max(fps, 1.0))
-        if pngs:
-            return pngs, delays, size
-    except Exception:
-        pass
-
-    # ostatnia deska: spróbuj jako obraz statyczny
+    # 3) statyczny obraz
     try:
         return decode_static_png(data, max_edge=max_edge)
     except Exception as e:
-        raise MediaError(
-            f"Nie zdekodowano wideo ({mime or '?'}). "
-            f"Zainstaluj pillow / imageio-ffmpeg lub użyj GIF/WebP. ({e})"
-        ) from e
+        errors.append(f"png:{e}")
+
+    hint = (
+        "pip install imageio imageio-ffmpeg  "
+        "(Pillow nie czyta H.264/MP4 — potrzebny ffmpeg przez imageio)"
+    )
+    raise MediaError(
+        f"Nie zdekodowano wideo ({mime or path or '?'}). {hint}. "
+        f"Szczegóły: {'; '.join(errors)[:200]}"
+    )
 
 
 @dataclass
@@ -232,25 +300,30 @@ class ThermalFramePump:
         mime: str = "",
         *,
         max_edge: int = MAX_EDGE,
+        max_frames: int = MAX_VIDEO_FRAMES,
+        fps: float = DEFAULT_FPS,
         T: float = T_HOT,
+        path: Optional[Union[str, Path]] = None,
     ) -> str:
-        """Dekoduj payload → klatki. Zwraca kind."""
+        """Dekoduj payload → klatki. Zwraca kind. ``path`` pomaga przy MP4 (ffmpeg)."""
         mime = (mime or "").lower()
         major = mime.split("/", 1)[0] if mime else ""
         kind = "static"
+        vkw = dict(max_edge=max_edge, max_frames=max_frames, fps=fps, path=path)
         if "gif" in mime:
             pngs, delays, size = decode_gif_frames(data, max_edge=max_edge)
             kind = "gif"
-        elif major == "video" or "webm" in mime or "mp4" in mime:
-            pngs, delays, size = decode_video_frames(data, mime, max_edge=max_edge)
+        elif major == "video" or "webm" in mime or "mp4" in mime or (
+            path and str(path).lower().endswith((".mp4", ".webm", ".mov", ".mkv", ".avi"))
+        ):
+            pngs, delays, size = decode_video_frames(data, mime, **vkw)
             kind = "video" if len(pngs) > 1 else "static"
         elif major == "image":
-            # animated webp?
             try:
                 if _HAS_PIL and Image is not None:
                     im = Image.open(io.BytesIO(data))
                     if getattr(im, "is_animated", False) and getattr(im, "n_frames", 1) > 1:
-                        pngs, delays, size = decode_video_frames(data, mime, max_edge=max_edge)
+                        pngs, delays, size = decode_video_frames(data, mime, **vkw)
                         kind = "gif"
                     else:
                         pngs, delays, size = decode_static_png(data, max_edge=max_edge)
@@ -259,18 +332,31 @@ class ThermalFramePump:
             except MediaError:
                 pngs, delays, size = decode_static_png(data, max_edge=max_edge)
         else:
-            # spróbuj gif/png
             try:
                 pngs, delays, size = decode_gif_frames(data, max_edge=max_edge)
                 kind = "gif"
             except Exception:
-                pngs, delays, size = decode_static_png(data, max_edge=max_edge)
+                if path:
+                    pngs, delays, size = decode_video_frames(
+                        data, mime or "video/mp4", **vkw
+                    )
+                    kind = "video" if len(pngs) > 1 else "static"
+                else:
+                    pngs, delays, size = decode_static_png(data, max_edge=max_edge)
         self.load_frames(atom_id, pngs, delays, size, kind=kind, T=T)
         return kind
 
     def load_from_store(self, store: Any, atom_id: str, **kw) -> str:
         data, mime = get_bytes(store, atom_id)
         return self.load_from_bytes(atom_id, data, mime, **kw)
+
+    def load_from_path(self, atom_id: str, path: Union[str, Path], **kw) -> str:
+        p = Path(path)
+        data = p.read_bytes()
+        import mimetypes
+
+        mime = mimetypes.guess_type(str(p))[0] or ""
+        return self.load_from_bytes(atom_id, data, mime, path=p, **kw)
 
     def note_visible(self, atom_id: str, weight: float = 1.0) -> None:
         """WIDOCZNOŚĆ = CIEPŁO (Luneta)."""
@@ -431,16 +517,16 @@ def play_file(
     from pathlib import Path as _P
     import mimetypes
 
-    p = _P(path).expanduser()
+    p = Path(path).expanduser()
     if not p.is_file():
         return False, f"brak pliku: {p}"
-    data = p.read_bytes()
     mime = mimetypes.guess_type(str(p))[0] or "application/octet-stream"
     aid = "play:" + p.name
 
     canvas = MediaAtomCanvas()
     try:
-        kind = canvas.load_bytes(aid, data, mime)
+        # path= kluczowe dla MP4 (imageio/ffmpeg nie lubi gołych bytes)
+        kind = canvas.pump.load_from_path(aid, p)
     except MediaError as e:
         return False, str(e)
     canvas.place(aid, 8, 8)

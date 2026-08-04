@@ -170,6 +170,26 @@ class TestCanvasGifAndVideoFrames(unittest.TestCase):
             rc = canvas_main(["play", str(p), "--dry-run"])
             self.assertEqual(rc, 0)
 
+    def test_mp4_via_imageio_if_present(self) -> None:
+        """test.mp4 w repo (jeśli jest) → klatki przez imageio-ffmpeg."""
+        from karmazyn_media_canvas import MediaAtomCanvas
+
+        mp4 = Path(__file__).resolve().parents[1] / "test.mp4"
+        if not mp4.is_file():
+            self.skipTest("brak test.mp4")
+        try:
+            import imageio  # noqa: F401
+            import imageio_ffmpeg  # noqa: F401
+        except ImportError:
+            self.skipTest("brak imageio-ffmpeg")
+        c = MediaAtomCanvas()
+        kind = c.pump.load_from_path("t:mp4", mp4, max_frames=12)
+        self.assertIn(kind, ("video", "static"))
+        self.assertGreaterEqual(c.pump.frame_count("t:mp4"), 1)
+        c.place("t:mp4", 0, 0)
+        c.mark_visible(["t:mp4"])
+        self.assertIsNotNone(c.pump.current_png("t:mp4"))
+
 
 if __name__ == "__main__":
     unittest.main()
