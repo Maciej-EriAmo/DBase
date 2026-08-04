@@ -1017,6 +1017,8 @@ def main(argv: Optional[list[str]] = None) -> int:
             "  extract <kafd> <atom_id> <out>   zapisz payload do pliku\n"
             "  list    <kafd> [bubble]          lista atomów media / bindingów\n"
             "  open    <kafd> <atom_id>         podgląd systemowy / player\n"
+            "  play    <plik> [--dry-run]       płótno atomów (PNG/GIF/film-klatki)\n"
+            "  demo    [--dry-run]              demo zdjęcie+GIF+film na płótnie\n"
             "  pipe    <kafd> <atom_id>         bajty na stdout (binarnie)\n",
             file=sys.stderr,
         )
@@ -1024,6 +1026,10 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     cmd = args[0].lower()
     try:
+        if cmd in ("play", "demo"):
+            from karmazyn_media_canvas import main as canvas_main
+
+            return int(canvas_main(args) or 0)
         if cmd == "extract":
             if len(args) < 4:
                 print("użycie: extract <kafd> <atom_id> <out>", file=sys.stderr)

@@ -20,6 +20,7 @@ from __future__ import annotations
 import io
 import time
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Set, Tuple, Union
 
 from karmazyn_media import MediaError, get_bytes, is_stream_atom
@@ -413,6 +414,115 @@ class MediaAtomCanvas:
         return out
 
 
+def play_file(
+    path: str | Path,
+    *,
+    parent: Any = None,
+    title: str = "",
+    dry_run: bool = False,
+) -> Tuple[bool, str]:
+    """
+    Odtwarzacz pliku: zdjęcie / GIF / wideo → atom na płótnie.
+
+      python -m karmazyn_media_canvas play foto.png
+      python -m karmazyn_media_canvas play klip.gif
+      python -m karmazyn_media_canvas play film.mp4   # klatki jeśli da się zdekodować
+    """
+    from pathlib import Path as _P
+    import mimetypes
+
+    p = _P(path).expanduser()
+    if not p.is_file():
+        return False, f"brak pliku: {p}"
+    data = p.read_bytes()
+    mime = mimetypes.guess_type(str(p))[0] or "application/octet-stream"
+    aid = "play:" + p.name
+
+    canvas = MediaAtomCanvas()
+    try:
+        kind = canvas.load_bytes(aid, data, mime)
+    except MediaError as e:
+        return False, str(e)
+    canvas.place(aid, 8, 8)
+    n = canvas.pump.frame_count(aid)
+    w, h = canvas.pump.current_size(aid)
+    info = f"{p.name} kind={kind} frames={n} size={w}x{h} mime={mime}"
+    if dry_run:
+        return True, f"dry-run OK: {info}"
+
+    # jednorazowy store dla okna (load już w pump)
+    class _FakeStore:
+        def get_atom(self, _id):
+            return None
+
+        def atoms(self):
+            return []
+
+    # open window with preloaded canvas — reuse open with custom path
+    try:
+        import base64
+        import tkinter as tk
+        from tkinter import ttk
+    except Exception as e:
+        return False, f"brak tkinter: {e}"
+
+    try:
+        top = tk.Toplevel(parent) if parent is not None else tk.Tk()
+    except Exception as e:
+        return False, f"nie otwarto okna: {e}"
+
+    top.title(title or f"Play · {p.name} · {kind} · {n} klatek")
+    cw = min(max(w + 32, 320), 1100)
+    ch = min(max(h + 64, 240), 800)
+    cv = tk.Canvas(top, width=cw, height=ch, bg="#121218")
+    cv.pack(fill="both", expand=True)
+    status = ttk.Label(top, text=info)
+    status.pack(fill="x")
+    ttk.Button(top, text="Zamknij", command=top.destroy).pack(pady=4)
+
+    photos: Dict[str, Any] = {}
+    state: Dict[str, Any] = {"item": None}
+
+    def _ph(png: bytes):
+        return tk.PhotoImage(data=base64.b64encode(png).decode("ascii"))
+
+    def paint_png(png: bytes) -> None:
+        ph = _ph(png)
+        photos["cur"] = ph
+        if state["item"] is None:
+            state["item"] = cv.create_image(16, 16, anchor="nw", image=ph)
+        else:
+            cv.itemconfigure(state["item"], image=ph)
+
+    def paint_full():
+        canvas.mark_visible([aid])
+        png = canvas.pump.current_png(aid)
+        if png:
+            paint_png(png)
+
+    def tick():
+        if not top.winfo_exists():
+            return
+        canvas.mark_visible([aid])
+        dirty = canvas.tick()
+        if dirty or state["item"] is None:
+            png = canvas.pump.current_png(aid)
+            if png:
+                paint_png(png)
+        fr = canvas.pump._clips[aid].idx if canvas.pump.has(aid) else 0
+        hot = canvas.pump.temperature(aid) >= FREEZE_T
+        status.configure(
+            text=f"{info}  frame={fr}/{n}  hot={hot}  dirty={len(dirty)}"
+        )
+        top.after(33, tick)
+
+    paint_full()
+    top.after(33, tick)
+    if parent is None:
+        top.mainloop()
+    return True, f"play: {info}"
+
+
 def open_atom_canvas_window(
     store: Any,
     atom_ids: Union[str, Sequence[str]],
@@ -512,3 +622,177 @@ def open_atom_canvas_window(
     if parent is None:
         top.mainloop()
     return True
+
+
+def main(argv: Optional[list] = None) -> int:
+    """
+    CLI odtwarzacza / demo:
+
+      python -m karmazyn_media_canvas play foto.png
+      python -m karmazyn_media_canvas play anim.gif
+      python -m karmazyn_media_canvas play film.mp4
+      python -m karmazyn_media_canvas play foto.png --dry-run
+      python -m karmazyn_media_canvas demo          # wbudowany GIF + film z klatek
+    """
+    import sys
+    from pathlib import Path as _P
+
+    args = list(sys.argv[1:] if argv is None else argv)
+    if not args or args[0] in ("-h", "--help", "help"):
+        print(
+            "karmazyn_media_canvas — płótno atomów (PNG/GIF/wideo-klatki)\n"
+            "  play <plik> [--dry-run]   odtwórz plik na płótnie\n"
+            "  demo [--dry-run]         wygeneruj GIF + sekwencję i pokaż\n",
+            file=sys.stderr,
+        )
+        return 0
+
+    dry = "--dry-run" in args
+    args = [a for a in args if a != "--dry-run"]
+    cmd = args[0].lower()
+
+    if cmd == "play":
+        if len(args) < 2:
+            print("użycie: play <plik> [--dry-run]", file=sys.stderr)
+            return 2
+        ok, msg = play_file(args[1], dry_run=dry)
+        print(msg)
+        return 0 if ok else 1
+
+    if cmd == "demo":
+        if not _HAS_PIL or Image is None:
+            print("demo wymaga Pillow", file=sys.stderr)
+            return 1
+        # wbudowany GIF + „film” z klatek
+        import tempfile
+
+        tmp = _P(tempfile.mkdtemp(prefix="karm_canvas_"))
+        # GIF
+        frames = []
+        for i in range(6):
+            frames.append(
+                Image.new(
+                    "RGBA",
+                    (120, 80),
+                    ((i * 40) % 256, 80, 200 - i * 20, 255),
+                )
+            )
+        gif_path = tmp / "demo.gif"
+        frames[0].save(
+            gif_path,
+            format="GIF",
+            save_all=True,
+            append_images=frames[1:],
+            duration=80,
+            loop=0,
+        )
+        # statyczne zdjęcie
+        photo = tmp / "demo.png"
+        Image.new("RGB", (160, 100), (30, 144, 255)).save(photo, format="PNG")
+
+        if dry:
+            ok1, m1 = play_file(photo, dry_run=True)
+            ok2, m2 = play_file(gif_path, dry_run=True)
+            print(m1)
+            print(m2)
+            print(f"demo files: {photo} ; {gif_path}")
+            return 0 if (ok1 and ok2) else 1
+
+        # jedno okno z dwoma atomami
+        from karmazyn_kernel import Store
+        import karmazyn_media as km
+
+        store = Store(thermal=True)
+        r1 = km.attach_file(store, "Demo", "zdjecie", photo)
+        r2 = km.attach_file(store, "Demo", "gif", gif_path)
+        # sekwencja filmowa w pump (bez pliku mp4)
+        canvas = MediaAtomCanvas()
+        canvas.load_store_atom(store, r1.atom_id)
+        canvas.load_store_atom(store, r2.atom_id)
+        film_pngs = []
+        for i in range(10):
+            im = Image.new("RGB", (100, 60), (i * 20, 50, 255 - i * 15))
+            b = io.BytesIO()
+            im.save(b, format="PNG")
+            film_pngs.append(b.getvalue())
+        canvas.pump.load_frames(
+            "demo:film",
+            film_pngs,
+            delays=[0.08] * 10,
+            size=(100, 60),
+            kind="video",
+        )
+        canvas.place(r1.atom_id, 8, 8)
+        canvas.place(r2.atom_id, 180, 8)
+        canvas.place("demo:film", 8, 120)
+
+        # ręczne okno (open_atom_canvas_window wymaga store get_bytes dla film id)
+        # podłącz film przez mini-atom w store
+        from karmazyn_media import MEDIA_S
+
+        fa = store.atom_new(S=MEDIA_S, E="film@Demo", value=None, T=80.0)
+        # zapisz pierwszą klatkę jako data — load_store_atom zdekoduje static;
+        # zamiast tego: open window z już załadowanym canvasem
+        try:
+            import base64
+            import tkinter as tk
+            from tkinter import ttk
+        except Exception as e:
+            print(f"brak tk: {e}", file=sys.stderr)
+            return 1
+        top = tk.Tk()
+        top.title("Demo płótno · zdjęcie + GIF + film-klatki")
+        cv = tk.Canvas(top, width=420, height=220, bg="#0e0e14")
+        cv.pack(fill="both", expand=True)
+        st = ttk.Label(top, text="")
+        st.pack(fill="x")
+        photos: Dict[str, Any] = {}
+        items: Dict[str, int] = {}
+
+        def ph(png: bytes):
+            return tk.PhotoImage(data=base64.b64encode(png).decode("ascii"))
+
+        def full():
+            canvas.mark_visible()
+            for sp, png, _sz in canvas.blit_list():
+                pimg = ph(png)
+                photos[sp.atom_id] = pimg
+                if sp.atom_id in items:
+                    cv.itemconfigure(items[sp.atom_id], image=pimg)
+                    cv.coords(items[sp.atom_id], sp.x, sp.y)
+                else:
+                    items[sp.atom_id] = cv.create_image(
+                        sp.x, sp.y, anchor="nw", image=pimg
+                    )
+
+        def tick():
+            if not top.winfo_exists():
+                return
+            canvas.mark_visible()
+            dirty = canvas.tick()
+            for sp, png, _sz in canvas.dirty_blits(dirty):
+                pimg = ph(png)
+                photos[sp.atom_id] = pimg
+                if sp.atom_id in items:
+                    cv.itemconfigure(items[sp.atom_id], image=pimg)
+            st.configure(
+                text=f"dirty={len(dirty)}  "
+                f"gif_fr={canvas.pump._clips.get(r2.atom_id) and canvas.pump._clips[r2.atom_id].idx}  "
+                f"film_fr={canvas.pump._clips.get('demo:film') and canvas.pump._clips['demo:film'].idx}"
+            )
+            top.after(33, tick)
+
+        full()
+        top.after(33, tick)
+        print(f"demo: photo={r1.atom_id} gif={r2.atom_id} film=demo:film  dir={tmp}")
+        top.mainloop()
+        return 0
+
+    print(f"nieznana komenda: {cmd}", file=sys.stderr)
+    return 2
+
+
+if __name__ == "__main__":
+    import sys
+
+    raise SystemExit(main())

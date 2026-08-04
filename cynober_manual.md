@@ -234,6 +234,20 @@ API: `attach_bytes`, `attach_file`, `get_bytes`, `export_to_path`, `list_binding
 - `open_preview` domyślnie otwiera płótno; audio → zewnętrzny player.  
 - API: `MediaAtomCanvas`, `open_atom_canvas_window`, `open_preview`.
 
+**Odtwarzacz / demo (sprawdzenie zdjęcia i „filmu”):**
+
+```bat
+python -m karmazyn_media_canvas demo
+python -m karmazyn_media_canvas play sciezka\do\foto.png
+python -m karmazyn_media_canvas play anim.gif
+python -m karmazyn_media_canvas play film.mp4
+python -m karmazyn_media play foto.png
+python -m karmazyn_media_canvas play foto.png --dry-run
+python -m unittest tests.test_media_canvas_player -v
+```
+
+`demo` = okno ze **zdjęciem + GIF + sekwencją klatek** (tanie wideo bez mpv).
+
 **Replikacja mediów (Faza 6):** manifest EKSPORT zawiera `media_index` (id/mime/size/cas, bez blobów). `pull_world` woła `sync_missing_media` (KAFS `get_media` braków).
 
 ```python
