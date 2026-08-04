@@ -227,6 +227,15 @@ export_to_path(store2, ref.atom_id, "out.png")
 
 API: `attach_bytes`, `attach_file`, `get_bytes`, `export_to_path`, `list_bindings`, `sync_bubble_record`, `restore_bubbles`.
 
+**Duże media lokalnie (Faza 4):** powyżej `stream_threshold` (domyślnie 8 MiB) lub `force_stream=True` → head `S=media` (`_stream`, `v.segments`) + atomy `S=media_seg`. Odczyt: `get_bytes` (reassemble) / `iter_bytes` / `pipe_to` po segmentach. Head **nie** trzyma monolit `data`.
+
+```python
+ref = attach_bytes(store, "Film", "klip", big, mime="video/mp4",
+                   force_stream=True, segment_size=1024*1024)
+assert is_stream_atom(store.get_atom(ref.atom_id))
+data, mime = get_bytes(store, ref.atom_id)
+```
+
 **Podgląd lokalny (Faza 2):** `pipe_to`, `materialize_temp`, `open_with_system`, `try_external_player`, `open_media` — bez HTTP.
 
 ```python

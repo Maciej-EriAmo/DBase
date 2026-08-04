@@ -166,6 +166,113 @@ def os_urandom(n: int) -> bytes:
     return os.urandom(n)
 
 
+class TestMediaStream(unittest.TestCase):
+    """Faza 4: A_STREAM head + media_seg."""
+
+    def setUp(self) -> None:
+        self.store = kernel.Store(thermal=True)
+
+    def test_force_stream_reassemble(self) -> None:
+        raw = b"STREAM-" + os_urandom(5000)
+        ref = media.attach_bytes(
+            self.store,
+            "Film",
+            "klip",
+            raw,
+            mime="video/mp4",
+            force_stream=True,
+            segment_size=1024,
+            as_root=True,
+        )
+        atom = self.store.get_atom(ref.atom_id)
+        self.assertTrue(media.is_stream_atom(atom))
+        self.assertEqual(atom.metadata.get("data"), b"")
+        v = atom.metadata["v"]
+        self.assertEqual(v["kind"], "media_stream")
+        self.assertGreaterEqual(v["n_segments"], 5)
+        self.assertEqual(len(v["segments"]), v["n_segments"])
+
+        data, mime = media.get_bytes(self.store, ref.atom_id)
+        self.assertEqual(data, raw)
+        self.assertEqual(mime, "video/mp4")
+        self.assertEqual(hashlib.sha256(data).hexdigest(), v["sha256"])
+
+        # segmenty istnieją i nie są monolit head
+        for sid in v["segments"]:
+            seg = self.store.get_atom(sid)
+            self.assertIsNotNone(seg)
+            self.assertEqual(seg.S, media.MEDIA_SEG_S)
+            self.assertTrue(isinstance(seg.metadata.get("data"), (bytes, bytearray)))
+
+    def test_stream_kafd_roundtrip(self) -> None:
+        raw = b"\x00KAFD-STREAM\x00" + os_urandom(3000)
+        ref = media.attach_bytes(
+            self.store,
+            "W",
+            "blob",
+            raw,
+            mime="application/octet-stream",
+            force_stream=True,
+            segment_size=800,
+            as_root=True,
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            kafd = Path(tmp) / "s.kafd"
+            n = media.save_store(self.store, kafd)
+            self.assertGreaterEqual(n, 2)  # head + segs + bubble
+
+            store2 = kernel.Store(thermal=True)
+            media.load_store(store2, kafd, restore=True)
+            data, _ = media.get_bytes(store2, ref.atom_id)
+            self.assertEqual(data, raw)
+            listed = media.list_bindings(store2, "W")
+            self.assertTrue(any(b.atom_id == ref.atom_id for b in listed))
+            self.assertEqual(listed[0].size, len(raw))
+
+    def test_stream_threshold_auto(self) -> None:
+        raw = os_urandom(200)
+        ref = media.attach_bytes(
+            self.store,
+            "T",
+            "x",
+            raw,
+            stream_threshold=100,
+            segment_size=40,
+            as_root=True,
+        )
+        self.assertTrue(media.is_stream_atom(self.store.get_atom(ref.atom_id)))
+        self.assertEqual(media.get_bytes(self.store, ref.atom_id)[0], raw)
+
+    def test_attach_file_stream(self) -> None:
+        raw = os_urandom(2500)
+        with tempfile.TemporaryDirectory() as tmp:
+            p = Path(tmp) / "big.bin"
+            p.write_bytes(raw)
+            ref = media.attach_file(
+                self.store,
+                "F",
+                "plik",
+                p,
+                force_stream=True,
+                segment_size=512,
+                as_root=True,
+            )
+            data, _ = media.get_bytes(self.store, ref.atom_id)
+            self.assertEqual(data, raw)
+            # pipe bez reassemble w jednej alokacji testujemy sumą
+            import io
+
+            buf = io.BytesIO()
+            n = media.pipe_to(self.store, ref.atom_id, buf)
+            self.assertEqual(n, len(raw))
+            self.assertEqual(buf.getvalue(), raw)
+
+    def test_kernel_exports_stream(self) -> None:
+        self.assertTrue(hasattr(kernel, "iter_bytes"))
+        self.assertTrue(hasattr(kernel, "is_stream_atom"))
+        self.assertEqual(kernel.MEDIA_SEG_S, "media_seg")
+
+
 class TestSoulBlobLimit(unittest.TestCase):
     def setUp(self) -> None:
         self.store = kernel.Store(thermal=True)

@@ -1,6 +1,6 @@
 # Plan wdrożenia docelowego: multimedia w Cynober DB (+ lore)
 
-**Status:** plan · **Faza 0+2+3 DONE** (local media, preview, KAFS over RPC) · **następna: Faza 4 segmenty**  
+**Status:** plan · **Faza 0+2+3+4(local) DONE** · **następna: Faza 4b stream over KAFS / Faza 1 lore / Faza 6 replicate**  
 
 
 **Cel:** plik → atom w grafie → KAFD/KAFS → indeks (bąble/bindings) → z powrotem do klienta, **bez HTTP/REST**  
@@ -205,8 +205,11 @@ HSL: capability `media:stream` / `media:put` (obok `karminql:query`).
 
 **Kryteria akceptacji:**
 
-- [ ] Plik 50 MiB put/get bez przekroczenia FRAME_MAX
-- [ ] Restart serwera: segmenty na dysku (`.kafd`/shard/proca) spójne
+- [x] Lokalnie: head + `media_seg`, reassemble `get_bytes` / `iter_bytes` (`tests/test_media_local.py::TestMediaStream`)
+- [x] `force_stream` / `stream_threshold` + KAFD roundtrip (segmenty w `DOC_KINDS`)
+- [x] `pipe_to` po segmentach (bez monolit w head)
+- [ ] Plik 50 MiB put/get **sieć** bez przekroczenia FRAME_MAX (Faza 4b + KAFS)
+- [ ] Restart serwera: segmenty na dysku spójne (po 4b)
 - [ ] `ROZWIJ` nie ładuje wszystkich mediów świata naraz
 
 ---
@@ -325,7 +328,8 @@ Backward compatible: klient bez `kafs-stream` działa jak dziś (tylko graf + fu
 4. **P1** podgląd lokalny (Faza 2)  
 5. **P2** caps + frame_kind + MEDIA PUT/GET (Faza 3) — **DONE**  
 6. **P2** test harness sieciowy media — **DONE**  
-7. **P3** A_STREAM segments (Faza 4)  
+7. **P3** A_STREAM segments local (Faza 4) — **DONE**  
+7b. **P3** A_STREAM over KAFS MEDIA PUT/GET (Faza 4b)  
 8. **P3** lore `--rpc` stream (Faza 5)  
 9. **P3** replicate media index (Faza 6)  
 10. **P4** AI tools describe/list (Faza 7)

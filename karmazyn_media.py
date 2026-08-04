@@ -1,17 +1,18 @@
 """
-karmazyn_media.py — lokalne API mediów (Faza 0 + Faza 2 podgląd)
+karmazyn_media.py — lokalne API mediów (Faza 0 + 2 + 4 stream)
 ================================================================
 Plik / bajty → atom w Store (+ opcjonalny bind w bąblu) → KAFD → z powrotem.
 
 Zasady (PLAN_MULTIMEDIA_WDROZENIE.md):
-  • media = atomy z metadata["data"] + metadata["mime"]
-  • S = "media" (persystencja przez karmazyn_store.save_documents)
-  • sieć / KAFS = Faza 3+ (tu tylko lokalnie)
+  • media = atomy z metadata["data"] + metadata["mime"]  (A_RAW)
+  • duże: head S=media (A_STREAM) + segmenty S=media_seg
+  • S = "media" / "media_seg" (persystencja save_documents)
+  • sieć / KAFS = Faza 3+ (tu lokalnie + reassemble)
   • zero HTTP, zero base64 w KarminQL
 
 Publiczna powierzchnia:
-  attach_bytes, attach_file, get_bytes, export_to_path
-  list_bindings, sync_bubble_record, restore_bubbles
+  attach_bytes, attach_file, get_bytes, iter_bytes, export_to_path
+  is_stream_atom, list_bindings, sync_bubble_record, restore_bubbles
   save_store / load_store
   pipe_to, materialize_temp, open_with_system, try_external_player  (Faza 2)
 
@@ -29,14 +30,18 @@ import sys
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, BinaryIO, Optional, Union
+from typing import Any, BinaryIO, Iterator, Optional, Union
 
-# Kind zapisany w KAFD (karmazyn_store.DOC_KINDS musi zawierać "media")
+# Kind zapisany w KAFD (karmazyn_store.DOC_KINDS)
 MEDIA_S = "media"
+MEDIA_SEG_S = "media_seg"
 BUBBLE_S = "__bubble__"
 
 # Limit ostrzeżenia (duże pliki OK lokalnie; sieć to Faza 3)
 DEFAULT_WARN_BYTES = 16 * 1024 * 1024  # 16 MiB
+# Faza 4: powyżej progu → head A_STREAM + segmenty (nie jeden monolit w head)
+DEFAULT_STREAM_THRESHOLD = 8 * 1024 * 1024  # 8 MiB
+DEFAULT_SEGMENT_SIZE = 1 * 1024 * 1024  # 1 MiB
 
 
 class MediaError(RuntimeError):
@@ -200,6 +205,28 @@ def _iter_atoms_safe(store: Any):
     return []
 
 
+def is_stream_atom(atom: Any) -> bool:
+    """True gdy head A_STREAM (segmenty w metadata / v)."""
+    if atom is None:
+        return False
+    if atom.metadata.get("_stream"):
+        return True
+    v = atom.metadata.get("v")
+    if isinstance(v, dict) and v.get("kind") in ("media_stream", "media_stream_head"):
+        return True
+    if isinstance(v, dict) and v.get("segments"):
+        return True
+    return False
+
+
+def _segment_ids(atom: Any) -> list[str]:
+    v = atom.metadata.get("v")
+    if not isinstance(v, dict):
+        return []
+    segs = v.get("segments") or []
+    return [str(s) for s in segs if s]
+
+
 def attach_bytes(
     store: Any,
     bubble_or_label: Any,
@@ -211,12 +238,15 @@ def attach_bytes(
     as_root: bool = True,
     sync_bubble: bool = True,
     warn_over: int = DEFAULT_WARN_BYTES,
+    stream_threshold: int = DEFAULT_STREAM_THRESHOLD,
+    segment_size: int = DEFAULT_SEGMENT_SIZE,
+    force_stream: bool = False,
 ) -> MediaRef:
     """
     Utwórz atom mediów i podepnij pod bąbel.
 
-    Returns:
-        MediaRef z atom_id i metadanymi.
+    Faza 4: gdy ``len(data) > stream_threshold`` lub ``force_stream``,
+    head bez pełnego ``data`` + atomy ``media_seg``.
     """
     raw = _as_bytes(data)
     if not raw:
@@ -225,6 +255,23 @@ def attach_bytes(
     if not binding:
         raise MediaError("Wymagana nazwa bindingu (np. 'portret').")
     mime = (mime or "application/octet-stream").strip() or "application/octet-stream"
+
+    use_stream = bool(force_stream) or (
+        stream_threshold >= 0 and len(raw) > int(stream_threshold)
+    )
+    if use_stream:
+        return _attach_stream_bytes(
+            store,
+            bubble_or_label,
+            binding,
+            raw,
+            mime=mime,
+            T=T,
+            as_root=as_root,
+            sync_bubble=sync_bubble,
+            segment_size=segment_size,
+            warn_over=warn_over,
+        )
 
     bubble = ensure_bubble(store, bubble_or_label, as_root=as_root)
     label = _bubble_label(bubble)
@@ -248,6 +295,7 @@ def attach_bytes(
         "bubble": label,
         "size": len(raw),
         "mime": mime,
+        "atype": "A_RAW",
     }
 
     # bind
@@ -260,12 +308,9 @@ def attach_bytes(
         sync_bubble_record(store, bubble)
 
     if warn_over and len(raw) > warn_over:
-        # nie rzucamy — lokalnie dozwolone; log przez stderr opcjonalnie
-        import sys
-
         print(
             f"[karmazyn_media] ostrzeżenie: atom {atom.id} ma {len(raw)} B "
-            f"(>{warn_over}); sieć KAFS = Faza 3+",
+            f"(>{warn_over}); rozważ force_stream / stream_threshold",
             file=sys.stderr,
         )
 
@@ -279,6 +324,106 @@ def attach_bytes(
     )
 
 
+def _attach_stream_bytes(
+    store: Any,
+    bubble_or_label: Any,
+    binding: str,
+    raw: bytes,
+    *,
+    mime: str,
+    T: float,
+    as_root: bool,
+    sync_bubble: bool,
+    segment_size: int,
+    warn_over: int,
+) -> MediaRef:
+    """Head A_STREAM + N× media_seg (chunki). Head nie trzyma pełnego payloadu."""
+    if segment_size <= 0:
+        raise MediaError("segment_size musi być > 0")
+    bubble = ensure_bubble(store, bubble_or_label, as_root=as_root)
+    label = _bubble_label(bubble)
+    if not callable(getattr(store, "atom_new", None)):
+        raise MediaError("Store nie udostępnia atom_new.")
+
+    total = len(raw)
+    cas_full = hashlib.sha256(raw).hexdigest()
+    cas12 = hashlib.sha256(raw).digest()[:12].hex()
+
+    head = store.atom_new(
+        S=MEDIA_S,
+        E=f"{binding}@{label}"[:120],
+        value=None,
+        T=float(T),
+    )
+    head_id = str(head.id)
+    seg_ids: list[str] = []
+    offset = 0
+    idx = 0
+    while offset < total:
+        chunk = raw[offset : offset + segment_size]
+        seg = store.atom_new(
+            S=MEDIA_SEG_S,
+            E=f"seg{idx}:{binding}@{label}"[:120],
+            value=None,
+            T=max(10.0, float(T) - 5.0),
+        )
+        seg.metadata["data"] = chunk
+        seg.metadata["mime"] = "application/octet-stream"
+        seg.metadata["_cas"] = _cas12(chunk)
+        seg.metadata["v"] = {
+            "kind": "media_segment",
+            "parent": head_id,
+            "index": idx,
+            "size": len(chunk),
+            "offset": offset,
+        }
+        seg_ids.append(str(seg.id))
+        offset += len(chunk)
+        idx += 1
+
+    # head: bez monolit data
+    head.metadata["data"] = b""
+    head.metadata["mime"] = mime
+    head.metadata["_cas"] = cas12
+    head.metadata["_stream"] = True
+    head.metadata["v"] = {
+        "kind": "media_stream",
+        "atype": "A_STREAM",
+        "binding": binding,
+        "bubble": label,
+        "size": total,
+        "mime": mime,
+        "segment_size": int(segment_size),
+        "segments": seg_ids,
+        "n_segments": len(seg_ids),
+        "sha256": cas_full,
+    }
+
+    if callable(getattr(bubble, "bind", None)):
+        bubble.bind(binding, head)
+    else:
+        bubble.bindings[binding] = head.id
+
+    if sync_bubble:
+        sync_bubble_record(store, bubble)
+
+    if warn_over and total > warn_over:
+        print(
+            f"[karmazyn_media] stream {head_id}: {total} B w {len(seg_ids)} seg "
+            f"(chunk≈{segment_size})",
+            file=sys.stderr,
+        )
+
+    return MediaRef(
+        atom_id=head_id,
+        binding=binding,
+        mime=mime,
+        size=total,
+        bubble_label=label,
+        cas12=cas12,
+    )
+
+
 def attach_file(
     store: Any,
     bubble_or_label: Any,
@@ -289,19 +434,40 @@ def attach_file(
     T: Optional[float] = None,
     as_root: bool = True,
     sync_bubble: bool = True,
+    stream_threshold: int = DEFAULT_STREAM_THRESHOLD,
+    segment_size: int = DEFAULT_SEGMENT_SIZE,
+    force_stream: bool = False,
 ) -> MediaRef:
-    """Wczytaj plik z dysku i attach_bytes."""
+    """Wczytaj plik z dysku; duże pliki → stream z dysku (Faza 4)."""
     p = Path(path).expanduser()
     if not p.is_file():
         raise MediaError(f"Brak pliku: {p}")
-    data = p.read_bytes()
     use_mime = mime or _guess_mime(p)
-    # temperatura: mniejsze pliki „cieplejsze” (jak KAFDAtom.from_file)
+    size = p.stat().st_size
     if T is None:
         import math
 
-        kb = max(1, len(data) / 1024)
+        kb = max(1, size / 1024)
         T = max(20.0, 65.0 - math.log10(kb) * 10)
+
+    use_stream = bool(force_stream) or (
+        stream_threshold >= 0 and size > int(stream_threshold)
+    )
+    if use_stream:
+        return _attach_stream_file(
+            store,
+            bubble_or_label,
+            binding,
+            p,
+            mime=use_mime,
+            T=float(T),
+            as_root=as_root,
+            sync_bubble=sync_bubble,
+            segment_size=segment_size,
+            size=size,
+        )
+
+    data = p.read_bytes()
     return attach_bytes(
         store,
         bubble_or_label,
@@ -311,24 +477,171 @@ def attach_file(
         T=float(T),
         as_root=as_root,
         sync_bubble=sync_bubble,
+        stream_threshold=stream_threshold,
+        segment_size=segment_size,
+        force_stream=False,
     )
 
 
-def get_bytes(store: Any, atom_id: str) -> tuple[bytes, str]:
-    """Zwróć (data, mime) atomu mediów (lub dowolnego z metadata data)."""
+def _attach_stream_file(
+    store: Any,
+    bubble_or_label: Any,
+    binding: str,
+    path: Path,
+    *,
+    mime: str,
+    T: float,
+    as_root: bool,
+    sync_bubble: bool,
+    segment_size: int,
+    size: int,
+) -> MediaRef:
+    """Stream z pliku — nie ładuje całości do RAM naraz (hash przy zapisie)."""
+    if segment_size <= 0:
+        raise MediaError("segment_size musi być > 0")
+    binding = (binding or "").strip()
+    if not binding:
+        raise MediaError("Wymagana nazwa bindingu (np. 'portret').")
+    bubble = ensure_bubble(store, bubble_or_label, as_root=as_root)
+    label = _bubble_label(bubble)
+    if not callable(getattr(store, "atom_new", None)):
+        raise MediaError("Store nie udostępnia atom_new.")
+
+    head = store.atom_new(
+        S=MEDIA_S,
+        E=f"{binding}@{label}"[:120],
+        value=None,
+        T=float(T),
+    )
+    head_id = str(head.id)
+    seg_ids: list[str] = []
+    h = hashlib.sha256()
+    idx = 0
+    offset = 0
+    with open(path, "rb") as f:
+        while True:
+            chunk = f.read(segment_size)
+            if not chunk:
+                break
+            h.update(chunk)
+            seg = store.atom_new(
+                S=MEDIA_SEG_S,
+                E=f"seg{idx}:{binding}@{label}"[:120],
+                value=None,
+                T=max(10.0, float(T) - 5.0),
+            )
+            seg.metadata["data"] = chunk
+            seg.metadata["mime"] = "application/octet-stream"
+            seg.metadata["_cas"] = _cas12(chunk)
+            seg.metadata["v"] = {
+                "kind": "media_segment",
+                "parent": head_id,
+                "index": idx,
+                "size": len(chunk),
+                "offset": offset,
+            }
+            seg_ids.append(str(seg.id))
+            offset += len(chunk)
+            idx += 1
+
+    if offset == 0:
+        raise MediaError("Pusty plik — odmowa attach stream.")
+    if size and offset != size:
+        # rare race: file changed mid-read
+        size = offset
+
+    cas_full = h.hexdigest()
+    cas12 = h.digest()[:12].hex()
+
+    head.metadata["data"] = b""
+    head.metadata["mime"] = mime
+    head.metadata["_cas"] = cas12
+    head.metadata["_stream"] = True
+    head.metadata["v"] = {
+        "kind": "media_stream",
+        "atype": "A_STREAM",
+        "binding": binding,
+        "bubble": label,
+        "size": offset,
+        "mime": mime,
+        "segment_size": int(segment_size),
+        "segments": seg_ids,
+        "n_segments": len(seg_ids),
+        "sha256": cas_full,
+    }
+
+    if callable(getattr(bubble, "bind", None)):
+        bubble.bind(binding, head)
+    else:
+        bubble.bindings[binding] = head.id
+    if sync_bubble:
+        sync_bubble_record(store, bubble)
+
+    return MediaRef(
+        atom_id=head_id,
+        binding=binding,
+        mime=mime,
+        size=offset,
+        bubble_label=label,
+        cas12=cas12,
+    )
+
+
+def iter_bytes(store: Any, atom_id: str, *, chunk_size: int = 0) -> Iterator[bytes]:
+    """Yield payload w kawałkach (stream head → segmenty; A_RAW → jeden/blok)."""
     if not callable(getattr(store, "get_atom", None)):
         raise MediaError("Store nie udostępnia get_atom.")
     atom = store.get_atom(str(atom_id))
     if atom is None:
         raise MediaError(f"Brak atomu „{atom_id}”.")
+
+    if is_stream_atom(atom):
+        for sid in _segment_ids(atom):
+            seg = store.get_atom(sid)
+            if seg is None:
+                raise MediaError(f"Brak segmentu „{sid}” (stream {atom_id}).")
+            data = seg.metadata.get("data")
+            if not isinstance(data, (bytes, bytearray)):
+                raise MediaError(f"Segment „{sid}” bez data.")
+            raw = bytes(data)
+            if chunk_size and chunk_size > 0 and len(raw) > chunk_size:
+                for i in range(0, len(raw), chunk_size):
+                    yield raw[i : i + chunk_size]
+            else:
+                yield raw
+        return
+
     data = atom.metadata.get("data")
     if not isinstance(data, (bytes, bytearray)):
         raise MediaError(f"Atom „{atom_id}” nie ma payloadu metadata['data'].")
+    raw = bytes(data)
+    if not chunk_size or chunk_size <= 0:
+        yield raw
+        return
+    for i in range(0, len(raw), chunk_size):
+        yield raw[i : i + chunk_size]
+
+
+def get_bytes(store: Any, atom_id: str) -> tuple[bytes, str]:
+    """Zwróć (data, mime) — reassemble stream jeśli trzeba."""
+    if not callable(getattr(store, "get_atom", None)):
+        raise MediaError("Store nie udostępnia get_atom.")
+    atom = store.get_atom(str(atom_id))
+    if atom is None:
+        raise MediaError(f"Brak atomu „{atom_id}”.")
+
     mime = str(atom.metadata.get("mime") or "application/octet-stream")
-    # fallback z v
     v = atom.metadata.get("v")
     if mime == "application/octet-stream" and isinstance(v, dict) and v.get("mime"):
         mime = str(v["mime"])
+
+    if is_stream_atom(atom):
+        parts = list(iter_bytes(store, atom_id))
+        return b"".join(parts), mime
+
+    data = atom.metadata.get("data")
+    if not isinstance(data, (bytes, bytearray)):
+        raise MediaError(f"Atom „{atom_id}” nie ma payloadu metadata['data'].")
     return bytes(data), mime
 
 
@@ -353,10 +666,28 @@ def list_bindings(store: Any, bubble_or_label: Any) -> list[MediaRef]:
         atom = store.get_atom(aid) if callable(getattr(store, "get_atom", None)) else None
         if atom is None:
             continue
+        mime = str(atom.metadata.get("mime") or "application/octet-stream")
+        v = atom.metadata.get("v")
+        if isinstance(v, dict) and v.get("mime"):
+            mime = str(v["mime"])
+        # Faza 4: stream head bez monolit data
+        if is_stream_atom(atom):
+            size = int(v.get("size") or 0) if isinstance(v, dict) else 0
+            cas = str(atom.metadata.get("_cas") or "")
+            out.append(
+                MediaRef(
+                    atom_id=aid,
+                    binding=str(name),
+                    mime=mime,
+                    size=size,
+                    bubble_label=label,
+                    cas12=cas,
+                )
+            )
+            continue
         data = atom.metadata.get("data")
         if not isinstance(data, (bytes, bytearray)):
             continue
-        mime = str(atom.metadata.get("mime") or "application/octet-stream")
         out.append(
             MediaRef(
                 atom_id=aid,
@@ -438,18 +769,14 @@ def pipe_to(
 ) -> int:
     """
     Przelej payload atomu do obiektu z .write(bytes) (stdout, plik, socket).
+    Stream: leci segmentami (bez pełnego reassemble w RAM jeśli sink konsumuje).
     Zwraca liczbę wysłanych bajtów.
     """
-    data, _mime = get_bytes(store, atom_id)
-    if chunk_size <= 0:
-        chunk_size = len(data) or 1
     sent = 0
-    offset = 0
-    while offset < len(data):
-        chunk = data[offset : offset + chunk_size]
-        sink.write(chunk)
-        sent += len(chunk)
-        offset += chunk_size
+    # chunk_size tu: max podział przy A_RAW; segmenty stream i tak lecą po seg
+    for piece in iter_bytes(store, atom_id, chunk_size=chunk_size if chunk_size > 0 else 0):
+        sink.write(piece)
+        sent += len(piece)
     if hasattr(sink, "flush"):
         try:
             sink.flush()

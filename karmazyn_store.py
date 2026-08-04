@@ -24,7 +24,8 @@ except ImportError:
     _KAFD_OK = False
 
 # document/version — treść tekstowa; media — Faza 0 multimedia; __bubble__ — bindings
-DOC_KINDS = ("document", "version", "__bubble__", "media")
+# media = payload single / stream head; media_seg = chunk A_STREAM (Faza 4)
+DOC_KINDS = ("document", "version", "__bubble__", "media", "media_seg")
 STORE_META = "karmazyn_store_v1.3_encrypted"
 FOLDED_META_KEY = "_folded"
 FOLD_SRC_KEY = "_fold_src"

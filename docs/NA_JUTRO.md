@@ -7,11 +7,13 @@
 | 0 | `karmazyn_media` local attach / KAFD / SOUL limit |
 | 2 | pipe / open / CLI |
 | 3 | KAFS over RPC: caps, MEDIA PUT/GET/STAT, `CynoberClient.put_media/get_media` |
+| 4 | **A_STREAM lokalnie:** head + `media_seg`, `force_stream` / `stream_threshold`, `iter_bytes`, KAFD roundtrip |
 
-## Następne w bazie: Faza 4 (opcjonalnie)
+## Następne w bazie
 
-- Segmenty `A_STREAM` dla plików ≫ RAM
-- mmap reader KAFD
+- Faza 4b: MEDIA PUT/GET po KAFS ze stream head (sieć + segmenty)
+- mmap reader KAFD (opcjonalnie)
+- Faza 6: replicate media index
 
 ## Później / inny repo
 
@@ -20,4 +22,4 @@
 
 ---
 
-*Aktualizacja po Fazie 3.*
+*Aktualizacja po Fazie 4 (local stream).*

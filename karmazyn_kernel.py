@@ -128,15 +128,18 @@ from karmazyn_atomstore import (
     CORE_METHODS,
 )
 
-# Media lokalne (Faza 0) — plik/bajty ↔ atom ↔ KAFD
+# Media lokalne (Faza 0/2/4) — plik/bajty ↔ atom ↔ KAFD / A_STREAM
 from karmazyn_media import (  # noqa: E402
     MEDIA_S,
+    MEDIA_SEG_S,
     MediaError,
     MediaRef,
     attach_bytes,
     attach_file,
     export_to_path,
     get_bytes,
+    is_stream_atom,
+    iter_bytes,
     list_bindings,
     load_store as load_media_store,
     materialize_temp,
@@ -167,9 +170,10 @@ __all__ = [
     "substrate_backend_info", "apply_cli_substrate_flags",
     # kontrakt
     "AtomStore", "capabilities", "conforms", "assert_conforms", "CORE_METHODS",
-    # media (Faza 0 + Faza 2 podgląd lokalny)
-    "MEDIA_S", "MediaError", "MediaRef",
-    "attach_bytes", "attach_file", "get_bytes", "export_to_path",
+    # media (Faza 0 + 2 + 4 A_STREAM)
+    "MEDIA_S", "MEDIA_SEG_S", "MediaError", "MediaRef",
+    "attach_bytes", "attach_file", "get_bytes", "iter_bytes", "is_stream_atom",
+    "export_to_path",
     "list_bindings", "sync_bubble_record", "restore_bubbles",
     "save_media_store", "load_media_store",
     "pipe_to", "materialize_temp", "open_with_system",
