@@ -37,6 +37,16 @@ MEDIA_S = "media"
 MEDIA_SEG_S = "media_seg"
 BUBBLE_S = "__bubble__"
 
+# re-export podglądu / indeksu (Faza 5–6) — cienkie aliasy
+def build_media_index(store: Any) -> list:
+    from karmazyn_media_preview import build_media_index as _bmi
+    return _bmi(store)
+
+
+def open_preview(store: Any, atom_id: str, **kwargs):
+    from karmazyn_media_preview import open_preview as _op
+    return _op(store, atom_id, **kwargs)
+
 # Limit ostrzeżenia (duże pliki OK lokalnie; sieć to Faza 3)
 DEFAULT_WARN_BYTES = 16 * 1024 * 1024  # 16 MiB
 # Faza 4: powyżej progu → head A_STREAM + segmenty (nie jeden monolit w head)

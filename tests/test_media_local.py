@@ -273,6 +273,62 @@ class TestMediaStream(unittest.TestCase):
         self.assertEqual(kernel.MEDIA_SEG_S, "media_seg")
 
 
+class TestMediaIndexAndPreview(unittest.TestCase):
+    """Faza 6 indeks + Faza 5 decode (Pillow opcjonalne)."""
+
+    def setUp(self) -> None:
+        self.store = kernel.Store(thermal=True)
+
+    def test_build_media_index(self) -> None:
+        from karmazyn_media_preview import build_media_index
+
+        media.attach_bytes(
+            self.store, "A", "portret", b"\x89PNG\r\n\x1a\nxx", mime="image/png"
+        )
+        media.attach_bytes(
+            self.store,
+            "A",
+            "klip",
+            b"Z" * 500,
+            mime="video/mp4",
+            force_stream=True,
+            segment_size=100,
+        )
+        idx = build_media_index(self.store)
+        self.assertGreaterEqual(len(idx), 2)
+        ids = {e["id"] for e in idx}
+        self.assertEqual(len(ids), len(idx))
+        streams = [e for e in idx if e.get("stream")]
+        self.assertTrue(streams)
+        self.assertGreater(streams[0]["n_segments"], 1)
+
+    def test_missing_media_entries(self) -> None:
+        from cynober_replicate import missing_media_entries
+
+        local = [{"id": "a0", "cas12": "aa", "size": 10}]
+        remote = [
+            {"id": "a0", "cas12": "aa", "size": 10},
+            {"id": "a1", "cas12": "bb", "size": 20},
+            {"id": "a0", "cas12": "cc", "size": 10},  # cas mismatch → missing
+        ]
+        miss = missing_media_entries(local, remote)
+        miss_ids = {m["id"] for m in miss}
+        self.assertIn("a1", miss_ids)
+        self.assertIn("a0", miss_ids)  # cas diff
+
+    def test_decode_png_header_optional(self) -> None:
+        from karmazyn_media_preview import decode_image_bytes, _HAS_PIL
+
+        # minimal invalid — may fail decode gracefully
+        png, w, h, err = decode_image_bytes(b"\x89PNG\r\n\x1a\nnot-real")
+        if _HAS_PIL:
+            # Pillow may still error
+            self.assertTrue(png is None or isinstance(png, bytes))
+        else:
+            self.assertIsNone(png)
+            self.assertIn("Pillow", err)
+
+
 class TestSoulBlobLimit(unittest.TestCase):
     def setUp(self) -> None:
         self.store = kernel.Store(thermal=True)

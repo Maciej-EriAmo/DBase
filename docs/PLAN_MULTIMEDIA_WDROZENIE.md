@@ -1,6 +1,6 @@
 # Plan wdrożenia docelowego: multimedia w Cynober DB (+ lore)
 
-**Status:** plan · **Faza 0+2+3+4+4b DONE** · **Faza 1 lore (API+panel) DONE w lore-editor** · **następna: Faza 6 replicate / mmap**  
+**Status:** plan · **Faza 0–6 MVP DONE** (media local/KAFS/stream + lore attach/preview + media_index replicate) · **opcjonalnie: mmap / 50 MiB load-test**  
 
 
 **Cel:** plik → atom w grafie → KAFD/KAFS → indeks (bąble/bindings) → z powrotem do klienta, **bez HTTP/REST**  
@@ -332,8 +332,8 @@ Backward compatible: klient bez `kafs-stream` działa jak dziś (tylko graf + fu
 7. **P3** A_STREAM segments local (Faza 4) — **DONE**  
 7b. **P3** A_STREAM over KAFS MEDIA PUT/GET (Faza 4b) — **DONE**  
 8. **P3** lore attach UI (Faza 1) — **DONE** (lore-editor)  
-8b. **P3** lore `--rpc` stream preview (Faza 5)  
-9. **P3** replicate media index (Faza 6)  
+8b. **P3** lore preview (Faza 5) — **DONE** (`podglad_media`, Luneta-style Tk/PIL)  
+9. **P3** replicate media index (Faza 6) — **DONE** (`media_index` + `sync_missing_media`)  
 10. **P4** AI tools describe/list (Faza 7)
 
 ---

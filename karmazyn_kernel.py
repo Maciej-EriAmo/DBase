@@ -150,7 +150,19 @@ from karmazyn_media import (  # noqa: E402
     save_store as save_media_store,
     sync_bubble_record,
     try_external_player,
+    build_media_index,
+    open_preview,
 )
+try:
+    from karmazyn_media_preview import (  # noqa: E402
+        MediaPreviewCache,
+        load_preview_image,
+        show_image_window,
+    )
+except Exception:  # pragma: no cover
+    MediaPreviewCache = None  # type: ignore
+    load_preview_image = None  # type: ignore
+    show_image_window = None  # type: ignore
 
 __version__ = "1.1.0"
 
@@ -178,6 +190,8 @@ __all__ = [
     "save_media_store", "load_media_store",
     "pipe_to", "materialize_temp", "open_with_system",
     "try_external_player", "open_media",
+    "build_media_index", "open_preview",
+    "MediaPreviewCache", "load_preview_image", "show_image_window",
     # meta
     "kernel_info", "__version__",
 ]

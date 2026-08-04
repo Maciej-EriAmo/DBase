@@ -195,8 +195,22 @@ def _ensure_world_flushed(registry: WorldRegistry, name: str) -> None:
             world.dirty = False
 
 
+def _media_index_for_kafd(kafd: Path) -> list:
+    """Faza 6: lekki indeks mediów z pliku .kafd (bez bazy sieciowej)."""
+    try:
+        from karmazyn_kernel import Store
+        from karmazyn_media import load_store
+        from karmazyn_media_preview import build_media_index
+
+        store = Store(thermal=True)
+        load_store(store, kafd, restore=False)
+        return build_media_index(store)
+    except Exception:
+        return []
+
+
 def export_manifest_payload(registry: WorldRegistry, world_name: str) -> dict:
-    """Manifest + meta + indeks shardów (bez payloadów shardów)."""
+    """Manifest + meta + indeks shardów + media_index (Faza 6, bez blobów)."""
     name = validate_world_name(world_name)
     _ensure_world_flushed(registry, name)
     kafd = _kafd_path(registry.base_dir, name)
@@ -206,6 +220,7 @@ def export_manifest_payload(registry: WorldRegistry, world_name: str) -> dict:
     from cynober_world_shards import list_shard_regions, load_shard_index
 
     shard_index = load_shard_index(registry.base_dir, name)
+    media_index = _media_index_for_kafd(kafd)
     return {
         "world": name,
         "kafd_b64": base64.b64encode(kafd.read_bytes()).decode("ascii"),
@@ -215,6 +230,8 @@ def export_manifest_payload(registry: WorldRegistry, world_name: str) -> dict:
         "sharded": bool(meta.get("sharded") or shard_index.get("sharded")),
         "shard_index": shard_index,
         "shard_regions": list_shard_regions(registry.base_dir, name),
+        "media_index": media_index,
+        "media_count": len(media_index),
     }
 
 
@@ -497,6 +514,162 @@ def _remote_import(client: _PeerRpc, world: str, payload: dict) -> dict:
     return row
 
 
+def missing_media_entries(
+    local_index: list,
+    remote_index: list,
+) -> list:
+    """Porównaj indeksy — wpisy remote bez lokalnego cas/id."""
+    local_by_id = {
+        str(e.get("id")): e for e in (local_index or []) if isinstance(e, dict)
+    }
+    missing = []
+    for e in remote_index or []:
+        if not isinstance(e, dict):
+            continue
+        rid = str(e.get("id") or "")
+        if not rid:
+            continue
+        loc = local_by_id.get(rid)
+        if loc is None:
+            missing.append(e)
+            continue
+        rc = str(e.get("cas12") or "")
+        lc = str(loc.get("cas12") or "")
+        if rc and lc and rc != lc:
+            missing.append(e)
+        elif int(e.get("size") or 0) != int(loc.get("size") or 0):
+            missing.append(e)
+    return missing
+
+
+def sync_missing_media(
+    registry: WorldRegistry,
+    world: str,
+    peer: dict,
+    remote_index: list,
+) -> dict:
+    """
+    Faza 6: dociągnij brakujące media przez KAFS (CynoberClient).
+    Wymaga kafs-stream na peerze.
+    """
+    world = validate_world_name(world)
+    from karmazyn_media_preview import build_media_index
+    from cynober_client import CynoberClient, CynoberClientError
+
+    # lokalny indeks po attach
+    try:
+        wobj = registry.attach(world)
+        store = (
+            wobj.runtime.engine.api.store
+            if hasattr(wobj.runtime, "engine")
+            else wobj.runtime.store
+        )
+        local_index = build_media_index(store)
+    except Exception as e:
+        return {"fetched": 0, "error": f"attach: {e}", "missing": 0}
+
+    missing = missing_media_entries(local_index, remote_index)
+    if not missing:
+        return {"fetched": 0, "missing": 0, "ok": True}
+
+    host = peer.get("host") or "127.0.0.1"
+    port = int(peer.get("port") or 8080)
+    c = CynoberClient(host, port)
+    fetched = 0
+    errors: list = []
+    try:
+        c.connect()
+        user, token = peer.get("user"), peer.get("token")
+        if user and token:
+            row = c.query_line(f'ZALOGUJ "{user}" TOKEN "{token}"')
+            if row.get("status") != "ok":
+                return {
+                    "fetched": 0,
+                    "missing": len(missing),
+                    "ok": False,
+                    "error": row.get("message") or "login fail",
+                }
+        # wybór świata na serwerze
+        c.query_line(f'WYBIERZ ŚWIAT "{world}"')
+        if not c.kafs_enabled:
+            return {
+                "fetched": 0,
+                "missing": len(missing),
+                "ok": False,
+                "error": "peer bez kafs-stream",
+            }
+        from karmazyn_media import (
+            MEDIA_S,
+            ensure_bubble,
+            sync_bubble_record,
+            _cas12,
+        )
+
+        for e in missing:
+            mid = str(e.get("id"))
+            try:
+                data, mime, _meta = c.get_media(mid)
+                mime = mime or e.get("mime") or "application/octet-stream"
+                existing = store.get_atom(mid)
+                if existing is None and callable(getattr(store, "create_atom", None)):
+                    created = store.create_atom(
+                        mid, S=MEDIA_S, E=e.get("binding") or "media", T=50.0
+                    )
+                    existing = store.get_atom(
+                        created if isinstance(created, str) else getattr(created, "id", mid)
+                    )
+                if existing is None:
+                    existing = store.atom_new(
+                        S=MEDIA_S, E=e.get("binding") or mid, value=None, T=50.0
+                    )
+                existing.metadata["data"] = data
+                existing.metadata["mime"] = mime
+                existing.metadata["_cas"] = _cas12(data)
+                existing.metadata.pop("_stream", None)
+                existing.metadata["v"] = {
+                    "kind": "media",
+                    "size": len(data),
+                    "mime": mime,
+                    "binding": e.get("binding") or "",
+                    "bubble": e.get("bubble") or "",
+                }
+                if e.get("bubble") and e.get("binding"):
+                    b = ensure_bubble(store, e["bubble"], as_root=True)
+                    if callable(getattr(b, "bind", None)):
+                        b.bind(str(e["binding"]), existing)
+                    sync_bubble_record(store, b)
+                fetched += 1
+            except Exception as ex:
+                errors.append(f"{mid}: {ex}")
+        if fetched:
+            try:
+                registry.mark_dirty(world)
+            except Exception:
+                pass
+            try:
+                registry.flush(world)
+            except Exception:
+                pass
+        return {
+            "fetched": fetched,
+            "missing": len(missing),
+            "ok": fetched == len(missing) or fetched > 0,
+            "errors": errors[:10],
+        }
+    except (CynoberClientError, OSError, RuntimeError) as e:
+        return {
+            "fetched": fetched,
+            "missing": len(missing),
+            "ok": False,
+            "error": str(e),
+        }
+    finally:
+        try:
+            c.close()
+        except Exception:
+            pass
+
+
 def pull_world(
     registry: WorldRegistry,
     peers: PeerRegistry,
@@ -504,6 +677,7 @@ def pull_world(
     peer_name: str,
     *,
     manifest_first: bool = True,
+    sync_media: bool = True,
 ) -> dict:
     world = validate_world_name(world)
     peer = peers.get(peer_name)
@@ -511,8 +685,10 @@ def pull_world(
     try:
         client.connect()
         _login_peer(client, peer)
+        remote_media_index: list = []
         if manifest_first:
             manifest = _remote_export(client, world, manifest_only=True)
+            remote_media_index = list(manifest.get("media_index") or [])
             info = import_world_payload(
                 registry,
                 world,
@@ -530,8 +706,10 @@ def pull_world(
                     import_shard_payload(registry, world, rid, shard["shard_b64"])
                     shards_pulled += 1
                 info["shards_imported"] = shards_pulled
+            info["media_index_remote"] = len(remote_media_index)
         else:
             payload = _remote_export(client, world, manifest_only=False)
+            remote_media_index = list(payload.get("media_index") or [])
             info = import_world_payload(
                 registry,
                 world,
@@ -540,6 +718,16 @@ def pull_world(
                 shards=payload.get("shards"),
                 shard_index=payload.get("shard_index"),
             )
+            info["media_index_remote"] = len(remote_media_index)
+        # Faza 6: dociągnij braki KAFS (gdy indeks remote > local po imporcie)
+        if sync_media and remote_media_index:
+            try:
+                media_sync = sync_missing_media(
+                    registry, world, peer, remote_media_index
+                )
+                info["media_sync"] = media_sync
+            except Exception as e:
+                info["media_sync"] = {"ok": False, "error": str(e)}
         return {
             "action": "PULL_WORLD",
             "world": world,
