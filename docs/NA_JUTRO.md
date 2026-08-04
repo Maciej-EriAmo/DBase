@@ -13,11 +13,17 @@
 | 5 | lore `podglad_media` + panel Podgląd (Tk/PIL jak Luneta) |
 | 6 | `media_index` w manifeście + `sync_missing_media` / pull |
 
+## Spike dekodera (DONE)
+
+- `IncrementalVideoDecoder` — MP4 klatka-po-klatce gdy hot  
+- Audyt: `docs/AUDIT_MEDIA_CANVAS.md`  
+- Plan substratu: `docs/PLAN_DEKODERY_SUBSTRAT.md` (D1–D3)
+
 ## Opcjonalnie później
 
-- mmap reader KAFD
-- pełny 50 MiB load-test na serwerze
-- GIF pump jak Luneta (animacja w Tk)
+- D1: `media_frame` atoms w Store  
+- mmap reader KAFD  
+- async decode worker  
 
 ## Później / inny repo
 
@@ -25,4 +31,4 @@
 
 ---
 
-*Aktualizacja po Faza 5+6 + podgląd Luneta-style.*
+*Aktualizacja po incremental decoder + audit + plan.*

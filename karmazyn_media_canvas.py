@@ -9,8 +9,10 @@ Odwzorowanie jak Luneta / ThermalGifPump:
   • pump() przesuwa klatkę i zwraca **dirty** id — maluj tylko to, co się zmieniło
   • note_visible() = ciepło z widoczności (nie z samego pump — bez samonapędzania)
 
-Wideo: dekodowane do klatek PNG (Pillow / imageio opcjonalnie); aktywne
-wyświetlanie = jedna klatka na atom w danym ticku — tanie, bo reszta zamarza.
+Wideo:
+  • legacy preload: lista PNG (GIF / małe sekwencje)
+  • **inkrementalnie** (MP4): IncrementalVideoDecoder — next_frame tylko gdy hot
+    (spike pod dekoder substratu: T × reach, bez 180 klatek w RAM)
 
 Bez pygame/SDL — Tk Canvas + PhotoImage z PNG (jak Luneta tk path).
 """
@@ -24,6 +26,11 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Set, Tuple, Union
 
 from karmazyn_media import MediaError, get_bytes, is_stream_atom
+from karmazyn_media_incremental import (
+    IncrementalVideoDecoder,
+    is_video_path,
+    open_incremental,
+)
 
 try:
     from PIL import Image
@@ -238,7 +245,7 @@ def decode_video_frames(
 
 @dataclass
 class FrameClip:
-    """Sekwencja klatek w RAM (atom na płótnie)."""
+    """Klatki w RAM (GIF/static) LUB jeden bieżący PNG + dekoder inkrementalny."""
 
     atom_id: str
     pngs: List[bytes]
@@ -247,7 +254,10 @@ class FrameClip:
     idx: int = 0
     last_swap: float = field(default_factory=time.time)
     T: float = T_HOT  # lokalna temperatura (widoczność)
-    kind: str = "static"  # static | gif | video
+    kind: str = "static"  # static | gif | video | video_incr
+    decoder: Optional[IncrementalVideoDecoder] = None
+    # ile klatek wyemitowano (incr) — diagnostyka
+    emitted: int = 0
 
 
 class ThermalFramePump:
@@ -255,6 +265,7 @@ class ThermalFramePump:
     Oscylator klatek napędzany temperaturą — klon ducha ThermalGifPump (Luneta).
 
     pump() NIE grzeje atomów — tylko note_visible() (renderer przy blit).
+    video_incr: next_png() tylko gdy hot + delay — bez preload całej listy.
     """
 
     def __init__(self) -> None:
@@ -272,26 +283,63 @@ class ThermalFramePump:
         *,
         kind: str = "static",
         T: float = T_HOT,
+        decoder: Optional[IncrementalVideoDecoder] = None,
     ) -> None:
-        if not pngs:
+        if not pngs and decoder is None:
             raise MediaError("brak klatek")
-        dlist = list(delays) if delays else [1e9] * len(pngs)
-        while len(dlist) < len(pngs):
+        dlist = list(delays) if delays else ([1e9] if not pngs else [1e9] * len(pngs))
+        while pngs and len(dlist) < len(pngs):
             dlist.append(dlist[-1] if dlist else 0.1)
-        if size == (0, 0) and _HAS_PIL and Image is not None:
+        if size == (0, 0) and pngs and _HAS_PIL and Image is not None:
             try:
                 im = Image.open(io.BytesIO(pngs[0]))
                 size = im.size
             except Exception:
                 size = (1, 1)
+        if size == (0, 0) and decoder is not None:
+            size = decoder.size or (1, 1)
+        old = self._clips.pop(str(atom_id), None)
+        if old and old.decoder is not None:
+            try:
+                old.decoder.close()
+            except Exception:
+                pass
         self._clips[str(atom_id)] = FrameClip(
             atom_id=str(atom_id),
-            pngs=list(pngs),
-            delays=[float(x) for x in dlist[: len(pngs)]],
+            pngs=list(pngs) if pngs else [],
+            delays=[float(x) for x in (dlist[: len(pngs)] if pngs else dlist[:1] or [0.08])],
             size=size,
             T=float(T),
             kind=kind,
+            decoder=decoder,
+            emitted=1 if pngs else 0,
         )
+
+    def load_incremental_path(
+        self,
+        atom_id: str,
+        path: Union[str, Path],
+        *,
+        max_edge: int = MAX_EDGE,
+        fps: float = DEFAULT_FPS,
+        T: float = T_HOT,
+        loop: bool = True,
+    ) -> str:
+        """MP4/WebM: reader na pliku, pierwsza klatka od razu, reszta w pump()."""
+        dec = open_incremental(
+            path, max_edge=max_edge, target_fps=fps, loop=loop
+        )
+        png, delay, size = dec.peek_first()
+        self.load_frames(
+            atom_id,
+            [png],
+            [delay],
+            size,
+            kind="video_incr",
+            T=T,
+            decoder=dec,
+        )
+        return "video_incr"
 
     def load_from_bytes(
         self,
@@ -304,18 +352,32 @@ class ThermalFramePump:
         fps: float = DEFAULT_FPS,
         T: float = T_HOT,
         path: Optional[Union[str, Path]] = None,
+        incremental: bool = True,
     ) -> str:
-        """Dekoduj payload → klatki. Zwraca kind. ``path`` pomaga przy MP4 (ffmpeg)."""
+        """Dekoduj payload. Wideo + path → domyślnie inkrementalnie."""
         mime = (mime or "").lower()
         major = mime.split("/", 1)[0] if mime else ""
+        is_vid = (
+            major == "video"
+            or "webm" in mime
+            or "mp4" in mime
+            or (path is not None and is_video_path(path))
+        )
+        if is_vid and incremental and path is not None and Path(path).is_file():
+            try:
+                return self.load_incremental_path(
+                    atom_id, path, max_edge=max_edge, fps=fps, T=T
+                )
+            except MediaError:
+                # fallback preload
+                pass
+
         kind = "static"
         vkw = dict(max_edge=max_edge, max_frames=max_frames, fps=fps, path=path)
         if "gif" in mime:
             pngs, delays, size = decode_gif_frames(data, max_edge=max_edge)
             kind = "gif"
-        elif major == "video" or "webm" in mime or "mp4" in mime or (
-            path and str(path).lower().endswith((".mp4", ".webm", ".mov", ".mkv", ".avi"))
-        ):
+        elif is_vid:
             pngs, delays, size = decode_video_frames(data, mime, **vkw)
             kind = "video" if len(pngs) > 1 else "static"
         elif major == "image":
@@ -323,7 +385,7 @@ class ThermalFramePump:
                 if _HAS_PIL and Image is not None:
                     im = Image.open(io.BytesIO(data))
                     if getattr(im, "is_animated", False) and getattr(im, "n_frames", 1) > 1:
-                        pngs, delays, size = decode_video_frames(data, mime, **vkw)
+                        pngs, delays, size = decode_gif_frames(data, max_edge=max_edge)
                         kind = "gif"
                     else:
                         pngs, delays, size = decode_static_png(data, max_edge=max_edge)
@@ -336,13 +398,11 @@ class ThermalFramePump:
                 pngs, delays, size = decode_gif_frames(data, max_edge=max_edge)
                 kind = "gif"
             except Exception:
-                if path:
-                    pngs, delays, size = decode_video_frames(
-                        data, mime or "video/mp4", **vkw
+                if path and is_video_path(path):
+                    return self.load_incremental_path(
+                        atom_id, path, max_edge=max_edge, fps=fps, T=T
                     )
-                    kind = "video" if len(pngs) > 1 else "static"
-                else:
-                    pngs, delays, size = decode_static_png(data, max_edge=max_edge)
+                pngs, delays, size = decode_static_png(data, max_edge=max_edge)
         self.load_frames(atom_id, pngs, delays, size, kind=kind, T=T)
         return kind
 
@@ -352,11 +412,26 @@ class ThermalFramePump:
 
     def load_from_path(self, atom_id: str, path: Union[str, Path], **kw) -> str:
         p = Path(path)
-        data = p.read_bytes()
         import mimetypes
 
         mime = mimetypes.guess_type(str(p))[0] or ""
-        return self.load_from_bytes(atom_id, data, mime, path=p, **kw)
+        incremental = kw.pop("incremental", True)
+        # wideo: nie wczytuj całego pliku do RAM
+        if incremental and is_video_path(p):
+            try:
+                return self.load_incremental_path(
+                    atom_id,
+                    p,
+                    max_edge=kw.get("max_edge", MAX_EDGE),
+                    fps=kw.get("fps", DEFAULT_FPS),
+                    T=kw.get("T", T_HOT),
+                )
+            except MediaError:
+                pass
+        data = p.read_bytes()
+        return self.load_from_bytes(
+            atom_id, data, mime, path=p, incremental=incremental, **kw
+        )
 
     def note_visible(self, atom_id: str, weight: float = 1.0) -> None:
         """WIDOCZNOŚĆ = CIEPŁO (Luneta)."""
@@ -373,13 +448,34 @@ class ThermalFramePump:
     def pump(self) -> Set[str]:
         """
         Przesuń klatki gorących klipów. Zwraca zbiór atom_id do **przemalowania**.
-        Zimne (T < FREEZE_T) — zero kosztu.
+        Zimne (T < FREEZE_T) — zero decode / zero kosztu.
         """
         now = time.time()
         dirty: Set[str] = set()
         for aid, c in self._clips.items():
             if c.T < FREEZE_T:
                 continue
+            # --- inkrementalne wideo ---
+            if c.decoder is not None:
+                delay = c.delays[0] if c.delays else c.decoder.delay
+                if now - c.last_swap < delay:
+                    continue
+                try:
+                    got = c.decoder.next_png()
+                except MediaError:
+                    continue
+                if not got:
+                    continue
+                png, dly = got
+                c.pngs = [png]
+                c.delays = [dly]
+                c.idx = 0
+                c.size = c.decoder.size or c.size
+                c.last_swap = now
+                c.emitted += 1
+                dirty.add(aid)
+                continue
+            # --- lista w RAM (GIF / preload) ---
             n = len(c.pngs)
             if n <= 1:
                 continue
@@ -401,18 +497,33 @@ class ThermalFramePump:
         return tuple(c.size) if c else (0, 0)
 
     def frame_count(self, atom_id: str) -> int:
+        """Dla incr: emitted (nie total film); dla listy: len(pngs)."""
         c = self._clips.get(str(atom_id))
-        return len(c.pngs) if c else 0
+        if not c:
+            return 0
+        if c.decoder is not None:
+            return max(c.emitted, 1)
+        return len(c.pngs)
+
+    def is_incremental(self, atom_id: str) -> bool:
+        c = self._clips.get(str(atom_id))
+        return bool(c and c.decoder is not None)
 
     def temperature(self, atom_id: str) -> float:
         c = self._clips.get(str(atom_id))
         return float(c.T) if c else 0.0
 
     def unload(self, atom_id: str) -> None:
-        self._clips.pop(str(atom_id), None)
+        c = self._clips.pop(str(atom_id), None)
+        if c and c.decoder is not None:
+            try:
+                c.decoder.close()
+            except Exception:
+                pass
 
     def clear(self) -> None:
-        self._clips.clear()
+        for aid in list(self._clips.keys()):
+            self.unload(aid)
 
 
 @dataclass
@@ -532,8 +643,12 @@ def play_file(
     canvas.place(aid, 8, 8)
     n = canvas.pump.frame_count(aid)
     w, h = canvas.pump.current_size(aid)
-    info = f"{p.name} kind={kind} frames={n} size={w}x{h} mime={mime}"
+    incr = canvas.pump.is_incremental(aid)
+    mode = "incremental" if incr else "preload"
+    info = f"{p.name} kind={kind} mode={mode} frames={n} size={w}x{h} mime={mime}"
     if dry_run:
+        # nie trzymaj open ffmpeg w dry-run
+        canvas.pump.unload(aid)
         return True, f"dry-run OK: {info}"
 
     # jednorazowy store dla okna (load już w pump)
@@ -595,10 +710,11 @@ def play_file(
             png = canvas.pump.current_png(aid)
             if png:
                 paint_png(png)
-        fr = canvas.pump._clips[aid].idx if canvas.pump.has(aid) else 0
+        clip = canvas.pump._clips.get(aid)
+        fr = (clip.emitted if clip and clip.decoder else (clip.idx if clip else 0))
         hot = canvas.pump.temperature(aid) >= FREEZE_T
         status.configure(
-            text=f"{info}  frame={fr}/{n}  hot={hot}  dirty={len(dirty)}"
+            text=f"{info}  frame={fr}  hot={hot}  dirty={len(dirty)}"
         )
         top.after(33, tick)
 

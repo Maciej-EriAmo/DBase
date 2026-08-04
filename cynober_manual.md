@@ -248,6 +248,9 @@ python -m unittest tests.test_media_canvas_player -v
 
 `demo` = okno ze **zdjęciem + GIF + sekwencją klatek** (tanie wideo bez mpv).
 
+**MP4 inkrementalnie (domyślnie):** nie ładuje 180 PNG — `imageio` czyta **następną klatkę** gdy atom jest gorący (`pip install imageio imageio-ffmpeg`).  
+Plan dekoderów substratu: `docs/PLAN_DEKODERY_SUBSTRAT.md`.
+
 **Replikacja mediów (Faza 6):** manifest EKSPORT zawiera `media_index` (id/mime/size/cas, bez blobów). `pull_world` woła `sync_missing_media` (KAFS `get_media` braków).
 
 ```python

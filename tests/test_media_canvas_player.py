@@ -171,7 +171,7 @@ class TestCanvasGifAndVideoFrames(unittest.TestCase):
             self.assertEqual(rc, 0)
 
     def test_mp4_via_imageio_if_present(self) -> None:
-        """test.mp4 w repo (jeśli jest) → klatki przez imageio-ffmpeg."""
+        """test.mp4 → inkrementalnie (video_incr), nie 180 PNG w RAM."""
         from karmazyn_media_canvas import MediaAtomCanvas
 
         mp4 = Path(__file__).resolve().parents[1] / "test.mp4"
@@ -183,12 +183,41 @@ class TestCanvasGifAndVideoFrames(unittest.TestCase):
         except ImportError:
             self.skipTest("brak imageio-ffmpeg")
         c = MediaAtomCanvas()
-        kind = c.pump.load_from_path("t:mp4", mp4, max_frames=12)
-        self.assertIn(kind, ("video", "static"))
-        self.assertGreaterEqual(c.pump.frame_count("t:mp4"), 1)
+        kind = c.pump.load_from_path("t:mp4", mp4)
+        self.assertEqual(kind, "video_incr")
+        self.assertTrue(c.pump.is_incremental("t:mp4"))
+        # w RAM tylko bieżąca klatka (1 png), nie preload
+        clip = c.pump._clips["t:mp4"]
+        self.assertEqual(len(clip.pngs), 1)
         c.place("t:mp4", 0, 0)
         c.mark_visible(["t:mp4"])
         self.assertIsNotNone(c.pump.current_png("t:mp4"))
+        # pump dekoduje następną gdy hot
+        clip.last_swap = time.time() - 10
+        dirty = c.tick(cool=False)
+        self.assertIn("t:mp4", dirty)
+        self.assertGreaterEqual(clip.emitted, 2)
+        c.pump.unload("t:mp4")
+
+    def test_incremental_decoder_unit(self) -> None:
+        from karmazyn_media_incremental import open_incremental
+
+        mp4 = Path(__file__).resolve().parents[1] / "test.mp4"
+        if not mp4.is_file():
+            self.skipTest("brak test.mp4")
+        try:
+            import imageio_ffmpeg  # noqa: F401
+        except ImportError:
+            self.skipTest("brak imageio-ffmpeg")
+        dec = open_incremental(mp4, target_fps=10)
+        png1, d1, size = dec.peek_first()
+        self.assertGreater(len(png1), 50)
+        self.assertGreater(size[0], 0)
+        png2, d2 = dec.next_png()
+        self.assertIsNotNone(png2)
+        self.assertGreater(dec.frames_emitted, 1)
+        # nie trzymamy listy — tylko reader
+        dec.close()
 
 
 if __name__ == "__main__":
