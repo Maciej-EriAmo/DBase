@@ -8,8 +8,13 @@ Maciej Mazur, Warsaw 2026
   KARMAZYN_SUBSTRATE=python   # referencyjna implementacja pure-Python
   KARMAZYN_SUBSTRATE=both     # tylko meta: test_compat uruchamia oba
 
+  KARMAZYN_SUBSTRATE_STRICT=1           # bez cichego fallbacku native→python
+  KARMAZYN_ALLOW_PYTHON_SUBSTRATE=1     # ze STRICT: zezwól na python (golden/test)
+
 Most native (opcjonalnie):
   KARMAZYN_NATIVE_BRIDGE=pyo3|ctypes   # wymuszenie mostu (domyślnie: pyo3→ctypes)
+
+Zob. Documents/SUBSTRATE_SEAL.md — zamykanie obejść (król bez uzurpatorów).
 
 CLI (test_substrate_compat / boot):
   --substrate python|native
@@ -30,6 +35,29 @@ from typing import Any, Optional, Type
 
 
 _VALID = frozenset({"python", "native", "both"})
+
+
+def substrate_strict() -> bool:
+    """STRICT: no silent python fallback; explicit python needs allow flag."""
+    v = os.environ.get("KARMAZYN_SUBSTRATE_STRICT", "").strip().lower()
+    return v in ("1", "true", "yes", "on")
+
+
+def allow_python_substrate() -> bool:
+    """With STRICT, pure-Python Store only if this is set (tests/golden)."""
+    v = os.environ.get("KARMAZYN_ALLOW_PYTHON_SUBSTRATE", "").strip().lower()
+    return v in ("1", "true", "yes", "on")
+
+
+def _refuse_python(reason: str) -> None:
+    raise RuntimeError(
+        f"substrat: {reason}\n"
+        "  — zbuduj most: .\\native\\build_native.ps1 (lub DBase/native)\n"
+        "  — albo test/golden: KARMAZYN_ALLOW_PYTHON_SUBSTRATE=1 "
+        "i KARMAZYN_SUBSTRATE=python\n"
+        "  — wyłącz uszczelnienie: KARMAZYN_SUBSTRATE_STRICT=0\n"
+        "Zob. Documents/SUBSTRATE_SEAL.md"
+    )
 
 
 def _candidate_roots():
@@ -129,37 +157,45 @@ def store_class(backend: Optional[str] = None) -> Type:
         b = "python"
     if b == "native":
         if not native_available():
-            # klasa: miękki fallback (konstruktor open_store nadal może rzucić
-            # gdy wymuszono native i brak mostu)
+            if substrate_strict():
+                _refuse_python("STRICT: native niedostępny (brak cichego fallbacku)")
             if backend is not None or (
                 os.environ.get("KARMAZYN_SUBSTRATE", "").strip().lower()
                 in ("native", "rust", "c", "dll", "ksub")
             ):
-                # jawne native bez mostu — i tak zwróć NativeStore load attempt
                 raise RuntimeError(
                     "substrat native niedostępny — zbuduj: .\\native\\build_native.ps1 "
-                    "albo KARMAZYN_SUBSTRATE=python"
+                    "albo KARMAZYN_SUBSTRATE=python (+ ALLOW jeśli STRICT)"
                 )
             from karmazyn_substrate import Store as PythonStore
             return PythonStore
         return _load_native_store_class()
+    # pure-Python path
+    if substrate_strict() and not allow_python_substrate():
+        _refuse_python(
+            "STRICT: backend=python wymaga KARMAZYN_ALLOW_PYTHON_SUBSTRATE=1"
+        )
     from karmazyn_substrate import Store as PythonStore
     return PythonStore
 
 
 def open_store(thermal: bool = True, backend: Optional[str] = None, **kwargs: Any):
-    """Utwórz Store na wybranym substracie.
+    """Utwórz Store na wybranym substracie — **preferowany szew** (jedyny w product).
 
     backend=None → KARMAZYN_SUBSTRATE lub auto (**native = default**).
-    both → python (tryb testów, nie runtime).
+    both → python (tryb testów, nie runtime) — pod STRICT wymaga ALLOW.
     kwargs przekazywane do konstruktora (env_of, extra_reach, …).
+
+    STRICT (KARMAZYN_SUBSTRATE_STRICT=1): bez cichego fallbacku native→python.
     """
     b = substrate_backend(backend)
     if b == "both":
         b = "python"
     if b == "native":
         if not native_available():
-            # auto-default bez mostu → cichy fallback do referencji Python
+            if substrate_strict():
+                _refuse_python("STRICT: native niedostępny (brak cichego fallbacku)")
+            # soft: auto-default bez mostu → referencja Python (nie STRICT)
             forced = (
                 backend is not None
                 or os.environ.get("KARMAZYN_SUBSTRATE", "").strip() != ""
@@ -168,12 +204,17 @@ def open_store(thermal: bool = True, backend: Optional[str] = None, **kwargs: An
                 raise RuntimeError(
                     "substrat native niedostępny — zbuduj:\n"
                     "  .\\native\\build_native.ps1\n"
-                    "albo użyj: KARMAZYN_SUBSTRATE=python"
+                    "albo: KARMAZYN_SUBSTRATE=python "
+                    "(+ KARMAZYN_ALLOW_PYTHON_SUBSTRATE=1 gdy STRICT)"
                 )
             from karmazyn_substrate import Store as PythonStore
             return PythonStore(thermal=thermal, **kwargs)
         NativeStore = _load_native_store_class()
         return NativeStore(thermal=thermal, **kwargs)
+    if substrate_strict() and not allow_python_substrate():
+        _refuse_python(
+            "STRICT: backend=python wymaga KARMAZYN_ALLOW_PYTHON_SUBSTRATE=1"
+        )
     from karmazyn_substrate import Store as PythonStore
     return PythonStore(thermal=thermal, **kwargs)
 
@@ -205,11 +246,14 @@ def backend_info() -> dict:
         "native_version": ver,
         "native_bridge": bridge,  # pyo3 | ctypes | none
         "store_class": cls_name,  # NativeStore | Store
+        "strict": substrate_strict(),
+        "allow_python": allow_python_substrate(),
         "role": {
-            "native": "production DEFAULT (Rust)",
-            "python": "reference implementation + explicit fallback",
+            "native": "king body DEFAULT (Rust)",
+            "python": "reference / golden (minister rescue; STRICT needs ALLOW)",
         },
         "env": os.environ.get("KARMAZYN_SUBSTRATE", ""),
+        "seal": "Documents/SUBSTRATE_SEAL.md",
     }
 
 
