@@ -625,16 +625,39 @@ KPC (bootstrap / rotacja epoki) → exact ratchet + tor |Ψ⟩ (fidelity); nie p
 
 Domyślny kontekst PrismMask dla Cynober: `task=cynober-rpc`, `prisms=["karminql"]`.
 
-#### L0 Carrier vs sesja (TCP dziś, QKD jutro)
+#### L0 Carrier vs sesja (TCP dziś → docelowo QKD)
 
-| Warstwa | Dziś | Sieć kwantowa (HSL Paper §6.4) |
-|---------|------|--------------------------------|
-| **L0 hydraulika** | TCP (nakładka KSH/Cynober) | QKD link dostarcza \(k_{\mathrm{QKD}}\); TCP opc. |
-| **Seed łącza** | HSS KEM (+ opc. PSK/QKD-slot) | \(k_{\mathrm{QKD}}\) w tym samym slocie KDF |
-| **HSL / RPC / KarminQL** | bez zmian | **bez zmian** (app na sesji) |
-| **KPC** | `karmazyn_key_predict` + `karmazyn_qpredict` przy establish/epoch | ten sam kontrakt ciągłości |
+**Dziś (opis połączenia, które robisz w CLI / lore `--rpc`):**
 
-L0 jest **wymienne** (nie ontologia łącza). Szczegóły: [`docs/SESSION_L0_KPC.md`](docs/SESSION_L0_KPC.md), HSL Paper §1.5/§6.4, `bubble_network_assumptions` A6.
+```text
+L0 = TCP :8080
+  → powitanie + HSS KEM (główne źródło shared_key na klasycznym kanale)
+  → opc. PSK / KARM_QKD_SEED (symulacja slotu QKD)
+  → HSL (Φ², epoch, PrismMask, KPC) → RPC / KAFS
+```
+
+`session_info()` i log serwera raportują `l0_carrier: "tcp"`. To jest **nakładka na TCP** (Carrier), nie ontologia łącza.
+
+**Gdy L0 zostanie zmienione na docelowe (sieć kwantowa / QKD — HSL Paper §6.4):**
+
+| Co się **zmieni** | Co **zostanie** (klient i lore bez przepisania) |
+|-------------------|--------------------------------------------------|
+| Źródło seeda łącza: link QKD → \(k_{\mathrm{QKD}}\) (IT-secure), adapter zamiast (lub obok) HSS-KEM na TCP | Fazy **HSL** (commit Φ², `hsl_cap`, epoch, PrismMask, AAD) |
+| HSS KEM na TCP schodzi na drugi plan / opcjonalny fallback klasyczny | **KarminQL-RPC**, MEDIA/KAFS, światy, auth, gossip |
+| `l0_carrier` w ZDROWIE / diagnostyce → np. `qkd` (lub hybryda) | API: `connect()`, `query()`, `put_media()`, lore `--rpc` |
+| Weryfikacja `qkd_fp` w `hsl_link` staje się regułą produkcyjną (rozjazd seeda = brak tunelu) | **KPC** (bootstrap/epoch) i kontrakt ciągłości |
+| Metropolitalny hardware QKD (Berlin / Paderborn itd.) zamiast env `KARM_QKD_SEED` | Semantyka bąbla / Surface — nie zależy od TCP |
+
+```text
+Docelowo:
+  L0 ≈ QKD link  →  k_QKD  →  ten sam slot KDF (hybrid_link_seed)
+       (+ opc. klasyczny kanał tylko do bitów RPC, jeśli nadal potrzebny)
+  → HSL + KPC  →  RPC  (identyczne zapytania, ten sam lore-editor --rpc)
+```
+
+**Dla pisarza / operatora:** nie zmieniasz KarminQL ani panelu lore — zmieniasz **skąd bierze się zaufany seed sesji**. Dziś seed = HSS po TCP (+ opc. seed z env); docelowo seed = **pole / łącze kwantowe**, a HSL dalej robi tożsamość, sesję i aplikację.
+
+L0 jest **wymienne** (A6). Pełny opis: [`docs/SESSION_L0_KPC.md`](docs/SESSION_L0_KPC.md) · HSL Paper §1.5 / §6.4.
 
 Env KPC: `KARM_KPC_SOFT_GATE` (domyślnie off), `KARM_KPC_SOFT_THETA` (ε=1−F; domyślnie 0.08 ⇔ F≥0.92). Soft **nie** wchodzi do KDF klucza wire.
 

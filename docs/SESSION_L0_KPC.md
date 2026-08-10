@@ -20,19 +20,39 @@
 
 ---
 
-## 2. Dwa reżimy L0
+## 2. Dwa reżimy L0 — opis połączenia
+
+### 2.1 Dziś (to, co łączy `cynober-server` / lore `--rpc`)
 
 ```text
-Dziś (klasyczny):
-  TCP  →  HSS KEM  →  HSL  →  RPC
-          (+ opc. KARM_QKD_SEED w hybrid_link_seed)
-
-Sieć kwantowa (paper §6.4):
-  QKD → k_QKD  →  ten sam slot KDF  →  HSL  →  RPC
-  (HSS na TCP może zejść na drugi plan; app bez zmian)
+L0 = TCP :8080
+  → powitanie (capabilities, session_id)
+  → HSS KEM (główne shared_key na klasycznym kanale)
+  → opc. PSK / KARM_QKD_SEED (ten sam slot KDF co przyszły QKD)
+  → HSL (Φ², epoch, PrismMask, KPC bootstrap)
+  → RPC + opc. KAFS
 ```
 
-Adapter QKD: `karmazyn_qkd.py` (env / file / pipe). Hardware metropolitalny = future work; slot KDF już jest.
+`ZDROWIE` / `session_info()`: `l0_carrier: "tcp"`.
+
+### 2.2 Docelowo (L0 = sieć kwantowa / QKD)
+
+Gdy Carrier pod spodem przestanie być „tylko TCP”, **zmienia się urodzenie seeda**, nie język zapytań:
+
+```text
+L0 ≈ QKD link  →  k_QKD (IT-secure)
+  → hybrid_link_seed / KDF (ten sam slot co dziś KARM_QKD_SEED)
+  → HSL + KPC  →  RPC   (te same query, put_media, WYBIERZ ŚWIAT)
+```
+
+| Zmiana przy L0→QKD | Bez zmian dla app / lore |
+|--------------------|---------------------------|
+| Seed z łącza kwantowego, nie (tylko) z HSS-KEM po TCP | `connect` / `query` / KarminQL |
+| HSS KEM = fallback klasyczny lub hybrydowy | HSL link, epoch, capability |
+| Diagnostyka `l0_carrier` ≠ `"tcp"` | Media KAFS, światy, auth |
+| `qkd_fp` obowiązkowy przy produkcji | KPC na establish/epoch |
+
+Adapter już: `karmazyn_qkd.py` (env / file / pipe). Hardware metropolitalny = future work; **slot KDF jest ten sam**, więc app i lore-editor nie dostają drugiego protokołu.
 
 ---
 
