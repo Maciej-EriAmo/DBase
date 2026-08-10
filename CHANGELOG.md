@@ -2,6 +2,10 @@
 
 Format: skrót dla deweloperów. Protokół wire (**Cynober-Secure-1.2**) jest wersjonowany osobno od pakietu.
 
+## 8.2.3
+
+- **MEDIA LIST "bąbel"** — lista bindingów mediów przy encji (lore-editor `lista_mediow` po RPC).
+
 ## 8.2.2
 
 ### Sesja / bezpieczeństwo

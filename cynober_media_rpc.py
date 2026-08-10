@@ -12,6 +12,7 @@ Dane: ramki FRAME_KAFS po negocjacji kafs-stream.
   … serwer: odpowiedź RPC + KAFS DATA… + END
 
   MEDIA STAT "id"
+  MEDIA LIST "bąbel"          — bindingi mediów przy encji/bąblu (lore-editor)
 """
 
 from __future__ import annotations
@@ -44,6 +45,10 @@ _MEDIA_GET_RE = re.compile(
 )
 _MEDIA_STAT_RE = re.compile(
     r'^MEDIA\s+STAT\s+"([^"]+)"$',
+    re.IGNORECASE,
+)
+_MEDIA_LIST_RE = re.compile(
+    r'^MEDIA\s+LIST\s+"([^"]+)"$',
     re.IGNORECASE,
 )
 
@@ -248,6 +253,13 @@ def try_media_command(
     m = _MEDIA_STAT_RE.match(stripped)
     if m:
         return [_media_stat(facade, m.group(1))]
+
+    m = _MEDIA_LIST_RE.match(stripped)
+    if m:
+        deny = _media_perm(facade, write=False)
+        if deny:
+            return deny
+        return [_media_list_bubble(facade, m.group(1))]
 
     m = _MEDIA_PUT_START_RE.match(stripped)
     if m:
@@ -555,6 +567,38 @@ def _load_media_atom(facade: Any, atom_id: str) -> tuple[bytes, str, float]:
     data, mime = get_bytes(store, atom_id)
     T = float(getattr(atom, "T", 50.0))
     return data, mime, T
+
+
+def _media_list_bubble(facade: Any, bubble_label: str) -> dict:
+    """Lista bindingów mediów przy bąblu/encji (lore-editor lista_mediow)."""
+    from karmazyn_media import list_bindings
+
+    store = _runtime_store(facade)
+    label = (bubble_label or "").strip()
+    items: list[dict] = []
+    try:
+        refs = list_bindings(store, label)
+    except Exception as e:
+        return {
+            "status": "error",
+            "action": "MEDIA_LIST",
+            "message": str(e),
+        }
+    for ref in refs:
+        items.append({
+            "atom_id": ref.atom_id,
+            "binding": ref.binding,
+            "mime": ref.mime,
+            "size": int(ref.size or 0),
+            "cas12": getattr(ref, "cas12", "") or "",
+        })
+    return {
+        "status": "ok",
+        "action": "MEDIA_LIST",
+        "bubble": label,
+        "media": items,
+        "count": len(items),
+    }
 
 
 def _media_stat(facade: Any, atom_id: str) -> dict:
