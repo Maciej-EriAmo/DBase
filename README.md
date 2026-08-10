@@ -143,7 +143,7 @@ Cynober_db.py / GameStore  ◄── TCP :8080, Cynober-Secure-1.2 ──►  cy
   peers.json                  # węzły replikacji
 ```
 
-Szczegóły: [`cynober_manual.md`](cynober_manual.md) · specyfikacja HSL: [`HSL_Paper_v1_1_0_EN.md`](HSL_Paper_v1_1_0_EN.md)
+Szczegóły: [`cynober_manual.md`](cynober_manual.md) · specyfikacja HSL: [`HSL_Paper_v1_1_0_EN.md`](HSL_Paper_v1_1_0_EN.md) · sesja L0/KPC: [`docs/SESSION_L0_KPC.md`](docs/SESSION_L0_KPC.md)
 
 ## Testy
 

@@ -3,31 +3,40 @@ karmazyn_hsl.py — Holographic Session Links (HSL) v1.1 transport layer
 =======================================================================
 Implementacja klasyczna (CPU): Φ² tożsamość węzła, rezonans łącza, PrismMask/AAD.
 
-Łańcuch entropii (paper §6.4, hybrid QKD + HSL)
------------------------------------------------
-  [przyszłość] k_QKD z łącza kwantowego (QKD / splątanie)
+L0 vs ontologia (papers + bubble_network_assumptions)
+------------------------------------------------------
+  Dziś Carrier L0 = TCP (KSH/Cynober = nakładka na TCP).
+  L0 jest wymienne (A6): ETH / Wi-Fi / IPC / plik / mesh / przyszły QKD link.
+  Ontologia łącza = HSL + (HSS seed) + Surface/bąbel — nie „mamy socket”.
+
+Łańcuch entropii (HSL Paper §6.4, hybrid QKD + HSL)
+--------------------------------------------------
+  [przyszłość] k_QKD z łącza kwantowego (QKD / splątanie) — seed IT-secure
         ↓
-  [dziś]       KARM_QKD_SEED — symulacja tego samego miejsca w KDF
+  [dziś]       KARM_QKD_SEED — ten sam slot KDF (env/file/pipe: karmazyn_qkd.py)
         +
-  handshake HSS/ECDH — wiązanie epizodyczne pary TCP (jak dziś)
+  handshake HSS/ECDH — wiązanie epizodyczne na klasycznym Carrier (TCP)
         +
   Φ² per węzeł — tożsamość długoterminowa (commit, nie plaintext)
         +
   epoch — rotacja s_target w czasie
+        +
+  KPC (karmazyn_key_predict) — ciągłość klucza przy bootstrap/rotacji epoki;
+       tor |Ψ⟩ (karmazyn_qpredict, interferencja EriAmo) = brama fidelity, nie KDF
 
-Bez KARM_QKD_SEED: link_seed = klucz z handshake (tryb klasyczny).
+Bez KARM_QKD_SEED: link_seed = klucz z handshake (tryb klasyczny TCP).
 Z KARM_QKD_SEED:  link_seed = HKDF(k_QKD ‖ handshake_key) — obie strony
                   MUSZĄ mieć identyczny seed (jak przy PSK).
 
-Przyszła integracja QKD (bez przepisywania protokołu)
------------------------------------------------------
-1. Adapter QKD dostarcza bajty do tego samego slotu co KARM_QKD_SEED
-   (plik, pipe, daemon metropolitalny — DT Berlin, Paderborn itd.).
-2. Zamiana: load_qkd_seed() czyta z adaptera zamiast ze zmiennej środowiskowej.
-3. Reszta HSL (commit Φ², PrismMask, AAD, capability) bez zmian.
-4. Fingerprint qkd w ramce hsl_link pozwala wykryć rozjazd seeda przed RPC.
+Przyszła integracja QKD (bez przepisywania HSL/RPC)
+---------------------------------------------------
+1. Adapter QKD → ten sam slot co KARM_QKD_SEED (DT Berlin / Paderborn itd.).
+2. HSS KEM na TCP może zejść na drugi plan; HSL + app bez zmian (§6.4).
+3. Fingerprint qkd_fp w hsl_link wykrywa rozjazd seeda przed RPC.
 
-Zmienne: KARM_QKD_SEED, KARM_PHI2, KARM_HSL_EPOCH_SEC — patrz cynober_manual.md.
+Zmienne: KARM_QKD_SEED, KARM_PHI2, KARM_HSL_EPOCH_SEC,
+         KARM_KPC_SOFT_GATE, KARM_KPC_SOFT_THETA — patrz cynober_manual.md
+         i docs/SESSION_L0_KPC.md.
 """
 
 from __future__ import annotations
@@ -222,6 +231,10 @@ class HSLLink:
     _commit_local: bytes = b""
     _commit_remote: bytes = b""
     _qkd_seed: bytes | None = None
+    # KPC: ciągłość ewolucji klucza (rotacja/bootstrap only — nie per-frame)
+    _kpc: Any = None
+    kpc_last_soft_residual: float = 0.0
+    kpc_enabled: bool = True
 
     def aad_request(self) -> bytes:
         return build_aad(self.local_id, self.remote_id, self.task, self.epoch, "req")
@@ -237,8 +250,42 @@ class HSLLink:
         self.ensure_epoch()
         return derive_frame_key(self.s_target, self.aad_response())
 
+    def _kpc_bootstrap(self) -> None:
+        """Start łańcucha KPC z s_target po establish (gen=0)."""
+        if not self.kpc_enabled:
+            return
+        from karmazyn_key_predict import KPCSession
+
+        sess = KPCSession(
+            bubble_id=f"hsl:{self.local_id}:{self.remote_id}",
+            use_thermal_in_exact=False,  # soft/thermal NIE w KDF
+            soft_gate=False,
+        )
+        res = sess.bootstrap_from_session_key(self.s_target, epoch=self.epoch)
+        if not res.ok:
+            raise RuntimeError(f"HSL/KPC bootstrap reject: {res.reason.value} ({res.detail})")
+        self._kpc = sess
+        self.kpc_last_soft_residual = res.residual_soft
+
+    def _kpc_rotate(self, new_epoch: int) -> None:
+        """Rotacja KPC tylko przy zmianie epoki — exact ratchet; |Ψ⟩ fidelity w residual."""
+        if not self.kpc_enabled or self._kpc is None:
+            return
+        res = self._kpc.rotate(epoch=new_epoch)
+        self.kpc_last_soft_residual = float(res.residual_soft)
+        if hasattr(self._kpc, "last_soft_residual"):
+            self.kpc_last_soft_residual = float(self._kpc.last_soft_residual)
+        if not res.ok:
+            raise RuntimeError(
+                f"HSL/KPC rotation reject: {res.reason.value} "
+                f"exact={res.residual_exact:.2f} soft={res.residual_soft:.4f} ({res.detail})"
+            )
+
     def ensure_epoch(self, now: float | None = None) -> bool:
-        """Rotacja epoki — odśwież s_target gdy minął HSL_EPOCH_SEC (obie strony synchronicznie)."""
+        """Rotacja epoki — odśwież s_target gdy minął HSL_EPOCH_SEC (obie strony synchronicznie).
+
+        KPC: aktualizacja łańcucha klucza **tylko tu** (nie na każdej ramce RPC).
+        """
         new_epoch = current_epoch(now)
         if new_epoch == self.epoch:
             return False
@@ -254,6 +301,8 @@ class HSLLink:
             prisms=self.prisms,
             qkd_seed=self._qkd_seed,
         )
+        # Ciągłość predykcyjna: exact evolve z historii; soft residual zapisany do diagnostyki
+        self._kpc_rotate(new_epoch)
         return True
 
     def rpc_capability(self, label: str = CAP_RPC_QUERY) -> str:
@@ -362,7 +411,7 @@ def perform_hsl_link(
     if not verify_capability(s_target, "establish", remote_cap):
         raise RuntimeError("HSL: brak rezonansu — zdalny link_cap nieprawidłowy")
 
-    return HSLLink(
+    link = HSLLink(
         epoch=epoch,
         s_target=s_target,
         local_id=local_id,
@@ -375,3 +424,6 @@ def perform_hsl_link(
         _commit_remote=commit_remote,
         _qkd_seed=qkd,
     )
+    # KPC bootstrap (historia gen=0) — brama ewolucji; nie per-frame
+    link._kpc_bootstrap()
+    return link

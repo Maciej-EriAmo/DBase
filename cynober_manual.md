@@ -613,9 +613,23 @@ handshake + PSK?   →  shared_key
 KARM_QKD_SEED?     →  link_seed = HKDF(k_QKD ‖ shared_key)
 PrismMask          →  s_target = HKDF(link_seed, commit_A, commit_B, epoch, task, prisms)
 Ramka RPC          →  frame_key = HKDF(s_target, AAD)
+KPC (bootstrap / rotacja epoki) → exact ratchet + tor |Ψ⟩ (fidelity); nie per-frame
 ```
 
 Domyślny kontekst PrismMask dla Cynober: `task=cynober-rpc`, `prisms=["karminql"]`.
+
+#### L0 Carrier vs sesja (TCP dziś, QKD jutro)
+
+| Warstwa | Dziś | Sieć kwantowa (HSL Paper §6.4) |
+|---------|------|--------------------------------|
+| **L0 hydraulika** | TCP (nakładka KSH/Cynober) | QKD link dostarcza \(k_{\mathrm{QKD}}\); TCP opc. |
+| **Seed łącza** | HSS KEM (+ opc. PSK/QKD-slot) | \(k_{\mathrm{QKD}}\) w tym samym slocie KDF |
+| **HSL / RPC / KarminQL** | bez zmian | **bez zmian** (app na sesji) |
+| **KPC** | `karmazyn_key_predict` + `karmazyn_qpredict` przy establish/epoch | ten sam kontrakt ciągłości |
+
+L0 jest **wymienne** (nie ontologia łącza). Szczegóły: [`docs/SESSION_L0_KPC.md`](docs/SESSION_L0_KPC.md), HSL Paper §1.5/§6.4, `bubble_network_assumptions` A6.
+
+Env KPC: `KARM_KPC_SOFT_GATE` (domyślnie off), `KARM_KPC_SOFT_THETA` (ε=1−F; domyślnie 0.08 ⇔ F≥0.92). Soft **nie** wchodzi do KDF klucza wire.
 
 ### Tryby kryptograficzne
 
