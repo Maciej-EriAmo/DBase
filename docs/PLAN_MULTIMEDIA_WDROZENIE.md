@@ -114,7 +114,7 @@ HSL: capability `media:stream` / `media:put` (obok `karminql:query`).
 - [x] Brak regresji (339+ testów, w tym media + gossip)
 - [x] SOUL: `data_b64` ≤ 64 KiB domyślnie; powyżej `media_ref`
 
-**Wersja:** kod w repo (slice media local); numer pakietu PyPI może zostać 8.0.3 do kolejnego release.
+**Wersja:** media local + KAFS RPC; pakiet PyPI **cynober-db 8.2.2** (KPC/session_info).
 
 ---
 

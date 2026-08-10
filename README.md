@@ -8,16 +8,18 @@ Relacyjno-grafowa baza danych na termodynamicznym rdzeniu **KarmazynOS**, z tran
 
 | Komponent | Wersja | Plik |
 |-----------|--------|------|
+| **Pakiet PyPI / serwer** | **8.2.2** | `pyproject.toml` · `cynober_ops.SERVER_VERSION` |
+| Klient SDK | 8.2.2 | `cynober_client.py` (`session_info`, media KAFS) |
+| Klient CLI | v1.8.0 | `Cynober_db.py` |
+| Protokół wire | **Cynober-Secure-1.2** | `cynober_rpc.py` (numer protokołu ≠ numer pakietu) |
+| HSL | HSL-1.1 | `karmazyn_hsl.py` (+ KPC bootstrap/epoch) |
+| KPC / qpredict | 1.0 | `karmazyn_key_predict.py`, `karmazyn_qpredict.py` |
 | KarminQL | v6.9 | `cynober_query_engine.py` |
 | Jądro KarmazynOS | v1.1.0 | `karmazyn_kernel.py` / `karmazyn_substrate.py` |
-| Substrat Rust (DB_karmin) | 0.1.0-karmazyn-substrate | `native/` + `karmazyn_backend.py` (DEFAULT gdy most) |
-| Serwer RPC / pakiet | v8.0.3 | `cynober_server.py` / `pyproject.toml` |
-| Klient SDK | v7.7 | `cynober_client.py` |
-| Klient CLI | v1.8.0 | `Cynober_db.py` |
-| Protokół | Cynober-Secure-1.2 | `cynober_rpc.py` |
-| GameStore (adapter aplikacyjny) | — | `game_store.py` |
+| Substrat Rust (DB_karmin) | 0.1.0-karmazyn-substrate | `native/` + `karmazyn_backend.py` |
+| GameStore | — | `game_store.py` |
 
-Pełna składnia i API: [`cynober_manual.md`](cynober_manual.md)
+Pełna składnia i API: [`cynober_manual.md`](cynober_manual.md) · sesja L0/KPC: [`docs/SESSION_L0_KPC.md`](docs/SESSION_L0_KPC.md) · historia: [`CHANGELOG.md`](CHANGELOG.md)
 
 ## Trzy filary
 
@@ -62,13 +64,20 @@ Wymagania: **Python 3.10+**.
 ### Z PyPI (zalecane dla zespołu)
 
 ```bash
-pip install cynober-db    # PyPI: cynober-db 8.0.3+
-cynober-server          # terminal 1 — serwer RPC
-cynober-cli             # terminal 2 — klient KarminQL
-cynober-konfigurator    # profile Termux / LAN / firewall
+pip install -U "cynober-db>=8.2.2"
 ```
 
-Bez `Scripts` w PATH: `python -m cynober_server`, `python -m Cynober_db`.
+**Start serwera** (Windows: jeśli `cynober-server` nie jest w PATH — normalne przy Python Store):
+
+```bash
+python -m cynober_server          # zalecane, zawsze działa
+# albo, gdy Scripts w PATH:
+cynober-server
+cynober-cli
+cynober-konfigurator
+```
+
+Katalog `Scripts` (np. `%LOCALAPPDATA%\Python\pythoncore-3.14-64\Scripts`) musi być w **User PATH**, inaczej PowerShell nie znajdzie `cynober-server.exe`.
 
 Opcjonalnie analityka i wykresy: `pip install "cynober-db[viz]"`.
 
@@ -78,7 +87,7 @@ Opcjonalnie analityka i wykresy: `pip install "cynober-db[viz]"`.
 git clone https://github.com/Maciej-EriAmo/DBase.git && cd DBase
 pip install -e ".[dev]"
 python -m unittest discover -s tests -q
-cynober-server
+python -m cynober_server
 ```
 
 ### Publikacja (maintainer)
@@ -163,7 +172,7 @@ Projekt jest w **fazie użytkowej dla early adopterów** — działa end-to-end,
 - KarminQL v6.9 z rozbudowanym dialektem SQL-owym (JOIN, CTE, okna, JSON, EXPLAIN, indeksy)
 - **Jądro v1.1.0:** reach-GC, `retained_tomb`, dual-emit tick (`both`/`batch`/`per_atom`), publiczne API bez `Store.reg`
 - Serwer v8.0: **izolacja sesji** + **trwałe światy** + **auth/role** + **ops** + **replikacja manifest-first** + **shardy KAFD** + **lazy unfold**
-- Pakiet PyPI [`cynober-db`](https://pypi.org/project/cynober-db/) 8.0.3+
+- Pakiet PyPI [`cynober-db`](https://pypi.org/project/cynober-db/) **8.2.2** (KPC/HSL, `session_info`, media KAFS)
 - Tunel HSS + HSL + opcjonalny PSK/QKD-seed
 - Trwałość: `ZAPISZ ŚWIAT`, auto-flush co 60s, kopie zapasowe z `shards/` i `proca/`
 - Integracja pandas, CSV, `GameStore` dla gier i prototypów

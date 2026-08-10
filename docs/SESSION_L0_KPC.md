@@ -85,3 +85,4 @@ python -m unittest tests.test_key_predict tests.test_qpredict tests.test_hsl_ses
 | Data | Uwagi |
 |------|--------|
 | 2026-08-10 | KPC + qpredict + spięcie L0/QKD/docs; HSL hook bootstrap/epoch |
+| 2026-08-10 | Pakiet **8.2.2** na PyPI; docs/manual/README wyrównane; `python -m cynober_server` |
