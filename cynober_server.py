@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-cynober_server.py — Bezpieczny Serwer Bazy Danych Cynober DB (v8.0.3)
+cynober_server.py — Bezpieczny Serwer Bazy Danych Cynober DB (v8.2.2)
 ==========================================================================
-Zastępuje serwer HTTP. Wykorzystuje protokół TCP oraz warstwę kryptograficzną
-z karmazyn_handshake.py (Ring-LWE / ECDH / PBKDF2) do zabezpieczenia zapytań.
+Zastępuje serwer HTTP. L0 Carrier = TCP (nakładka; QKD = seed w HSL KDF, paper §6.4).
+Protokół: HSS + HSL (+ KPC przy establish/epoch) + KarminQL-RPC + MEDIA/KAFS.
 
 v7.0: każde połączenie RPC dostaje własny Store + KarminEngine (izolacja sesji).
 v7.1: trwałe, nazwane światy — WYBIERZ ŚWIAT / UTWÓRZ ŚWIAT (współdzielony stan).
@@ -17,6 +17,7 @@ v7.8: auto-flush światów, utrwalony indeks zapytań, Proca dla COLD.
 v7.9: lazy load manifestu, ROZWIJ / WYBIERZ CEL, auto-unfold przy POKAŻ.
 v8.0: shardy KAFD per region grafu, replikacja manifest-first.
 v8.1: gossip SOUL (bąble+bindings+atomy) nad RPC — BubbleVFS-lite.
+v8.2: KPC w HSL (bootstrap/epoch), ZDROWIE l0/kpc, klient session_info + media errors.
 """
 
 from __future__ import annotations
@@ -883,13 +884,17 @@ def handle_client(conn: socket.socket, addr, query_limit: SessionQueryLimiter | 
         session_facade = _session_manager.create(session_label)
         session_facade._media_session = media_session  # type: ignore[attr-defined]
         session_facade._kafs_enabled = framed  # type: ignore[attr-defined]
+        session_facade._hsl_link = hsl_link  # type: ignore[attr-defined]
         get_server_metrics().record_connection()
         psk_note = " [PSK]" if os.environ.get("KARM_PSK") else ""
         hsl_note = " + HSL" if hsl_link else ""
         qkd_note = " + QKD" if hsl_link and hsl_link.qkd_hybrid else ""
         kafs_note = " + KAFS" if framed else ""
+        kpc = getattr(hsl_link, "_kpc", None) if hsl_link else None
+        kpc_note = f" + KPC(g={kpc.history.gen})" if kpc is not None else ""
         print(f"[Cynober] Tunel zabezpieczony z {addr} ({crypto_mode.upper()}) "
-              f"v{remote_caps.get('version')} sesja={session_label}{psk_note}{hsl_note}{qkd_note}{kafs_note}")
+              f"v{remote_caps.get('version')} sesja={session_label}"
+              f"{psk_note}{hsl_note}{qkd_note}{kafs_note}{kpc_note} L0=TCP")
 
         if query_limit is None:
             from cynober_client_config import get_server_config

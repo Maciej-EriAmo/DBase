@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
 """
-cynober_client.py — oficjalny klient Cynober-Secure-1.2 (v7.7)
+cynober_client.py — oficjalny klient Cynober-Secure-1.2 (v8.2)
 ==============================================================
-Jeden protokół: TCP + HSS + HSL + KarminQL-RPC.
+Jeden protokół: TCP (L0 Carrier) + HSS + HSL (+ KPC na serwerze) + KarminQL-RPC.
+Media: put_media / get_media przez KAFS (negocjacja features).
 
   from cynober_client import connect, CynoberClient
 
   with connect() as c:
       print(c.query("ZDROWIE"))
+      print(c.session_info())
 
   # lub z profilem ~/.karmazyn_client.json
   c = connect(profile="zespol")
@@ -31,6 +33,7 @@ from cynober_rpc import (
     decode_rpc_response_frame,
     encode_kafs_request_frame,
     encode_rpc_request_frame,
+    features_of,
     kafs_negotiated,
     perform_handshake,
 )
@@ -112,6 +115,38 @@ class CynoberClient:
         self.sock.settimeout(self.timeout)
         return self
 
+    def session_info(self) -> dict[str, Any]:
+        """
+        Metadane tunelu po connect() — do lore-editor / panelu / doctor.
+        L0 dziś = TCP; QKD = hybrid seed gdy HSL.qkd_hybrid.
+        """
+        hsl = self.hsl_link
+        kpc_residual = None
+        kpc_gen = None
+        if hsl is not None:
+            kpc_residual = getattr(hsl, "kpc_last_soft_residual", None)
+            kpc = getattr(hsl, "_kpc", None)
+            if kpc is not None and getattr(kpc, "history", None) is not None:
+                kpc_gen = kpc.history.gen
+        return {
+            "host": self.host,
+            "port": self.port,
+            "connected": self.sock is not None,
+            "protocol": PROTO_VERSION,
+            "l0_carrier": "tcp",
+            "crypto_mode": self.crypto_mode,
+            "kafs_enabled": bool(self.kafs_enabled),
+            "hsl": bool(hsl),
+            "qkd_hybrid": bool(hsl and getattr(hsl, "qkd_hybrid", False)),
+            "hsl_epoch": getattr(hsl, "epoch", None) if hsl else None,
+            "kpc_gen": kpc_gen,
+            "kpc_soft_residual": kpc_residual,
+            "local_features": sorted(features_of(self.local_caps)),
+            "remote_features": sorted(features_of(self.remote_caps)),
+            "node_id_local": (self.local_caps or {}).get("node_id"),
+            "node_id_remote": (self.remote_caps or {}).get("node_id"),
+        }
+
     def query(self, text: str) -> dict:
         if not self.sock:
             raise CynoberClientError("Nie połączono — wywołaj connect()")
@@ -183,10 +218,18 @@ class CynoberClient:
         if not isinstance(data, (bytes, bytearray)):
             raise CynoberClientError("put_media: data musi być bytes")
         data = bytes(data)
+        if not self.sock:
+            raise CynoberClientError("put_media: nie połączono — wywołaj connect()")
         if not self.kafs_enabled:
+            loc = features_of(self.local_caps)
+            rem = features_of(self.remote_caps)
             raise CynoberClientError(
-                "put_media wymaga kafs-stream (serwer/klient bez FEATURE)"
+                "put_media wymaga negocjacji kafs-stream (Cynober-Secure features). "
+                f"local={sorted(loc) or '∅'} remote={sorted(rem) or '∅'}. "
+                "Zaktualizuj cynober-db po obu stronach (serwer + klient ≥8.0)."
             )
+        if not atom_id or not str(atom_id).strip():
+            raise CynoberClientError("put_media: atom_id nie może być puste")
         q = (
             f'MEDIA PUT START "{atom_id}" MIME "{mime}" SIZE {len(data)}'
         )

@@ -22,7 +22,11 @@ class TestCynoberClient(unittest.TestCase):
         with CynoberClient(port=self.port) as c:
             row = c.query_line("ZDROWIE")
             self.assertEqual(row["action"], "HEALTH")
-            self.assertEqual(row["data"]["server_version"], "8.0.3")
+            from cynober_ops import SERVER_VERSION
+
+            self.assertEqual(row["data"]["server_version"], SERVER_VERSION)
+            self.assertEqual(row["data"].get("l0_carrier"), "tcp")
+            self.assertTrue(row["data"].get("kpc"))
 
     def test_context_manager(self):
         c = CynoberClient(port=self.port)

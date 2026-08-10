@@ -33,7 +33,7 @@ def _load_meta(path: Path) -> dict:
     except (OSError, json.JSONDecodeError):
         return {}
 
-SERVER_VERSION = "8.0.3"
+SERVER_VERSION = "8.2.2"
 
 _BACKUP_WORLD_RE = re.compile(
     r'^KOPIA\s+ZAPASOWA\s+ŚWIATA\s+"([^"]+)"$',
@@ -117,13 +117,24 @@ class ServerMetrics:
             from karmazyn_qkd import qkd_source_label
 
             prof = resolve_hss_profile()
+            kpc_ok = False
+            try:
+                import karmazyn_key_predict  # noqa: F401
+
+                kpc_ok = True
+            except ImportError:
+                pass
             return {
                 "status": "ok",
                 "server_version": SERVER_VERSION,
                 "uptime_sec": round(time.time() - self._started_at, 2),
+                "protocol": "Cynober-Secure-1.2",
+                "l0_carrier": "tcp",  # hydraulika; QKD = seed w KDF (HSL §6.4)
                 "hss_profile": prof.name,
                 "hss_ntt": hss_use_ntt(prof),
                 "qkd_source": qkd_source_label(),
+                "kpc": kpc_ok,
+                "media_kafs": True,
             }
 
 
