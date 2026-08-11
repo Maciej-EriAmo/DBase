@@ -17,6 +17,7 @@ Dane: ramki FRAME_KAFS po negocjacji kafs-stream.
 
 from __future__ import annotations
 
+import hashlib
 import re
 import struct
 import threading
@@ -29,6 +30,27 @@ from cynober_rpc import KAFS_CHUNK_MAX
 KAFS_DATA = 1
 KAFS_END = 2
 KAFS_ERR = 3
+
+# Wire field for xfer_id is fixed 16 bytes (see encode_kafs_*).
+# Long atom ids (e.g. studio:snap:snap_2026…) MUST NOT be truncated as lookup keys
+# — use a stable 16-hex digest instead.
+KAFS_XFER_ID_BYTES = 16
+
+
+def kafs_wire_id(atom_id: str) -> str:
+    """
+    Stable ≤16-char id for KAFS DATA frames.
+
+    MEDIA PUT START/END still use the full atom_id; chunks carry this wire id.
+    """
+    s = (atom_id or "").strip()
+    if not s:
+        return ""
+    # Short ids that already fit the wire field pass through (legacy / small names)
+    raw = s.encode("utf-8")
+    if len(raw) <= KAFS_XFER_ID_BYTES and "\0" not in s:
+        return s
+    return hashlib.sha256(s.encode("utf-8")).hexdigest()[:KAFS_XFER_ID_BYTES]
 
 _MEDIA_PUT_START_RE = re.compile(
     r'^MEDIA\s+PUT\s+START\s+"([^"]+)"\s+MIME\s+"([^"]+)"\s+SIZE\s+(\d+)'
@@ -79,14 +101,20 @@ class KafsMessage:
     error: str = ""
 
 
+def _pack_xfer_id(xfer_id: str) -> bytes:
+    """Pack wire xfer id into fixed 16-byte field (null-padded)."""
+    wid = kafs_wire_id(xfer_id or "")
+    xid = wid.encode("utf-8")[:KAFS_XFER_ID_BYTES]
+    return xid + b"\0" * (KAFS_XFER_ID_BYTES - len(xid))
+
+
 def encode_kafs_data(
     xfer_id: str,
     seq: int,
     total_size: int,
     chunk: bytes,
 ) -> bytes:
-    xid = (xfer_id or "")[:16].encode("utf-8")
-    xid = xid + b"\0" * (16 - len(xid))
+    xid = _pack_xfer_id(xfer_id)
     return (
         struct.pack(">B", KAFS_DATA)
         + xid
@@ -98,14 +126,12 @@ def encode_kafs_data(
 
 
 def encode_kafs_end(xfer_id: str) -> bytes:
-    xid = (xfer_id or "")[:16].encode("utf-8")
-    xid = xid + b"\0" * (16 - len(xid))
+    xid = _pack_xfer_id(xfer_id)
     return struct.pack(">B", KAFS_END) + xid + struct.pack(">I", 0) + struct.pack(">Q", 0) + struct.pack(">I", 0)
 
 
 def encode_kafs_err(xfer_id: str, message: str) -> bytes:
-    xid = (xfer_id or "")[:16].encode("utf-8")
-    xid = xid + b"\0" * (16 - len(xid))
+    xid = _pack_xfer_id(xfer_id)
     msg = (message or "error").encode("utf-8")[:1024]
     return (
         struct.pack(">B", KAFS_ERR)
@@ -188,7 +214,17 @@ class MediaSession:
                 bubble=(bubble or "").strip(),
                 binding=(binding or "").strip(),
             )
+            # Index by full atom_id (START/END) and by wire id (KAFS DATA frames)
+            wire = kafs_wire_id(atom_id)
             self.uploads[atom_id] = up
+            if wire and wire != atom_id:
+                self.uploads[wire] = up
+            # Legacy: clients that still truncate to 16 utf-8 bytes
+            legacy = atom_id.encode("utf-8")[:KAFS_XFER_ID_BYTES].decode(
+                "utf-8", errors="ignore"
+            )
+            if legacy and legacy not in self.uploads:
+                self.uploads[legacy] = up
             return up
 
     def feed_kafs(self, body: bytes) -> None:
@@ -202,6 +238,9 @@ class MediaSession:
         with self._lock:
             up = self.uploads.get(msg.xfer_id)
             if up is None:
+                # Also try digest of xfer_id in case of mixed client versions
+                up = self.uploads.get(kafs_wire_id(msg.xfer_id))
+            if up is None:
                 raise ValueError(f"KAFS: brak aktywnego PUT dla „{msg.xfer_id}”")
             if len(msg.data) > KAFS_CHUNK_MAX + 64:
                 raise ValueError("KAFS: chunk za duży")
@@ -213,9 +252,16 @@ class MediaSession:
 
     def end_put(self, atom_id: str) -> bytes:
         with self._lock:
-            up = self.uploads.pop(atom_id, None)
+            atom_id = (atom_id or "").strip()
+            up = self.uploads.get(atom_id)
+            if up is None:
+                up = self.uploads.get(kafs_wire_id(atom_id))
             if up is None:
                 raise ValueError(f"MEDIA PUT END: brak START dla „{atom_id}”")
+            # Drop all aliases pointing at this upload
+            for key in list(self.uploads.keys()):
+                if self.uploads.get(key) is up:
+                    self.uploads.pop(key, None)
             data = b"".join(up.parts)
             if up.size and len(data) != up.size:
                 raise ValueError(

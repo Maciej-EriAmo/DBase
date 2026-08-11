@@ -213,7 +213,7 @@ class CynoberClient:
         Wyślij medium przez MEDIA PUT + KAFS chunki.
         Wymaga kafs_enabled (negocjacja features).
         """
-        from cynober_media_rpc import encode_kafs_data, iter_chunks
+        from cynober_media_rpc import encode_kafs_data, iter_chunks, kafs_wire_id
 
         if not isinstance(data, (bytes, bytearray)):
             raise CynoberClientError("put_media: data musi być bytes")
@@ -230,6 +230,9 @@ class CynoberClient:
             )
         if not atom_id or not str(atom_id).strip():
             raise CynoberClientError("put_media: atom_id nie może być puste")
+        atom_id = str(atom_id).strip()
+        # KAFS wire field is 16 bytes — use stable digest for long ids (server indexes both)
+        wire_id = kafs_wire_id(atom_id)
         q = (
             f'MEDIA PUT START "{atom_id}" MIME "{mime}" SIZE {len(data)}'
         )
@@ -240,7 +243,7 @@ class CynoberClient:
             raise CynoberClientError(start.get("message") or "MEDIA PUT START failed")
         seq = 0
         for chunk in iter_chunks(data, chunk_size=chunk_size or KAFS_CHUNK_MAX):
-            self._send_kafs(encode_kafs_data(atom_id, seq, len(data), chunk))
+            self._send_kafs(encode_kafs_data(wire_id, seq, len(data), chunk))
             seq += 1
         end = self.query_line(f'MEDIA PUT END "{atom_id}"')
         if end.get("status") != "ok":
