@@ -55,7 +55,13 @@ HSL_VERSION = "HSL-1.1"
 HSL_TASK_DEFAULT = "cynober-rpc"
 HSL_PRISMS_DEFAULT = ("karminql",)
 HSL_EPOCH_SEC = int(os.environ.get("KARM_HSL_EPOCH_SEC", "3600"))
-PHI2_PATH = os.path.join(os.path.expanduser("~"), ".karmazyn_phi2")
+try:
+    from cynober_paths import phi2_path, relocate_legacy
+
+    relocate_legacy()
+    PHI2_PATH = str(phi2_path())
+except Exception:
+    PHI2_PATH = os.path.join(os.path.expanduser("~"), ".karmazyn_phi2")
 
 
 def current_epoch(now: float | None = None, epoch_sec: int = HSL_EPOCH_SEC) -> int:

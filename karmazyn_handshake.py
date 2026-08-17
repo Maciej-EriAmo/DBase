@@ -747,11 +747,17 @@ class KarmazynHandshake:
 
 def _node_id() -> str:
     """
-    [BUG FIX #9] Persystentny node_id w ~/.karmazyn_node_id.
+    [BUG FIX #9] Persystentny node_id w LOCALAPPDATA\\Cynober\\node_id.
     uuid.getnode() może się zmieniać (VM, kontener, random MAC).
     Plik zapewnia stabilność między restartami.
     """
-    id_path = os.path.join(os.path.expanduser("~"), ".karmazyn_node_id")
+    try:
+        from cynober_paths import node_id_path, relocate_legacy
+
+        relocate_legacy()
+        id_path = str(node_id_path())
+    except Exception:
+        id_path = os.path.join(os.path.expanduser("~"), ".karmazyn_node_id")
     try:
         saved = open(id_path, encoding="utf-8").read().strip()
         if saved.startswith("node_") and len(saved) == 17:

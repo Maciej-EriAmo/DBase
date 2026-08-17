@@ -1064,17 +1064,25 @@ class NativeStore:
     def resonance(self, query, k=5, threshold=0.1):
         if not _HAS_HRR:
             return []
-        qv = query if hasattr(query, "shape") else _hrr.name_to_vector(query, VEC_DIM)
+        use_surface = not hasattr(query, "shape")
+        qv = None if use_surface else query
         with self.lock:
             atoms = list(self.atoms())
         hits = []
         for atom in atoms:
-            if not atom.E:
+            e = getattr(atom, "E", None) or ""
+            sname = getattr(atom, "S", None) or ""
+            if not e and not sname:
                 continue
-            v = self.atom_vector(atom)
-            if v is None:
-                continue
-            s = _hrr.similarity(qv, v)
+            if use_surface:
+                s = _hrr.surface_similarity(query, e)
+                if sname:
+                    s = max(s, _hrr.surface_similarity(query, sname))
+            else:
+                v = self.atom_vector(atom)
+                if v is None:
+                    continue
+                s = _hrr.similarity(qv, v)
             if s >= threshold:
                 hits.append((s, atom.id))
         hits.sort(key=lambda x: -x[0])

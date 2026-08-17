@@ -30,7 +30,8 @@ from cynober_query_engine import KarminType
 WORLD_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_\-]{0,63}$")
 META_INDEX_VERSION = 1
 
-DEFAULT_WORLDS_DIR = Path.home() / ".cynober_worlds"
+from cynober_paths import relocate_legacy, worlds_home
+
 DEFAULT_UNFOLD_RADIUS = 2
 
 
@@ -51,7 +52,11 @@ def default_unfold_radius() -> int:
 
 def worlds_dir() -> Path:
     raw = os.environ.get("CYNOBER_WORLDS_DIR", "").strip()
-    path = Path(raw) if raw else DEFAULT_WORLDS_DIR
+    if raw:
+        path = Path(raw)
+    else:
+        relocate_legacy()
+        path = worlds_home()
     path.mkdir(parents=True, exist_ok=True)
     return path
 
@@ -188,11 +193,24 @@ def _finalize_kafd_load(
         if a.S != "__bubble__":
             continue
         nazwa = a.E
+        # bindings: kanon w metadata["v"]["bindings"] (sync_bubble_record);
+        # starsze kafd mogły trzymać top-level "bindings".
+        meta = a.metadata if isinstance(a.metadata, dict) else {}
+        v = meta.get("v") if isinstance(meta.get("v"), dict) else {}
+        bindings = v.get("bindings") if isinstance(v.get("bindings"), dict) else None
+        if not bindings:
+            bindings = meta.get("bindings") if isinstance(meta.get("bindings"), dict) else {}
         if nazwa not in engine.api._bubble_index:
             b = store.bubble_new(label=nazwa)
-            b.bindings = dict(a.metadata.get("bindings", {}))
+            b.bindings = dict(bindings or {})
             store.set_root(b)
             engine.api._bubble_index[nazwa] = b
+        else:
+            # scal: nie gub bindingów mediów przy już istniejącym bąblu
+            existing = engine.api._bubble_index[nazwa]
+            cur = dict(getattr(existing, "bindings", {}) or {})
+            cur.update(dict(bindings or {}))
+            existing.bindings = cur
         store.delete_atom(a.id)
     if hasattr(store, "sync_id_counter"):
         store.sync_id_counter()

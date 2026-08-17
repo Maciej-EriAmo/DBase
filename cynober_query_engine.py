@@ -2648,7 +2648,7 @@ class SubstrateAPI:
         return sorted(history, key=lambda x: x["timestamp"])
 
     def search_resonance(self, query: str) -> list:
-        hits = self.store.resonance(query, k=5, threshold=0.1)
+        hits = self.store.resonance(query, k=16, threshold=0.18)
         found: Set[str] = set()
         for _, atom_id in hits:
             found |= self._atom_index.get(atom_id, set())

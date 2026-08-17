@@ -44,7 +44,9 @@ class TestGameStoreLocal(unittest.TestCase):
 
     def test_search_resonance_short_tag(self):
         self.store.seed_demo_world()
-        self.assertEqual(self.store.search_resonance("smok"), ["Gandalf"])
+        hits = self.store.search_resonance("smok")
+        # Klucz="smok" na Gandalfie; Tytuł/Pamięć też rezonują (powierzchnia, nie hash).
+        self.assertIn("Gandalf", hits)
 
     def test_explain_plan(self):
         self.store.seed_demo_world()

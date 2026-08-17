@@ -290,7 +290,10 @@ def perform_handshake(
 
 
 def _node_id() -> str:
-    path = os.path.join(os.path.expanduser("~"), ".karmazyn_node_id")
+    from cynober_paths import node_id_path, relocate_legacy
+
+    relocate_legacy()
+    path = str(node_id_path())
     try:
         with open(path, encoding="utf-8") as f:
             saved = f.read().strip()

@@ -98,11 +98,73 @@ def name_to_vector(name: str, D: int = 2048) -> np.ndarray:
     Deterministyczny wektor jednostkowy dla danej nazwy.
     Hash nazwy → seed → losowy wektor.
     Gwarancja: ten sam string zawsze daje ten sam wektor.
+
+    To jest tożsamość algebraiczna (bind/unbind). Do rezonansu
+    powierzchni (podobne napisy) użyj surface_vector / surface_similarity.
     """
     h   = int(hashlib.sha256(name.encode()).hexdigest(), 16) % (2**32)
     rng = np.random.RandomState(h)
     v   = rng.randn(D)
     return normalize(v)
+
+
+def surface_grams(text: Any) -> set:
+    """Zbiór n-gramów powierzchniowych — podobne napisy dzielą gramy.
+
+    name_to_vector(całość) jest ortogonalny dla różnych stringów.
+    Tu: 2-/3-gramy, token, prefiksy (kat ⊂ katalog), forma złożona.
+    """
+    s = " ".join(str(text if text is not None else "").casefold().split())
+    grams: set = set()
+    if not s:
+        return grams
+    grams.add(f"={s}")
+    padded = f"#{s}#"
+    for n in (2, 3):
+        if len(padded) >= n:
+            for i in range(len(padded) - n + 1):
+                grams.add(padded[i : i + n])
+    for tok in s.split():
+        grams.add(f"${tok}")
+        for length in range(2, len(tok) + 1):
+            grams.add(f"^{tok[:length]}")
+    return grams
+
+
+def surface_vector(text: Any, D: int = 2048) -> np.ndarray:
+    """HRR powierzchni: bundle wektorów n-gramów (nie jeden hash całości)."""
+    grams = surface_grams(text)
+    if not grams:
+        return np.zeros(D)
+    acc = np.zeros(D)
+    for g in grams:
+        acc = acc + name_to_vector(g, D)
+    return normalize(acc)
+
+
+def surface_similarity(a: Any, b: Any) -> float:
+    """Rezonans powierzchni: 1.0 ten sam napis (casefold), potem Dice n-gramów.
+
+    Liczby: bliskie wartości też rezonują (3 ≈ 3.1).
+    """
+    sa = " ".join(str(a if a is not None else "").casefold().split())
+    sb = " ".join(str(b if b is not None else "").casefold().split())
+    if not sa or not sb:
+        return 0.0
+    if sa == sb:
+        return 1.0
+    ga, gb = surface_grams(sa), surface_grams(sb)
+    inter = len(ga & gb)
+    dice = (2.0 * inter / (len(ga) + len(gb))) if inter and ga and gb else 0.0
+    try:
+        fa = float(sa.replace(",", "."))
+        fb = float(sb.replace(",", "."))
+        mag = max(abs(fa), abs(fb), 1.0)
+        num = max(0.0, 1.0 - abs(fa - fb) / mag)
+        dice = max(dice, num * 0.9)
+    except ValueError:
+        pass
+    return float(dice)
 
 
 # ─── HRROperations — stateful wrapper ────────────────────────────────────────

@@ -13,7 +13,10 @@ from pathlib import Path
 from typing import Any
 
 CONFIG_VERSION = 2
-CONFIG_PATH = Path(os.path.expanduser("~")) / ".karmazyn_client.json"
+from cynober_paths import client_config_path, relocate_legacy
+
+relocate_legacy()
+CONFIG_PATH = client_config_path()
 DEFAULT_CLIENT_HOST = "127.0.0.1"
 DEFAULT_SERVER_BIND = "0.0.0.0"
 DEFAULT_PORT = 8080

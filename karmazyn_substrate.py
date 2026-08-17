@@ -599,22 +599,31 @@ class Store:
             return atom.vector
 
     def resonance(self, query, k=5, threshold=0.1):
-        """Adresowanie przez falę, nie przez id: zwraca k nazwanych atomów
-        najbliższych zapytaniu (nazwa lub wektor) w sensie podobieństwa HRR.
-        Lista [(sim, atom_id), ...] malejąco. [] bez HRR."""
+        """Adresowanie przez falę, nie przez id.
+
+        Napis: powierzchnia (n-gramy E i S) — podobne wartości rezonują.
+        Wektor (ndarray): stara przestrzeń tożsamości atom_vector (bind/unbind).
+        Lista [(sim, atom_id), ...] malejąco. [] bez HRR.
+        """
         if not _HAS_HRR:
             return []
-        qv = query if hasattr(query, "shape") else _hrr.name_to_vector(query, VEC_DIM)
+        use_surface = not hasattr(query, "shape")
+        qv = None if use_surface else query
         with self.lock:
             atoms = self._reg.atoms()
         hits = []
         for atom in atoms:
-            if not atom.E:
+            if not atom.E and not getattr(atom, "S", None):
                 continue
-            v = self.atom_vector(atom)
-            if v is None:
-                continue
-            s = _hrr.similarity(qv, v)
+            if use_surface:
+                s = _hrr.surface_similarity(query, atom.E or "")
+                if atom.S:
+                    s = max(s, _hrr.surface_similarity(query, atom.S))
+            else:
+                v = self.atom_vector(atom)
+                if v is None:
+                    continue
+                s = _hrr.similarity(qv, v)
             if s >= threshold:
                 hits.append((s, atom.id))
         hits.sort(key=lambda x: -x[0])
