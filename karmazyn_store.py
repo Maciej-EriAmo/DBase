@@ -26,41 +26,29 @@ except ImportError:
 # document/version — treść tekstowa; media — Faza 0 multimedia; __bubble__ — bindings
 # media = payload single / stream head; media_seg = chunk A_STREAM (Faza 4)
 DOC_KINDS = ("document", "version", "__bubble__", "media", "media_seg")
-STORE_META = "karmazyn_store_v1.3_encrypted"
+STORE_META = "karmazyn_store_v1.4_kafx"
 FOLDED_META_KEY = "_folded"
 FOLD_SRC_KEY = "_fold_src"
 
-# ─── KRYPTOGRAFIA PHI (Transparentny Szyfr Strumieniowy) ────────────────────
+# ─── Kryptografia pliku (P6: AES-GCM / KAFX; XOR tylko odczyt legacy) ────────
 
 def _get_system_phi_key() -> bytes:
-    """
-    Generuje wektor klucza z fundamentalnego rezonansu systemu.
-    W przyszłości modyfikowany wektorem HRR podanym przez użytkownika (hasłem).
-    """
-    semantic_root = b"KARMAZYN_PHI_ROOT_SPACE_V1_SEED"
-    return hashlib.sha256(semantic_root).digest()
+    """Legacy: seed starego XOR. Nie używany przy nowym zapisie."""
+    from karmazyn_cipher import PHI_XOR_SEED
+    return hashlib.sha256(PHI_XOR_SEED).digest()
+
 
 def _apply_phi_cipher(data: bytes) -> bytes:
-    """
-    Strumieniowe szyfrowanie/deszyfrowanie (XOR) za pomocą SHA-256 w trybie CTR.
-    Operacja jest symetryczna - ponowne nałożenie szyfru odwraca proces.
-    Nie wymaga zewnętrznych bibliotek (jak 'cryptography').
-    """
-    out = bytearray(len(data))
-    key_hash = _get_system_phi_key()
-    counter = 0
-    
-    # Przetwarzanie w blokach 32-bajtowych
-    for i in range(0, len(data), 32):
-        block = data[i:i+32]
-        # Generowanie strumienia klucza dla danego bloku
-        stream = hashlib.sha256(key_hash + counter.to_bytes(8, 'big')).digest()
-        
-        for j in range(len(block)):
-            out[i+j] = block[j] ^ stream[j]
-        counter += 1
-        
-    return bytes(out)
+    """DEPRECATED — stary XOR. Zostawiony dla narzędzi/testów legacy."""
+    from karmazyn_cipher import legacy_phi_xor
+    return legacy_phi_xor(data)
+
+
+def _read_decrypted_kafd(path: str, world: Optional[str] = None) -> bytes:
+    """Odczytaj .kafd: KAFX → AES-GCM; KAFD → plain; inaczej XOR-legacy."""
+    from karmazyn_cipher import read_stored_file
+    blob, _mode = read_stored_file(path, world=world)
+    return blob
 
 
 # ─── ADAPTER DIALEKTU MAGAZYNU (szew D2: Store vs PhiSpace) ──────────────────
@@ -161,14 +149,7 @@ def _is_doc_atom(atom, kinds: Iterable[str]) -> bool:
 
 # ─── ATOMOWY ZAPIS I/O ──────────────────────────────────────────────────────
 
-def _read_decrypted_kafd(path: str) -> bytes:
-    """Odczytaj plik .kafd i zwróć odszyfrowany blob KAFD."""
-    with open(path, "rb") as f:
-        encrypted_blob = f.read()
-    try:
-        return _apply_phi_cipher(encrypted_blob)
-    except Exception as e:
-        raise RuntimeError(f"Błąd kryptograficzny (uszkodzony plik lub nieznany klucz): {e}") from e
+
 
 
 def _resolve_payload_data(data: bytes, aid: str, proca_index) -> bytes:
@@ -217,14 +198,18 @@ def _atom_phi_vector(phi, atom) -> Optional[Any]:
 def save_documents(phi, path: str,
                    kinds: Iterable[str] = DOC_KINDS,
                    proca_index=None,
-                   proca_cold_only: bool = False) -> int:
-    """Zapisz atomy z opcjonalną deduplikacją ProcaIndex i szyfrowaniem Phi."""
+                   proca_cold_only: bool = False,
+                   world: Optional[str] = None,
+                   encrypt: Optional[bool] = None) -> int:
+    """Zapisz atomy. Domyślnie koperta KAFX (AES-GCM, klucz świata)."""
     return save_documents_filtered(
         phi,
         path,
         kinds=kinds,
         proca_index=proca_index,
         proca_cold_only=proca_cold_only,
+        world=world,
+        encrypt=encrypt,
     )
 
 
@@ -237,6 +222,8 @@ def save_documents_filtered(
     proca_cold_only: bool = False,
     atom_filter=None,
     include_payload=None,
+    world: Optional[str] = None,
+    encrypt: Optional[bool] = None,
 ) -> int:
     """
     Zapisz podzbiór atomów. include_payload(atom)->bool steruje payloadem
@@ -276,14 +263,17 @@ def save_documents_filtered(
         proca_index.save_all_sources()
 
     meta = {"format": STORE_META, "saved": time.time(), "count": len(atoms_dict)}
-    
-    # 1. Kompresja KAFD
-    blob = vfs_pack(atoms_dict, meta)
-    # 2. Transparentne szyfrowanie Phi
-    encrypted_blob = _apply_phi_cipher(blob)
-    # 3. Zapis
+
+    from karmazyn_cipher import encrypt_for_path, infer_world_from_path, plain_requested
+    from karmazyn_kafd import F_ENCRYPTED, F_PHI_NATIVE
+
+    mark = encrypt if encrypt is not None else (not plain_requested())
+    wname = world if world is not None else infer_world_from_path(path)
+    flags = F_PHI_NATIVE | (F_ENCRYPTED if mark else 0)
+    blob = vfs_pack(atoms_dict, meta, flags=flags)
+    encrypted_blob = encrypt_for_path(blob, path, world=wname, encrypt=mark)
     _atomic_write(path, encrypted_blob)
-    
+
     return len(atoms_dict)
 
 
@@ -314,9 +304,13 @@ def _ingest_atom_bytes(
     if isinstance(m, dict):
         atom.metadata.update(m)
 
+    # media / media_seg: nigdy nie zwijaj (lore-editor Dołącz plik + KAFS).
+    # T mediów jest zwykle < T_HOT — lazy fold kasował payload i lista/podgląd
+    # wracały puste mimo poprawnego attach.
     fold = (
         fold_below_T is not None
         and S != "__bubble__"
+        and S not in ("media", "media_seg")
         and T < fold_below_T
         and len(data) > 0
     )
@@ -337,6 +331,7 @@ def load_documents_lazy(
     proca_index=None,
     *,
     fold_below_T: float | None = None,
+    world: Optional[str] = None,
 ) -> tuple[int, set[str]]:
     """
     Wczytaj manifest: nagłówki wszystkich atomów; payload tylko HOT / __bubble__.
@@ -354,8 +349,8 @@ def load_documents_lazy(
         fold_below_T = T_HOT
 
     try:
-        blob = _read_decrypted_kafd(path)
-    except RuntimeError:
+        blob = _read_decrypted_kafd(path, world=world)
+    except (RuntimeError, ValueError, OSError):
         try:
             with open(path, "rb") as f:
                 blob = f.read()
@@ -388,7 +383,8 @@ def load_documents_lazy(
     return n, folded
 
 
-def load_folded_atoms(phi, path: str, atom_ids: set[str], proca_index=None) -> int:
+def load_folded_atoms(phi, path: str, atom_ids: set[str], proca_index=None,
+                      world: Optional[str] = None) -> int:
     """Dociągnij payload zwiniętych atomów z pliku .kafd."""
     if not atom_ids or not _KAFD_OK or not os.path.exists(path):
         return 0
@@ -396,8 +392,8 @@ def load_folded_atoms(phi, path: str, atom_ids: set[str], proca_index=None) -> i
     from karmazyn_kafd import KAFDReader
 
     try:
-        blob = _read_decrypted_kafd(path)
-    except RuntimeError:
+        blob = _read_decrypted_kafd(path, world=world)
+    except (RuntimeError, ValueError, OSError):
         with open(path, "rb") as f:
             blob = f.read()
 
@@ -439,7 +435,8 @@ def load_folded_atoms_multi(
     return total
 
 
-def load_documents(phi, path: str, proca_index=None) -> int:
+def load_documents(phi, path: str, proca_index=None,
+                   world: Optional[str] = None) -> int:
     """Wczytaj wszystkie atomy (pełny load, bez zwijania)."""
     if not _KAFD_OK:
         raise RuntimeError("Brak karmazyn_kafd — nie można odczytać z dysku")
@@ -447,8 +444,8 @@ def load_documents(phi, path: str, proca_index=None) -> int:
         return 0
 
     try:
-        decrypted_blob = _read_decrypted_kafd(path)
-    except RuntimeError:
+        decrypted_blob = _read_decrypted_kafd(path, world=world)
+    except (RuntimeError, ValueError, OSError):
         with open(path, "rb") as f:
             decrypted_blob = f.read()
 
@@ -477,9 +474,11 @@ def store_stats(path: str) -> dict:
     try:
         with open(path, "rb") as f:
             blob = f.read()
-        decrypted_blob = _apply_phi_cipher(blob)
+        from karmazyn_cipher import open_stored_bytes
+        decrypted_blob, mode = open_stored_bytes(blob)
         atoms_dict, meta = vfs_unpack(decrypted_blob)
         return {"exists": True, "atoms": len(atoms_dict),
-                "size": len(blob), "meta": meta, "encrypted": True}
+                "size": len(blob), "meta": meta, "encrypted": mode != "plain",
+                "cipher": mode}
     except Exception as e:
         return {"exists": True, "error": str(e)}

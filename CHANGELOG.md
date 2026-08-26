@@ -5,6 +5,10 @@ Format: skrót dla deweloperów. Protokół wire (**Cynober-Secure-1.2**) jest w
 ## 8.2.3
 
 - **MEDIA LIST "bąbel"** — lista bindingów mediów przy encji (lore-editor `lista_mediow` po RPC).
+- **KAFD v2.1 + dziennik KAFS** — append na tick, recovery urwanej klatki, `seal` → tabela w stopce + indeks tick/T (`KTIX`). CRC nagłówka i CAS przy odczycie = błąd. `KAFDReader.from_path` mmap na plain `.kafd`.
+- **KAFX** — AES-256-GCM na `.kafd` (HKDF, klucz per świat). Payload dziennika: KX1. Stary XOR ze seedem **tylko odczyt**. `KARMAZYN_KAFD_PLAIN=1` wyłącza kopertę. Moduł `karmazyn_cipher.py`.
+- **ThermalLog** (`karmazyn_thermal.py`) — klatki `ThermalFrame` GOP key/delta, `as_of_tick`, `verify_chain`. Memvid / `.mv2` usunięte.
+- `Store.tick_count`. Docs: [`docs/KAFD.md`](docs/KAFD.md). Testy: `tests/test_kafd_p15.py`, `tests/test_kafd_p6.py`.
 
 ## 8.2.2
 

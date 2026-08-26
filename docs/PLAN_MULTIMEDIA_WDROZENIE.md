@@ -201,7 +201,7 @@ HSL: capability `media:stream` / `media:put` (obok `karminql:query`).
 1. Model segmentów: atom nagłówkowy `A_STREAM` + `metadata["segments"]` / CAS lista id chunków.
 2. PUT dzieli plik na segmenty; GET reassembluje lub streamuje sekwencyjnie.
 3. Opcja: nie trzymać pełnego `metadata["data"]` w RAM — tylko fold + `ROZWIJ` / GET.
-4. Ulepszenie KAFDReader: opcjonalny odczyt z `mmap` / file offset (nie cały blob) — **osobny PR jeśli trudne**.
+4. Ulepszenie KAFDReader: opcjonalny odczyt z `mmap` / file offset (nie cały blob) — **DONE** dla plain `.kafd` (`from_path`); KAFX najpierw GCM do RAM. Spec: [`docs/KAFD.md`](KAFD.md).
 5. Polityka: video default → stream segments; image < 2 MiB → single A_RAW.
 
 **Kryteria akceptacji:**

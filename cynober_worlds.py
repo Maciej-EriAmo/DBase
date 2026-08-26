@@ -156,6 +156,7 @@ def save_runtime_to_kafd(
     *,
     proca_dir: Path | str | None = None,
     proca_cold: bool = True,
+    world: str | None = None,
 ) -> int:
     import karmazyn_store
 
@@ -177,6 +178,7 @@ def save_runtime_to_kafd(
             kinds=kinds,
             proca_index=proca_index,
             proca_cold_only=bool(proca_cold and proca_index is not None),
+            world=world,
         )
     finally:
         for sid in syn_ids:
@@ -226,6 +228,7 @@ def load_runtime_from_kafd(
     query_indexes: dict[str, Any] | None = None,
     lazy: bool = False,
     shard_paths: Optional[Dict[str, Path]] = None,
+    world: str | None = None,
 ) -> tuple[int, set[str]]:
     import karmazyn_store
     from karmazyn_store import FOLDED_META_KEY, FOLD_SRC_KEY
@@ -233,9 +236,11 @@ def load_runtime_from_kafd(
     store = bridge.store
     proca_index = _proca_index_for(proca_dir)
     folded: set[str] = set()
+    wname = world or Path(path).stem
     if lazy and lazy_load_enabled():
         loaded, folded = karmazyn_store.load_documents_lazy(
-            store, str(path), proca_index=proca_index
+            store, str(path), proca_index=proca_index,
+            world=wname,
         )
         if shard_paths:
             from karmazyn_atom import T_HOT
@@ -251,7 +256,9 @@ def load_runtime_from_kafd(
                 atom.metadata[FOLD_SRC_KEY] = str(spath)
                 atom.metadata.pop("data", None)
     else:
-        loaded = karmazyn_store.load_documents(store, str(path), proca_index=proca_index)
+        loaded = karmazyn_store.load_documents(
+            store, str(path), proca_index=proca_index, world=wname
+        )
     _finalize_kafd_load(bridge, query_indexes)
     return loaded, folded
 
@@ -603,6 +610,7 @@ class WorldRegistry:
                     kafd,
                     proca_dir=proca,
                     proca_cold=True,
+                    world=world.name,
                 )
                 world.runtime.shard_index = {}
             api = world.runtime.engine.api

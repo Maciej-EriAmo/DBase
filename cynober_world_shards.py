@@ -237,6 +237,7 @@ def save_sharded_runtime(
             proca_index=proca_index,
             proca_cold_only=bool(proca_cold and proca_index is not None),
             include_payload=_manifest_payload,
+            world=world,
         )
 
         shard_sizes: Dict[str, int] = {}
@@ -257,6 +258,7 @@ def save_sharded_runtime(
                 proca_cold_only=bool(proca_cold and proca_index is not None),
                 atom_filter=lambda a, _allow=allow: a.id in _allow,
                 include_payload=_shard_payload,
+                world=world,
             )
             shard_sizes[rid] = shard_path.stat().st_size if shard_path.is_file() else 0
             if n == 0 and shard_path.is_file():

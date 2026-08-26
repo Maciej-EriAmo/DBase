@@ -22,8 +22,12 @@
 ## Opcjonalnie później
 
 - D1: `media_frame` atoms w Store  
-- mmap reader KAFD  
 - async decode worker  
+
+## Zrobione (KAFD)
+
+- mmap reader KAFD (plain `KAFDReader.from_path`)  
+- dziennik KAFS, v2.1 footer, GOP, KAFX — [`docs/KAFD.md`](KAFD.md)  
 
 ## Później / inny repo
 

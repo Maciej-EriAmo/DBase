@@ -18,8 +18,9 @@ Relacyjno-grafowa baza danych na termodynamicznym rdzeniu **KarmazynOS**, z tran
 | Jądro KarmazynOS | v1.1.0 | `karmazyn_kernel.py` / `karmazyn_substrate.py` |
 | Substrat Rust (DB_karmin) | 0.1.0-karmazyn-substrate | `native/` + `karmazyn_backend.py` |
 | GameStore | — | `game_store.py` |
+| KAFD / KAFX | v2.1 + journal | `karmazyn_kafd.py`, `karmazyn_cipher.py`, `karmazyn_thermal.py` · [docs/KAFD.md](docs/KAFD.md) |
 
-Pełna składnia i API: [`cynober_manual.md`](cynober_manual.md) · sesja L0/KPC: [`docs/SESSION_L0_KPC.md`](docs/SESSION_L0_KPC.md) · historia: [`CHANGELOG.md`](CHANGELOG.md)
+Pełna składnia i API: [`cynober_manual.md`](cynober_manual.md) · KAFD / KAFX / klatki: [`docs/KAFD.md`](docs/KAFD.md) · sesja L0/KPC: [`docs/SESSION_L0_KPC.md`](docs/SESSION_L0_KPC.md) · historia: [`CHANGELOG.md`](CHANGELOG.md)
 
 ## Trzy filary
 
@@ -140,9 +141,11 @@ Cynober_db.py / GameStore  ◄── TCP :8080, Cynober-Secure-1.2 ──►  cy
 
 ### Trwałość światów (v8.0)
 
+Pliki `.kafd` na dysku to koperta **KAFX** (AES-GCM, klucz świata). Szczegóły: [`docs/KAFD.md`](docs/KAFD.md). Dane: `%LOCALAPPDATA%\Cynober\worlds\` (albo `CYNOBER_DATA_HOME`).
+
 ```
-~/.cynober_worlds/
-  rivendell.kafd              # manifest (nagłówki + bąble + HOT)
+worlds/
+  rivendell.kafd              # manifest KAFX (nagłówki + bąble + HOT)
   rivendell.meta.json         # indeksy zapytań, shard_index, folded_atoms
   shards/rivendell/
     index.json                # mapa region → bąble, atomy, plik
@@ -152,7 +155,7 @@ Cynober_db.py / GameStore  ◄── TCP :8080, Cynober-Secure-1.2 ──►  cy
   peers.json                  # węzły replikacji
 ```
 
-Szczegóły: [`cynober_manual.md`](cynober_manual.md) · specyfikacja HSL: [`HSL_Paper_v1_1_0_EN.md`](HSL_Paper_v1_1_0_EN.md) · sesja L0/KPC: [`docs/SESSION_L0_KPC.md`](docs/SESSION_L0_KPC.md)
+Szczegóły: [`cynober_manual.md`](cynober_manual.md) · KAFD: [`docs/KAFD.md`](docs/KAFD.md) · specyfikacja HSL: [`HSL_Paper_v1_1_0_EN.md`](HSL_Paper_v1_1_0_EN.md) · sesja L0/KPC: [`docs/SESSION_L0_KPC.md`](docs/SESSION_L0_KPC.md)
 
 ## Testy
 

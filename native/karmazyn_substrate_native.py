@@ -771,6 +771,7 @@ class NativeStore:
         self._env_hooks: List[Tuple[str, Callable]] = []
         self._extra_hooks: List[Tuple[str, Callable]] = []
         self.reaped = 0
+        self._tick_count = 0
         self.tick_event_mode = tick_event_mode
         self.native_backend = self._core.backend_name  # pyo3 | ctypes
         self.substrate = "native"
@@ -1014,6 +1015,10 @@ class NativeStore:
             except ValueError:
                 pass
 
+    @property
+    def tick_count(self):
+        return self._tick_count
+
     def tick(self):
         """Tick: GC w Rust + eventy S12 (per_atom / batch / both) jak Python Store."""
         before = self.reaped
@@ -1021,6 +1026,7 @@ class NativeStore:
         emit_per = mode in ("per_atom", "both")
         emit_batch = mode in ("batch", "both")
         with self.lock:
+            self._tick_count += 1
             # snapshot atomów przed GC (do dual-emit "tick")
             pre_atoms = list(self.atoms()) if emit_per else []
             self._core.tick()

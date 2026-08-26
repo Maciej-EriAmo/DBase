@@ -212,7 +212,12 @@ class Store:
         self._retained_tomb = set()          # S4/S14: kanon — retencja TOMB pod reach (RAM, bez thaw)
         self._tick_event_mode = tick_event_mode
         self._ticking = False                # S15: strażnik reentrancy tick()
+        self._tick_count = 0                 # logiczny tick (ThermalFrame / journal)
         self.events = EventBus()             # silnik = źródło zdarzeń termicznych
+
+    @property
+    def tick_count(self):
+        return self._tick_count
 
     # ── enkapsulacja rejestru (S2) ────────────────────────────────────────────
     @property
@@ -522,6 +527,7 @@ class Store:
 
     def _tick_body(self):
         """Ciało ticka — wołane wyłącznie pod lockiem z _ticking=True."""
+        self._tick_count += 1
         reach, seen = self._walk_bubbles()
         # S13 (v1.2): JEDEN walk na tick. Dowód redundancji drugiego:
         # GC usuwa wyłącznie atomy SPOZA reach — ich krawędzie env_of

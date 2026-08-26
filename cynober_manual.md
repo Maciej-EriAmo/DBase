@@ -65,7 +65,7 @@ Cynober DB to relacyjno-grafowa baza danych na termodynamicznym rdzeniu **Karmaz
 * **HSL** (`karmazyn_hsl.py`) — tożsamość Φ², PrismMask, AAD, slot `KARM_QKD_SEED`; w praktyce **warstwa sesji post-kwantowej** (wiązanie kluczy HSS z kontekstem węzła i opcjonalnym źródłem QKD).
 * **Silnik zapytań** (`cynober_query_engine.py`) — parser i executor KarminQL.
 * **Jądro** (`karmazyn_kernel.py` → `karmazyn_substrate.py` → `karmazyn_atom.py`) — atomy z temperaturą, bąble, reach-GC.
-* **Trwałość** (`karmazyn_store.py`, `karmazyn_kafd.py`) — format pliku `.kafd`.
+* **Trwałość** (`karmazyn_store.py`, `karmazyn_kafd.py`, `karmazyn_cipher.py`) — `.kafd` v2.1 + dziennik KAFS + koperta KAFX. Klatki termiczne: `karmazyn_thermal.py`. Spec: [`docs/KAFD.md`](docs/KAFD.md).
 * **GameStore** (`game_store.py`) — cienki adapter nad KarminQL/RPC: NPC, questy, wyszukiwanie pamięci, termodynamika.
 
 > **Uwaga:** Serwer **nie** udostępnia HTTP ani ODBC. **Jeden protokół łączności:** TCP + Cynober-Secure-1.2 (HSS + HSL + RPC). Integracja zespołu = klienty na tym samym wire (CLI, SDK, bindingi), nie równoległy REST.
@@ -778,7 +778,7 @@ Klient wyświetli: `Tunel zabezpieczony (HSS + HSL + QKD)`. Rozjazd seeda międz
 * PSK/QKD to hasło **sieci**; konta użytkowników wymagają `auth.json` (opcjonalne).
 * **DoS** — częściowa ochrona: rate limit połączeń i zapytań (sekcja `server.rate_limit`); flood TCP nadal możliwy przy wielu IP.
 * Sandbox bez świata — po rozłączeniu dane znikają; trwałe światy (`WYBIERZ ŚWIAT`) przetrwają na dysku.
-* Zrzuty `.kafd` — Phi-Cipher (obfuskacja), nie AES z hasłem użytkownika.
+* Zrzuty `.kafd` — **KAFX AES-256-GCM**, klucz HKDF per świat (master węzła: `CYNOBER_MASTER_KEY` albo `{data_home}/master.key`). To nie jest hasło logowania KarminQL. Stary XOR-Phi tylko przy odczycie legacy. `KARMAZYN_KAFD_PLAIN=1` wyłącza kopertę. Spec: [`docs/KAFD.md`](docs/KAFD.md).
 * HSS w tej wersji domyślnie ma **N=15** (prototyp); można podnieść N/Q w `karmazyn_hss.py` bez zmiany protokołu — obecna wartość nie jest równoważna pełnemu Kyber-256.
 
 ---
@@ -1432,7 +1432,9 @@ DBase/
 ├── karmazyn_store.py          ← serializacja dokumentów (kinds: media)
 ├── karmazyn_media.py          ← Faza 0/2: attach/get/export + pipe/CLI
 ├── cynober_media_rpc.py       ← Faza 3: MEDIA PUT/GET + KAFS chunki
-├── karmazyn_kafd.py           ← format binarny KAFD v2.0
+├── karmazyn_kafd.py           ← KAFD v2.0/v2.1, dziennik KAFS, compact/seal
+├── karmazyn_cipher.py         ← KAFX / KX1 AES-256-GCM
+├── karmazyn_thermal.py        ← ThermalFrame + ThermalLog (klatki na KAFD)
 ├── karmazyn_proca.py          ← deduplikacja semantyczna
 ├── karmazyn_atomstore.py      ← kontrakt AtomStore
 ├── examples/

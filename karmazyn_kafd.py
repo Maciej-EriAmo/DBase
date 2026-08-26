@@ -25,12 +25,16 @@ Zasady:
   4. Zewnetrzne narzedzia dostaja natywny format przez kafd_tool transform
   5. CAS hash w tabeli atomow -- dedup bez dodatkowych warstw
 
-Struktura binarna KAFD v2.0:
+Struktura binarna KAFD v2.0 (layout=table_first):
   [HEADER: 64B]     -- staly, natychmiastowy seek
   [ATOM_TABLE: N*56B] -- binarne wyszukiwanie po hash
   [ID_POOL: var]    -- spakowane stringi ID atomow
   [META_JSON: var]  -- metadane kolekcji (babelmetadata)
   [PAYLOAD: var]    -- dane atomow, wyrownanie 8B
+
+KAFD v2.1 (layout=footer, F_FOOTER_TOC):
+  [HEADER 64B][PAYLOAD][ATOM_TABLE][ID_POOL][META][KTIX tick index]
+  Dziennik: KAFS append (KAFDJournal) → compact_journal() → v2.1.
 
 Naglowek (64B):
   00  MAGIC[4]       = "KAFD"
@@ -63,11 +67,13 @@ Wpis tabeli atomow (56B):
 
 import hashlib
 import json
+import mmap
 import zlib
 import math
 import os
 import struct
 import time
+import threading
 from io import BytesIO, RawIOBase
 from typing import Any, Dict, Iterator, List, Optional, Tuple
 
@@ -76,9 +82,12 @@ from typing import Any, Dict, Iterator, List, Optional, Tuple
 
 MAGIC        = b"KAFD"
 VERSION      = 0x0200
+VERSION_V21  = 0x0201
 HEADER_SIZE  = 64
 ATOM_ENTRY   = 56
 PAYLOAD_ALIGN= 8
+TICK_INDEX_MAGIC = b"KTIX"
+TICK_INDEX_ENTRY = 40   # tick, data_off, data_size, T_min, T_max, kind, pad7
 
 # FLAGS bits
 F_ENCRYPTED  = 0x0001
@@ -86,6 +95,7 @@ F_COMPRESSED = 0x0002
 F_SIGNED     = 0x0004
 F_STREAMING  = 0x0008
 F_PHI_NATIVE = 0x0010   # zawiera pelne dane phi-space
+F_FOOTER_TOC = 0x0020   # v2.1: tabela + indeks tick w stopce (append/seal)
 
 # STATE values
 S_COLD = 0
@@ -98,6 +108,9 @@ A_RAW       = 0   # surowe bajty (obraz, audio, video, binary)
 A_MANIFEST  = 1   # JSON manifest (referencja do CAS/sciezki)
 A_STREAM    = 2   # glowica strumienia (pierwszy fragment duzego atomu)
 A_PHI_ATOM  = 3   # atom phi-space (T, S, E, relacje)
+A_THERMAL   = 4   # snapshot termiczny (ThermalFrame key/delta)
+
+MIME_THERMAL = "application/x-karmazyn-thermal-frame"
 
 STATE_MAP = {"COLD": S_COLD, "WARM": S_WARM, "HOT": S_HOT, "TOMB": S_TOMB}
 STATE_INV = {v: k for k, v in STATE_MAP.items()}
@@ -129,6 +142,89 @@ def _T_to_state(T: float) -> int:
     if T > 30:  return S_WARM
     if T > 2:   return S_COLD
     return S_TOMB
+
+
+def peek_thermal_header(data: bytes) -> Optional[dict]:
+    """Koperta ThermalFrame v1/v2 bez deserializacji list atomów (LE).
+
+    v2: version, kind, timestamp, tick, num_atoms, T_min, T_max  (30 B).
+    v1: version, timestamp, tick, num_atoms (21 B) — T_min/T_max = 0.
+    """
+    if not data or len(data) < 21:
+        return None
+    ver = data[0]
+    if ver == 1:
+        ts, tick = struct.unpack_from("<QQ", data, 1)
+        num = struct.unpack_from("<I", data, 17)[0]
+        return {
+            "version": 1, "kind": 0, "timestamp": ts, "tick": tick,
+            "num_atoms": num, "T_min": 0.0, "T_max": 0.0,
+        }
+    if ver == 2 and len(data) >= 30:
+        kind = data[1]
+        ts, tick = struct.unpack_from("<QQ", data, 2)
+        num = struct.unpack_from("<I", data, 18)[0]
+        tmin, tmax = struct.unpack_from("<ff", data, 22)
+        return {
+            "version": 2, "kind": kind, "timestamp": ts, "tick": tick,
+            "num_atoms": num, "T_min": float(tmin), "T_max": float(tmax),
+        }
+    return None
+
+
+def _atomic_replace(path: str, data: bytes) -> None:
+    """Zapis tmp + fsync + os.replace — ten sam rytuał co karmazyn_store."""
+    import tempfile
+    d = os.path.dirname(os.path.abspath(path)) or "."
+    os.makedirs(d, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=d, prefix=".kafd_", suffix=".part")
+    try:
+        with os.fdopen(fd, "wb") as f:
+            f.write(data)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, path)
+        tmp = None
+    finally:
+        if tmp and os.path.exists(tmp):
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+
+
+def _write_kafs_frame(sink, type_byte: int, body: bytes) -> int:
+    """Ramka KAFS: [type:1][size:4=len(body)+4][body][crc32:4]. CRC z body."""
+    crc = zlib.crc32(body) & 0xFFFFFFFF
+    sink.write(struct.pack(">BI", type_byte, len(body) + 4))
+    sink.write(body)
+    sink.write(struct.pack(">I", crc))
+    return 5 + len(body) + 4
+
+
+def _encode_checkpoint_body(tick: int, n_frames: int,
+                            T_min: float, T_max: float,
+                            kind: int, causality: str) -> bytes:
+    c = (causality or "").encode("utf-8")
+    return (struct.pack(">QQ", int(tick), int(n_frames))
+            + struct.pack(">ff", float(T_min), float(T_max))
+            + struct.pack(">B", int(kind) & 0xFF)
+            + struct.pack(">I", len(c)) + c)
+
+
+def _decode_checkpoint_body(body: bytes) -> dict:
+    if len(body) < 25:
+        return {}
+    tick, n_frames = struct.unpack(">QQ", body[:16])
+    tmin, tmax = struct.unpack(">ff", body[16:24])
+    kind = body[24]
+    clen = struct.unpack(">I", body[25:29])[0]
+    causality = body[29:29 + clen].decode("utf-8", errors="replace")
+    return {
+        "tick": tick, "n_frames": n_frames,
+        "T_min": tmin, "T_max": tmax, "kind": kind,
+        "causality": causality,
+    }
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -242,18 +338,22 @@ class KAFDAtom:
 
 class KAFDWriter:
     """
-    Serializuje atomy do strumienia KAFD v2.0.
+    Serializuje atomy do strumienia KAFD v2.0 / v2.1.
 
-    Dwa tryby:
-      build()   -- zbiera wszystkie atomy, zwraca bytes (RAM)
-      stream()  -- generator klatek, jeden atom na raz (pipe/socket)
+    layout:
+      "table_first" — v2.0 (tabela przed payloadem, pełny rewrite)
+      "footer"      — v2.1 (payload, potem tabela + KTIX w stopce)
     """
 
-    def __init__(self, meta: dict = None, flags: int = F_PHI_NATIVE):
+    def __init__(self, meta: dict = None, flags: int = F_PHI_NATIVE,
+                 layout: str = "table_first"):
+        if layout not in ("table_first", "footer"):
+            raise ValueError("layout: 'table_first' albo 'footer'")
         self._atoms:    List[KAFDAtom] = []
         self._meta:     dict           = meta or {}
         self._flags:    int            = flags
         self._mime_dict: Dict[str, int]= {}   # mime -> indeks
+        self._layout:   str            = layout
 
     def add(self, atom: KAFDAtom) -> "KAFDWriter":
         """Dodaj atom. Zwraca self dla łańcuchowania."""
@@ -335,19 +435,29 @@ class KAFDWriter:
             curr += _align8(a.size)
         payload_total = curr
 
-        # META JSON
-        self._meta["_kafd_v"]    = 2
+        footer = self._layout == "footer"
+        self._meta["_kafd_v"]    = 21 if footer else 2
         self._meta["_mime_dict"] = {str(v): k for k, v in self._mime_dict.items()}
         self._meta["_created"]   = time.strftime("%Y-%m-%d %H:%M")
+        if footer:
+            self._meta["_layout"] = "footer"
         meta_bytes = json.dumps(self._meta, ensure_ascii=False).encode("utf-8")
 
-        n           = len(sorted_atoms)
-        table_off   = HEADER_SIZE
-        id_pool_off = table_off   + n * ATOM_ENTRY
-        meta_off    = id_pool_off + _align8(len(id_pool))
-        payload_off = meta_off    + _align8(len(meta_bytes))
-        avg_T       = (sum(a.T for a in sorted_atoms) / max(1, n)
-                       if sorted_atoms else 0.0)
+        n = len(sorted_atoms)
+        if footer:
+            payload_off = HEADER_SIZE
+            table_off   = payload_off + payload_total
+            id_pool_off = table_off + n * ATOM_ENTRY
+            meta_off    = id_pool_off + _align8(len(id_pool))
+            tick_off    = meta_off + _align8(len(meta_bytes))
+        else:
+            table_off   = HEADER_SIZE
+            id_pool_off = table_off + n * ATOM_ENTRY
+            meta_off    = id_pool_off + _align8(len(id_pool))
+            payload_off = meta_off + _align8(len(meta_bytes))
+            tick_off    = 0
+        avg_T = (sum(a.T for a in sorted_atoms) / max(1, n)
+                 if sorted_atoms else 0.0)
 
         return {
             "n":            n,
@@ -361,7 +471,30 @@ class KAFDWriter:
             "payload_off":  payload_off,
             "payload_total":payload_total,
             "avg_T":        avg_T,
+            "footer":       footer,
+            "tick_off":     tick_off,
+            "version":      VERSION_V21 if footer else VERSION,
+            "flags":        self._flags | (F_FOOTER_TOC if footer else 0),
         }
+
+    def _tick_index_bytes(self, L: dict) -> bytes:
+        recs = []
+        for e, a in zip(L["entries_meta"], L["sorted_atoms"]):
+            hdr = peek_thermal_header(a.data)
+            if hdr is None:
+                continue
+            recs.append((hdr, e))
+        buf = bytearray()
+        buf += TICK_INDEX_MAGIC
+        buf += struct.pack(">H", 1)
+        buf += struct.pack(">I", len(recs))
+        for hdr, e in recs:
+            buf += struct.pack(">Q", int(hdr["tick"]))
+            buf += struct.pack(">QQ", int(e["data_off"]), int(e["data_size"]))
+            buf += struct.pack(">ff", float(hdr["T_min"]), float(hdr["T_max"]))
+            buf += struct.pack(">B", int(hdr["kind"]) & 0xFF)
+            buf += b"\x00" * 7
+        return bytes(buf)
 
     def write_stream(self, sink) -> int:
         """
@@ -375,7 +508,7 @@ class KAFDWriter:
         # ── Naglowek 64B ──────────────────────────────────────────────────────
         hdr = bytearray()
         hdr += MAGIC
-        hdr += struct.pack(">HH", VERSION, self._flags)
+        hdr += struct.pack(">HH", L["version"], L["flags"])
         hdr += struct.pack(">I",  L["n"])
         hdr += struct.pack(">Q",  int(time.time()))
         hdr += struct.pack(">Q",  L["table_off"])
@@ -390,34 +523,67 @@ class KAFDWriter:
         assert len(hdr) == HEADER_SIZE
         sink.write(bytes(hdr)); w += len(hdr)
 
-        # ── Tabela atomow ─────────────────────────────────────────────────────
-        for e in L["entries_meta"]:
-            row  = struct.pack(">Q",  e["id_hash"])
-            row += struct.pack(">IH", e["id_off"], e["id_len"])
-            row += struct.pack(">H",  e["mime_idx"])
-            row += struct.pack(">QQ", e["data_off"], e["data_size"])
-            row += struct.pack(">ff", e["T"], e["T_max"])
-            row += struct.pack(">BB", e["state"], e["atype"])
-            row += e["cas_hash"]
-            row += b"\x00" * 2
-            assert len(row) == ATOM_ENTRY
-            sink.write(row); w += len(row)
+        def write_table():
+            n = 0
+            for e in L["entries_meta"]:
+                row  = struct.pack(">Q",  e["id_hash"])
+                row += struct.pack(">IH", e["id_off"], e["id_len"])
+                row += struct.pack(">H",  e["mime_idx"])
+                row += struct.pack(">QQ", e["data_off"], e["data_size"])
+                row += struct.pack(">ff", e["T"], e["T_max"])
+                row += struct.pack(">BB", e["state"], e["atype"])
+                row += e["cas_hash"]
+                row += b"\x00" * 2
+                assert len(row) == ATOM_ENTRY
+                sink.write(row)
+                n += len(row)
+            return n
 
-        # ── ID_POOL ───────────────────────────────────────────────────────────
-        sink.write(L["id_pool"]); w += len(L["id_pool"])
-        pad = _align8(len(L["id_pool"])) - len(L["id_pool"])
-        if pad: sink.write(b"\x00" * pad); w += pad
+        def write_id_pool():
+            sink.write(L["id_pool"])
+            n = len(L["id_pool"])
+            pad = _align8(len(L["id_pool"])) - len(L["id_pool"])
+            if pad:
+                sink.write(b"\x00" * pad)
+                n += pad
+            return n
 
-        # ── META JSON ─────────────────────────────────────────────────────────
-        sink.write(L["meta_bytes"]); w += len(L["meta_bytes"])
-        pad = _align8(len(L["meta_bytes"])) - len(L["meta_bytes"])
-        if pad: sink.write(b"\x00" * pad); w += pad
+        def write_meta():
+            sink.write(L["meta_bytes"])
+            n = len(L["meta_bytes"])
+            pad = _align8(len(L["meta_bytes"])) - len(L["meta_bytes"])
+            if pad:
+                sink.write(b"\x00" * pad)
+                n += pad
+            return n
 
-        # ── PAYLOAD: atom po atomie -- bez payload_buf w RAM ─────────────────
-        for atom in L["sorted_atoms"]:
-            sink.write(atom.data); w += atom.size
-            pad = _align8(atom.size) - atom.size
-            if pad: sink.write(b"\x00" * pad); w += pad
+        def write_payload():
+            n = 0
+            for atom in L["sorted_atoms"]:
+                sink.write(atom.data)
+                n += atom.size
+                pad = _align8(atom.size) - atom.size
+                if pad:
+                    sink.write(b"\x00" * pad)
+                    n += pad
+            return n
+
+        def write_tick_index():
+            blob = self._tick_index_bytes(L)
+            sink.write(blob)
+            return len(blob)
+
+        if L["footer"]:
+            w += write_payload()
+            w += write_table()
+            w += write_id_pool()
+            w += write_meta()
+            w += write_tick_index()
+        else:
+            w += write_table()
+            w += write_id_pool()
+            w += write_meta()
+            w += write_payload()
 
         return w
 
@@ -434,18 +600,25 @@ class KAFDWriter:
 
 class KAFDReader:
     """
-    Czyta strumien KAFD v2.0.
+    Czyta strumien KAFD v2.0 / v2.1.
     Seek O(log N) po ID_HASH -- bez ladowania calego payload.
     Kompatybilny z v1.x (fallback do starego KAFD.unpack).
+    v2.1: tabela w stopce, indeks tick (KTIX), from_path+mmap.
     """
 
-    def __init__(self, data: bytes):
+    def __init__(self, data, verify_cas: bool = True, strict_crc: bool = True):
         self._data  = data
         self._atoms: Dict[str, KAFDAtom] = {}
         self._meta:  dict                = {}
         self._table: List[dict]          = []
         self._mime_dict: Dict[int, str]  = {}
         self._payload_off = 0
+        self._tick_index: List[dict]     = []
+        self._verify_cas = verify_cas
+        self._strict_crc = strict_crc
+        self._mmap = None
+        self._owned_file = None
+        self._flags = 0
         self._valid = self._parse_header()
 
     def _parse_header(self) -> bool:
@@ -459,15 +632,17 @@ class KAFDReader:
         if version < 0x0200:
             # v1.x -- fallback
             return self._parse_v1()
-        # [FIX5] weryfikuj CRC naglowka
+        # CRC naglowka: mismatch → błąd (crc=0: stary blob, pomijamy)
         if len(d) >= HEADER_SIZE:
             stored_crc   = struct.unpack(">I", d[60:64])[0]
-            computed_crc = zlib.crc32(d[:60]) & 0xFFFFFFFF
+            computed_crc = zlib.crc32(bytes(d[:60])) & 0xFFFFFFFF
             if stored_crc != 0 and stored_crc != computed_crc:
+                msg = (f"KAFD: CRC naglowka niezgodny (stored={stored_crc:#010x}"
+                       f" computed={computed_crc:#010x})")
+                if self._strict_crc:
+                    raise ValueError(msg)
                 import warnings
-                warnings.warn(
-                    f"KAFD: CRC naglowka niezgodny (stored={stored_crc:#010x}"
-                    f" computed={computed_crc:#010x}) -- uszkodzony blob?")
+                warnings.warn(msg + " -- uszkodzony blob?")
 
         self._flags  = struct.unpack(">H", d[6:8])[0]
         n            = struct.unpack(">I", d[8:12])[0]
@@ -524,7 +699,39 @@ class KAFDReader:
                 "mime_idx": mime_idx,
                 "cas_hash": cas_hash,
             })
+        self._parse_tick_index(d, meta_off, meta_size)
         return True
+
+    def _parse_tick_index(self, d, meta_off: int, meta_size: int) -> None:
+        """KTIX zaraz po wyrównanym META — tylko v2.1 / F_FOOTER_TOC."""
+        self._tick_index = []
+        flags = getattr(self, "_flags", 0)
+        if not (flags & F_FOOTER_TOC):
+            return
+        tick_off = meta_off + _align8(meta_size)
+        if tick_off + 10 > len(d):
+            return
+        blob = bytes(d[tick_off:tick_off + 10])
+        if blob[:4] != TICK_INDEX_MAGIC:
+            return
+        _ver, n = struct.unpack(">HI", blob[4:10])
+        need = 10 + n * TICK_INDEX_ENTRY
+        if tick_off + need > len(d):
+            return
+        raw = bytes(d[tick_off + 10: tick_off + need])
+        for i in range(n):
+            off = i * TICK_INDEX_ENTRY
+            tick, data_off, data_size = struct.unpack(">QQQ", raw[off:off+24])
+            tmin, tmax = struct.unpack(">ff", raw[off+24:off+32])
+            kind = raw[off+32]
+            self._tick_index.append({
+                "tick": tick,
+                "data_off": data_off,
+                "data_size": data_size,
+                "T_min": tmin,
+                "T_max": tmax,
+                "kind": kind,
+            })
 
     def _parse_v1(self) -> bool:
         """Fallback dla KAFD v1.x (stary format z JSON naglowkiem)."""
@@ -591,18 +798,86 @@ class KAFDReader:
         return None
 
     def get_atom(self, atom_id: str) -> Optional[KAFDAtom]:
-        """Pobierz atom z danymi -- O(log N) seek."""
+        """Pobierz atom z danymi -- O(log N) seek. CAS weryfikowany."""
         entry = self.get_entry(atom_id)
         if not entry:
             return None
         data = self._get_data(entry)
+        stored = entry["cas_hash"]
+        if self._verify_cas and stored and stored != b"\x00" * 12:
+            got = _cas_hash(data)
+            if got != stored:
+                raise ValueError(
+                    f"KAFD CAS mismatch id={atom_id!r} "
+                    f"stored={stored.hex()} computed={got.hex()}")
         mime = self._mime_dict.get(entry["mime_idx"], "application/octet-stream")
         a    = KAFDAtom(atom_id, data, mime=mime,
                         T=entry["T"], T_max=entry["T_max"],
                         atype=entry["atype"])
         a.state_byte = entry["state"]
-        a.cas_hash   = entry["cas_hash"]
+        a.cas_hash   = stored
         return a
+
+    @property
+    def tick_index(self) -> List[dict]:
+        return list(self._tick_index)
+
+    def ticks_in_T_range(self, T_min: float, T_max: float) -> List[dict]:
+        """P5: trafienia z koperty KTIX — bez rozpakowania ThermalFrame."""
+        hits = []
+        for rec in self._tick_index:
+            if rec["T_max"] >= T_min and rec["T_min"] <= T_max:
+                hits.append(dict(rec))
+        return hits
+
+    @classmethod
+    def from_path(cls, path: str, use_mmap: bool = True,
+                  verify_cas: bool = True, strict_crc: bool = True,
+                  world: Optional[str] = None) -> "KAFDReader":
+        """Odczyt z pliku. KAFX/XOR → decrypt do RAM; plain KAFD → mmap."""
+        with open(path, "rb") as peek:
+            magic = peek.read(4)
+        if magic != MAGIC:
+            from karmazyn_cipher import read_stored_file
+            data, _mode = read_stored_file(path, world=world)
+            return cls(data, verify_cas=verify_cas, strict_crc=strict_crc)
+        f = open(path, "rb")
+        try:
+            size = os.fstat(f.fileno()).st_size
+            if use_mmap and size > 0:
+                mm = mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ)
+                r = cls(mm, verify_cas=verify_cas, strict_crc=strict_crc)
+                r._mmap = mm
+                r._owned_file = f
+                f = None
+                return r
+            data = f.read()
+        finally:
+            if f is not None:
+                f.close()
+        return cls(data, verify_cas=verify_cas, strict_crc=strict_crc)
+
+    def close(self) -> None:
+        mm = getattr(self, "_mmap", None)
+        if mm is not None:
+            try:
+                mm.close()
+            except Exception:
+                pass
+            self._mmap = None
+        f = getattr(self, "_owned_file", None)
+        if f is not None:
+            try:
+                f.close()
+            except Exception:
+                pass
+            self._owned_file = None
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        self.close()
 
     def _get_data(self, entry: dict) -> bytes:
         if "_v1_payload" in entry:
@@ -743,12 +1018,13 @@ def upgrade_v1(v1_blob: bytes, meta: dict = None) -> bytes:
 
 def vfs_pack(atoms_dict: Dict[str, bytes],
               meta: dict = None,
-              phi: Any = None) -> bytes:
+              phi: Any = None,
+              flags: int = None) -> bytes:
     """
     Drop-in replacement dla KAFD.pack() -- uzywa v2.0.
     atoms_dict: {atom_id: bytes}  (kompatybilnosc z v1 API)
     """
-    writer = KAFDWriter(meta=meta)
+    writer = KAFDWriter(meta=meta, flags=F_PHI_NATIVE if flags is None else flags)
     for aid, data in atoms_dict.items():
         # Sprobuj wykryc atype z zawartosci
         atype = A_MANIFEST if _is_manifest(data) else A_RAW
@@ -889,8 +1165,41 @@ if __name__ == "__main__":
 KAFS_MAGIC   = b"KAFS"   # odroznienie od KAFD seekable
 FT_ATOM      = 0x01      # ramka atomu
 FT_META      = 0x02      # ramka metadanych
-FT_CHECKPOINT= 0x03      # checkpoint (liczba dotad wyslanych atomow)
+FT_CHECKPOINT= 0x03      # checkpoint (tick, causality, T envelope)
 FT_END       = 0xFF      # koniec strumienia
+
+
+def _encode_atom_frame_body(atom: "KAFDAtom") -> bytes:
+    id_b   = atom.id.encode("utf-8")
+    mime_b = atom.mime.encode("utf-8")
+    frame_body = bytearray()
+    frame_body += struct.pack(">H", len(id_b))
+    frame_body += id_b
+    frame_body += struct.pack(">H", len(mime_b))
+    frame_body += mime_b
+    frame_body += struct.pack(">ff", atom.T, atom.T_max)
+    frame_body += struct.pack(">BB", atom.state_byte, atom.atype)
+    frame_body += struct.pack(">Q",  atom.size)
+    frame_body += atom.data
+    return bytes(frame_body)
+
+
+def _parse_atom_frame_body(body: bytes) -> Optional["KAFDAtom"]:
+    try:
+        off     = 0
+        id_len  = struct.unpack(">H", body[off:off+2])[0]; off += 2
+        atom_id = body[off:off+id_len].decode("utf-8");    off += id_len
+        ml      = struct.unpack(">H", body[off:off+2])[0]; off += 2
+        mime    = body[off:off+ml].decode("utf-8");         off += ml
+        T, T_max= struct.unpack(">ff", body[off:off+8]);   off += 8
+        state   = body[off]; atype = body[off+1];          off += 2
+        data_len= struct.unpack(">Q", body[off:off+8])[0]; off += 8
+        data    = body[off:off+data_len]
+        a            = KAFDAtom(atom_id, data, mime=mime, T=T, T_max=T_max, atype=atype)
+        a.state_byte = state
+        return a
+    except Exception:
+        return None
 
 
 class KAFDFlowWriter:
@@ -957,46 +1266,16 @@ class KAFDFlowWriter:
         return w
 
     def _write_atom_frame(self, sink, atom: "KAFDAtom") -> int:
-        id_b   = atom.id.encode("utf-8")
-        mime_b = atom.mime.encode("utf-8")
-
-        # Zbierz payload ramki (bez TYPE i FRAME_SIZE)
-        frame_body = bytearray()
-        frame_body += struct.pack(">H", len(id_b))
-        frame_body += id_b
-        frame_body += struct.pack(">H", len(mime_b))
-        frame_body += mime_b
-        frame_body += struct.pack(">ff", atom.T, atom.T_max)
-        frame_body += struct.pack(">BB", atom.state_byte, atom.atype)
-        frame_body += struct.pack(">Q",  atom.size)
-        frame_body += atom.data
-
-        # CRC obejmuje cala ramke (bez CRC pola)
-        crc = zlib.crc32(bytes(frame_body)) & 0xFFFFFFFF
-
-        # Zapisz: TYPE + FRAME_SIZE + body + CRC
-        header = struct.pack(">BI", FT_ATOM, len(frame_body) + 4)
-        sink.write(header)
-        sink.write(bytes(frame_body))
-        sink.write(struct.pack(">I", crc))
-        return len(header) + len(frame_body) + 4
+        return _write_kafs_frame(sink, FT_ATOM, _encode_atom_frame_body(atom))
 
     def _write_meta_frame(self, sink) -> int:
         meta_b = json.dumps(self._meta, ensure_ascii=False).encode("utf-8")
         body   = struct.pack(">I", len(meta_b)) + meta_b
-        crc    = zlib.crc32(body) & 0xFFFFFFFF
-        sink.write(struct.pack(">BI", FT_META, len(body) + 4))
-        sink.write(body)
-        sink.write(struct.pack(">I", crc))
-        return 5 + len(body) + 4
+        return _write_kafs_frame(sink, FT_META, body)
 
     def _write_end_frame(self, sink, atom_count: int, total_bytes: int) -> int:
         body = struct.pack(">IQ", atom_count, total_bytes)
-        crc  = zlib.crc32(body) & 0xFFFFFFFF
-        sink.write(struct.pack(">BI", FT_END, len(body) + 4))
-        sink.write(body)
-        sink.write(struct.pack(">I", crc))
-        return 5 + len(body) + 4
+        return _write_kafs_frame(sink, FT_END, body)
 
 
 class KAFDFlowReader:
@@ -1016,10 +1295,16 @@ class KAFDFlowReader:
             ...           # zimne atomy juz nie dotrą
     """
 
-    def __init__(self, source):
-        """source: obiekt z metodą .read(n) -> bytes"""
+    def __init__(self, source, sorted_by_T: bool = True):
+        """source: obiekt z metodą .read(n) -> bytes.
+        sorted_by_T: strumień batch (hot-first) — min_T kończy iterację.
+        Dziennik chronologiczny: sorted_by_T=False (min_T tylko filtruje).
+        """
         self._src  = source
         self._meta = {}
+        self._sorted_by_T = sorted_by_T
+        self._flags = 0
+        self.last_checkpoint: Optional[dict] = None
 
     def _read_exact(self, n: int) -> bytes:
         buf = b""
@@ -1036,32 +1321,39 @@ class KAFDFlowReader:
         if magic != KAFS_MAGIC:
             raise ValueError(f"KAFS: zly magic {magic!r}")
         version, flags = struct.unpack(">HH", self._read_exact(4))
+        self._flags = flags
+        if flags & F_STREAMING:
+            self._sorted_by_T = False
         return {"version": version, "flags": flags}
 
-    def iter_atoms(self, min_T: float = 0.0, verify_crc: bool = True):
-        """
-        Iteruj po atomach w strumieniu.
-        Zatrzymuje sie na END_FRAME lub gdy wszystkie atomy maja T < min_T.
-        Generuje KAFDAtom obiekty.
-        """
+    def iter_frames(self, verify_crc: bool = True):
+        """Surowy strumień ramek: (type_byte, body). END kończy. EOF kończy."""
         while True:
             try:
                 type_byte = self._read_exact(1)[0]
                 frame_size= struct.unpack(">I", self._read_exact(4))[0]
-                body      = self._read_exact(frame_size - 4)
-                crc_stored= struct.unpack(">I", body[-4:])[0]
-                body_data = body[:-4]
-
-                if verify_crc:
-                    crc_computed = zlib.crc32(body_data) & 0xFFFFFFFF
-                    if crc_stored != crc_computed:
-                        raise ValueError(
-                            f"KAFS CRC: stored={crc_stored:#010x} "
-                            f"computed={crc_computed:#010x}")
-
+                payload   = self._read_exact(frame_size)
             except EOFError:
                 return
+            if len(payload) < 4:
+                return
+            body_data = payload[:-4]
+            crc_stored = struct.unpack(">I", payload[-4:])[0]
+            if verify_crc:
+                crc_computed = zlib.crc32(body_data) & 0xFFFFFFFF
+                if crc_stored != crc_computed:
+                    raise ValueError(
+                        f"KAFS CRC: stored={crc_stored:#010x} "
+                        f"computed={crc_computed:#010x}")
+            yield type_byte, body_data
 
+    def iter_atoms(self, min_T: float = 0.0, verify_crc: bool = True):
+        """
+        Iteruj po atomach w strumieniu.
+        Zatrzymuje sie na END_FRAME.
+        Gdy sorted_by_T i min_T>0 — pierwsze T poniżej progu kończy (hot-first).
+        """
+        for type_byte, body_data in self.iter_frames(verify_crc=verify_crc):
             if type_byte == FT_META:
                 json_len = struct.unpack(">I", body_data[:4])[0]
                 try:
@@ -1071,38 +1363,302 @@ class KAFDFlowReader:
                 continue
 
             if type_byte == FT_END:
-                atom_count, total_bytes = struct.unpack(">IQ", body_data[:12])
                 return
 
             if type_byte == FT_CHECKPOINT:
-                # Ignoruj checkpointy (przyszlosc: resync)
+                self.last_checkpoint = _decode_checkpoint_body(body_data)
                 continue
 
             if type_byte == FT_ATOM:
-                atom = self._parse_atom_body(body_data)
-                if atom and atom.T >= min_T:
+                atom = _parse_atom_frame_body(body_data)
+                if not atom:
+                    continue
+                if atom.T >= min_T:
                     yield atom
-                elif atom and atom.T < min_T and min_T > 0:
-                    # Strumien jest posortowany po T -- jesli T za niskie, koniec
+                elif min_T > 0 and self._sorted_by_T:
                     return
 
     def _parse_atom_body(self, body: bytes) -> "KAFDAtom":
-        try:
-            off     = 0
-            id_len  = struct.unpack(">H", body[off:off+2])[0]; off += 2
-            atom_id = body[off:off+id_len].decode("utf-8");    off += id_len
-            ml      = struct.unpack(">H", body[off:off+2])[0]; off += 2
-            mime    = body[off:off+ml].decode("utf-8");         off += ml
-            T, T_max= struct.unpack(">ff", body[off:off+8]);   off += 8
-            state   = body[off]; atype = body[off+1];          off += 2
-            data_len= struct.unpack(">Q", body[off:off+8])[0]; off += 8
-            data    = body[off:off+data_len]
-            a            = KAFDAtom(atom_id, data, mime=mime, T=T, T_max=T_max, atype=atype)
-            a.state_byte = state
-            return a
-        except Exception:
-            return None
+        return _parse_atom_frame_body(body)
 
     @property
     def meta(self) -> dict:
         return self._meta
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# P1: KAFS journal — append WAL, checkpoint, recovery ogona
+# ─────────────────────────────────────────────────────────────────────────────
+
+class KAFDJournal:
+    """
+    Trwały dziennik KAFS: dopisywanie ramek, checkpoint, obcięcie urwanej klatki.
+
+    Nie sortuje po T (kolejność ticków). Flaga F_STREAMING w nagłówku.
+    Brak FT_END do close() — recovery kończy na ostatniej ramce z dobrym CRC.
+    """
+
+    def __init__(self, path: str, *, fsync: bool = True, meta: dict = None,
+                 world: Optional[str] = None, encrypt: Optional[bool] = None):
+        self.path = path
+        self.fsync = fsync
+        self._meta = meta or {}
+        self.lock = threading.RLock()
+        self._file = None
+        self.n_frames = 0
+        self.last_tick = 0
+        self.last_causality = ""
+        self.last_checkpoint: Optional[dict] = None
+        try:
+            from karmazyn_cipher import (
+                infer_world_from_path, plain_requested, crypto_available,
+            )
+            self.world = world if world is not None else infer_world_from_path(path)
+            if encrypt is None:
+                encrypt = (not plain_requested()) and crypto_available()
+            self.encrypt = bool(encrypt)
+        except ImportError:
+            self.world = world or ""
+            self.encrypt = False
+        self._open()
+
+    def _open(self) -> dict:
+        d = os.path.dirname(os.path.abspath(self.path)) or "."
+        os.makedirs(d, exist_ok=True)
+        recovered = {"truncated": False, "frames": 0, "empty": True}
+        if os.path.exists(self.path) and os.path.getsize(self.path) >= 8:
+            recovered = self.recover()
+            self._file = open(self.path, "r+b")
+            self._file.seek(0, os.SEEK_END)
+        else:
+            self._file = open(self.path, "w+b")
+            self._file.write(KAFS_MAGIC)
+            self._file.write(struct.pack(">HH", VERSION, F_PHI_NATIVE | F_STREAMING))
+            if self._meta:
+                meta_b = json.dumps(self._meta, ensure_ascii=False).encode("utf-8")
+                body = struct.pack(">I", len(meta_b)) + meta_b
+                _write_kafs_frame(self._file, FT_META, body)
+            self._sync()
+        self.n_frames = int(recovered.get("frames") or 0)
+        ck = recovered.get("last_checkpoint") or {}
+        self.last_tick = int(recovered.get("last_tick") or ck.get("tick") or 0)
+        self.last_causality = ck.get("causality") or ""
+        self.last_checkpoint = ck or None
+        return recovered
+
+    def _wrap_atom(self, atom: "KAFDAtom") -> "KAFDAtom":
+        if not self.encrypt:
+            return atom
+        from karmazyn_cipher import wrap_payload, is_kx1
+        if is_kx1(atom.data):
+            return atom
+        wrapped = wrap_payload(atom.data, self.world, atom.id.encode("utf-8"))
+        out = KAFDAtom(atom.id, wrapped, mime=atom.mime, T=atom.T,
+                       T_max=atom.T_max, atype=atom.atype)
+        out.state_byte = atom.state_byte
+        return out
+
+    def _unwrap_atom(self, atom: Optional["KAFDAtom"]) -> Optional["KAFDAtom"]:
+        if atom is None:
+            return None
+        from karmazyn_cipher import is_kx1, unwrap_payload
+        if not is_kx1(atom.data):
+            return atom
+        plain = unwrap_payload(atom.data, self.world, atom.id.encode("utf-8"))
+        out = KAFDAtom(atom.id, plain, mime=atom.mime, T=atom.T,
+                       T_max=atom.T_max, atype=atom.atype)
+        out.state_byte = atom.state_byte
+        return out
+
+    def _sync(self) -> None:
+        if self._file is None:
+            return
+        self._file.flush()
+        if self.fsync:
+            os.fsync(self._file.fileno())
+
+    def recover(self) -> dict:
+        """Skanuj ramki; obetnij po ostatnim dobrym CRC. Zwraca statystyki."""
+        with self.lock:
+            return self._recover_unlocked()
+
+    def _recover_unlocked(self) -> dict:
+        path = self.path
+        if not os.path.exists(path) or os.path.getsize(path) == 0:
+            return {"truncated": False, "frames": 0, "empty": True, "last_good": 0}
+        size = os.path.getsize(path)
+        last_tick = 0
+        with open(path, "r+b") as f:
+            header = f.read(8)
+            if len(header) < 8 or header[:4] != KAFS_MAGIC:
+                raise ValueError("KAFS journal: zły nagłówek")
+            last_good = 8
+            n_atoms = 0
+            last_ckpt = None
+            truncated = False
+            reason = ""
+            while True:
+                hdr = f.read(5)
+                if len(hdr) == 0:
+                    break
+                if len(hdr) < 5:
+                    f.truncate(last_good)
+                    truncated, reason = True, "short_header"
+                    break
+                type_byte = hdr[0]
+                frame_size = struct.unpack(">I", hdr[1:5])[0]
+                payload = f.read(frame_size)
+                if len(payload) < frame_size:
+                    f.truncate(last_good)
+                    truncated, reason = True, "short_payload"
+                    break
+                if frame_size < 4:
+                    f.truncate(last_good)
+                    truncated, reason = True, "bad_size"
+                    break
+                body, crc_b = payload[:-4], payload[-4:]
+                crc_stored = struct.unpack(">I", crc_b)[0]
+                crc_computed = zlib.crc32(body) & 0xFFFFFFFF
+                if crc_stored != crc_computed:
+                    f.truncate(last_good)
+                    truncated, reason = True, "crc"
+                    break
+                last_good = f.tell()
+                if type_byte == FT_ATOM:
+                    n_atoms += 1
+                    atom = _parse_atom_frame_body(body)
+                    if atom:
+                        atom = self._unwrap_atom(atom)
+                        hdr_t = peek_thermal_header(atom.data if atom else b"")
+                        if hdr_t:
+                            last_tick = int(hdr_t["tick"])
+                elif type_byte == FT_CHECKPOINT:
+                    last_ckpt = _decode_checkpoint_body(body)
+                elif type_byte == FT_END:
+                    break
+            return {
+                "truncated": truncated,
+                "reason": reason,
+                "frames": n_atoms,
+                "empty": False,
+                "last_good": last_good,
+                "file_size": size,
+                "last_checkpoint": last_ckpt,
+                "last_tick": last_tick,
+            }
+
+    def append_atom(self, atom: "KAFDAtom") -> int:
+        with self.lock:
+            if self._file is None:
+                raise RuntimeError("KAFDJournal zamknięty")
+            stored = self._wrap_atom(atom)
+            n = _write_kafs_frame(self._file, FT_ATOM, _encode_atom_frame_body(stored))
+            self.n_frames += 1
+            hdr = peek_thermal_header(atom.data)
+            if hdr:
+                self.last_tick = int(hdr["tick"])
+            self._sync()
+            return n
+
+    def checkpoint(self, tick: int, causality: str = "",
+                   T_min: float = 0.0, T_max: float = 0.0, kind: int = 0) -> int:
+        with self.lock:
+            if self._file is None:
+                raise RuntimeError("KAFDJournal zamknięty")
+            body = _encode_checkpoint_body(
+                tick, self.n_frames, T_min, T_max, kind, causality)
+            n = _write_kafs_frame(self._file, FT_CHECKPOINT, body)
+            self.last_checkpoint = _decode_checkpoint_body(body)
+            self.last_causality = causality or ""
+            self.last_tick = int(tick)
+            self._sync()
+            return n
+
+    def iter_atoms(self, min_T: float = 0.0):
+        """Skan od początku (osobny uchwyt). Nie rusza pozycji append."""
+        with open(self.path, "rb") as f:
+            r = KAFDFlowReader(f, sorted_by_T=False)
+            r.read_header()
+            for atom in r.iter_atoms(min_T=min_T):
+                yield self._unwrap_atom(atom)
+
+    def close(self, write_end: bool = False) -> None:
+        with self.lock:
+            if self._file is None:
+                return
+            if write_end:
+                _write_kafs_frame(
+                    self._file, FT_END,
+                    struct.pack(">IQ", self.n_frames, 0))
+                self._sync()
+            self._file.close()
+            self._file = None
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        self.close()
+
+
+def compact_journal(journal_path: str, kafd_path: str,
+                    layout: str = "footer",
+                    reset_journal: bool = True,
+                    meta: dict = None,
+                    world: Optional[str] = None,
+                    encrypt: Optional[bool] = None) -> dict:
+    """
+    P2: seal — dziennik KAFS → seekable KAFD (v2.1 footer domyślnie).
+    P6: koperta KAFX na pliku .kafd (AES-GCM, klucz świata).
+    """
+    if not os.path.exists(journal_path) or os.path.getsize(journal_path) < 8:
+        return {"atoms": 0, "kafd": kafd_path, "empty": True}
+
+    tmp_j = KAFDJournal(journal_path, fsync=False, world=world, encrypt=encrypt)
+    recovered_frames = tmp_j.n_frames
+    atoms = list(tmp_j.iter_atoms())
+    tmp_j.close(write_end=False)
+
+    flags = F_PHI_NATIVE
+    try:
+        from karmazyn_cipher import (
+            encrypt_for_path, infer_world_from_path, plain_requested, crypto_available,
+        )
+        mark = encrypt if encrypt is not None else (
+            (not plain_requested()) and crypto_available()
+        )
+        wname = world if world is not None else infer_world_from_path(kafd_path)
+    except ImportError:
+        mark = False
+        wname = world or ""
+        encrypt_for_path = None  # type: ignore
+    if mark:
+        flags |= F_ENCRYPTED
+
+    writer = KAFDWriter(
+        meta=meta or {"source": "kafs-journal", "frames": len(atoms)},
+        layout=layout,
+        flags=flags,
+    )
+    for atom in atoms:
+        writer.add(atom)
+    blob = writer.build()
+    if mark and encrypt_for_path is not None:
+        blob = encrypt_for_path(blob, kafd_path, world=wname, encrypt=True)
+    _atomic_replace(kafd_path, blob)
+
+    if reset_journal:
+        with open(journal_path, "wb") as f:
+            f.write(KAFS_MAGIC)
+            f.write(struct.pack(">HH", VERSION, F_PHI_NATIVE | F_STREAMING))
+            f.flush()
+            os.fsync(f.fileno())
+
+    return {
+        "atoms": len(atoms),
+        "kafd": kafd_path,
+        "bytes": len(blob),
+        "layout": layout,
+        "recovered_frames": recovered_frames,
+        "reset_journal": reset_journal,
+    }
