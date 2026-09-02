@@ -37,6 +37,12 @@ Przyszła integracja QKD (bez przepisywania HSL/RPC)
 Zmienne: KARM_QKD_SEED, KARM_PHI2, KARM_HSL_EPOCH_SEC,
          KARM_KPC_SOFT_GATE, KARM_KPC_SOFT_THETA — patrz cynober_manual.md
          i docs/SESSION_L0_KPC.md.
+
+Faza 6 (Kryształ Mazura) — wybór peera
+--------------------------------------
+  rezonans → ranking peerów → wybór połączenia → handshake/HSL krypto → klucz
+  Rezonans Lorentza NIE wchodzi do KDF / s_target / frame key.
+  API: rank_peers / select_peer / peer_resonance (poniżej).
 """
 
 from __future__ import annotations
@@ -48,8 +54,9 @@ import os
 import secrets
 import socket
 import time
-from dataclasses import dataclass
-from typing import Any
+import re
+from dataclasses import dataclass, field
+from typing import Any, Mapping, Optional, Sequence
 
 HSL_VERSION = "HSL-1.1"
 HSL_TASK_DEFAULT = "cynober-rpc"
@@ -433,3 +440,185 @@ def perform_hsl_link(
     # KPC bootstrap (historia gen=0) — brama ewolucji; nie per-frame
     link._kpc_bootstrap()
     return link
+
+
+# ---------------------------------------------------------------------------
+# Faza 6 — ranking / wybór peera przez rezonans (BEZ wpływu na materiał krypto)
+# ---------------------------------------------------------------------------
+#
+# Prawidłowa kolejność (Krysztal.txt §8):
+#   R → ranking → wybór host:port → normalny handshake → perform_hsl_link → klucz
+# Zakaz: R → zmiana shared_key / s_target / frame key.
+
+_TOKEN_RE = re.compile(r"[a-zA-ZąćęłńóśźżĄĆĘŁŃÓŚŹŻ0-9_]+")
+
+
+@dataclass
+class HSLPeerCandidate:
+    """Kandydat połączenia — metadane routingu + sonda energetyczna.
+
+    Pola `label` / `energy` służą wyłącznie rankingu R.
+    Nie są wejściem do hybrid_link_seed / prism_target / derive_frame_key.
+    """
+
+    name: str
+    host: str = ""
+    port: int = 0
+    node_id: str = ""
+    label: str = ""
+    energy: float = 0.0
+    meta: dict[str, Any] = field(default_factory=dict)
+
+    def endpoint(self) -> tuple[str, int]:
+        return self.host, int(self.port)
+
+
+@dataclass
+class HSLLocalProbe:
+    """Lokalny kontekst rankingu (treść + energia), nie sekret sesji."""
+
+    label: str = ""
+    energy: float = 0.0
+    node_id: str = ""
+
+
+def _tokens(text: str) -> set[str]:
+    return {t.lower() for t in _TOKEN_RE.findall(text or "")}
+
+
+def _jaccard(a: str, b: str) -> float:
+    ta, tb = _tokens(a), _tokens(b)
+    if not ta and not tb:
+        return 1.0
+    if not ta or not tb:
+        return 0.0
+    return len(ta & tb) / len(ta | tb)
+
+
+def lorentz_R(V: float, dE: float, g: float = 0.3) -> float:
+    """Jądro lorentzowskie — tożsame z torami Mazur Crystal / Bridge Transformer."""
+    g = max(float(g), 1e-9)
+    return g * (float(V) ** 2) / (g * g + float(dE) ** 2)
+
+
+def peer_from_registry_entry(entry: Mapping[str, Any]) -> HSLPeerCandidate:
+    """Normalizacja wpisu peers.json / list_peers → HSLPeerCandidate."""
+    name = str(entry.get("name") or entry.get("node_id") or "")
+    meta = dict(entry.get("meta") or {})
+    energy = entry.get("energy", meta.get("energy", meta.get("tracer_energy", 0.0)))
+    label = str(
+        entry.get("label")
+        or meta.get("label")
+        or entry.get("role")
+        or meta.get("role")
+        or name
+    )
+    return HSLPeerCandidate(
+        name=name,
+        host=str(entry.get("host", "")),
+        port=int(entry.get("port", 0) or 0),
+        node_id=str(entry.get("node_id") or name),
+        label=label,
+        energy=float(energy or 0.0),
+        meta=meta,
+    )
+
+
+def peer_resonance(
+    local: HSLLocalProbe | Mapping[str, Any],
+    peer: HSLPeerCandidate | Mapping[str, Any],
+    *,
+    g: float = 0.3,
+) -> float:
+    """R(local, peer) z treści (Jaccard label) i |Δenergy|."""
+    if isinstance(local, Mapping):
+        local = HSLLocalProbe(
+            label=str(local.get("label", "")),
+            energy=float(local.get("energy", 0.0) or 0.0),
+            node_id=str(local.get("node_id", "")),
+        )
+    if isinstance(peer, Mapping):
+        peer = peer_from_registry_entry(peer)
+    V = _jaccard(local.label, peer.label)
+    dE = abs(float(local.energy) - float(peer.energy))
+    return lorentz_R(V, dE, g=g)
+
+
+def rank_peers(
+    local: HSLLocalProbe | Mapping[str, Any],
+    peers: Sequence[HSLPeerCandidate | Mapping[str, Any]],
+    *,
+    g: float = 0.3,
+    R_min: float = 0.0,
+) -> list[tuple[float, HSLPeerCandidate]]:
+    """
+    Ranking peerów malejąco po R. Nie nawiązuje połączenia i nie liczy kluczy.
+    """
+    ranked: list[tuple[float, HSLPeerCandidate]] = []
+    for raw in peers:
+        cand = raw if isinstance(raw, HSLPeerCandidate) else peer_from_registry_entry(raw)
+        r = peer_resonance(local, cand, g=g)
+        if r >= R_min:
+            ranked.append((r, cand))
+    ranked.sort(key=lambda x: (-x[0], x[1].name))
+    return ranked
+
+
+def select_peer(
+    local: HSLLocalProbe | Mapping[str, Any],
+    peers: Sequence[HSLPeerCandidate | Mapping[str, Any]],
+    *,
+    g: float = 0.3,
+    R_min: float = 0.15,
+) -> Optional[HSLPeerCandidate]:
+    """Wybór najlepszego peera z R >= R_min albo None."""
+    ranked = rank_peers(local, peers, g=g, R_min=R_min)
+    return ranked[0][1] if ranked else None
+
+
+def connect_plan(
+    local: HSLLocalProbe | Mapping[str, Any],
+    peers: Sequence[HSLPeerCandidate | Mapping[str, Any]],
+    *,
+    g: float = 0.3,
+    R_min: float = 0.15,
+) -> dict[str, Any]:
+    """
+    Plan połączenia po rezonansie — jawny rozdział od kryptografii.
+
+    Zwraca wybranego peera + ranking. Caller dopiero potem robi
+    TCP connect → handshake → perform_hsl_link (shared_key bez R).
+    """
+    ranked = rank_peers(local, peers, g=g, R_min=0.0)
+    chosen = None
+    for r, cand in ranked:
+        if r >= R_min:
+            chosen = cand
+            break
+    return {
+        "pipeline": [
+            "resonance",
+            "rank_peers",
+            "select_peer",
+            "tcp_connect",
+            "handshake_crypto",
+            "perform_hsl_link",
+            "session_key",
+        ],
+        "resonance_feeds_kdf": False,
+        "R_min": R_min,
+        "g": g,
+        "selected": None
+        if chosen is None
+        else {
+            "name": chosen.name,
+            "host": chosen.host,
+            "port": chosen.port,
+            "node_id": chosen.node_id,
+            "R": peer_resonance(local, chosen, g=g),
+        },
+        "ranking": [
+            {"name": c.name, "host": c.host, "port": c.port, "R": round(r, 6)}
+            for r, c in ranked
+        ],
+    }

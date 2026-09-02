@@ -179,6 +179,17 @@ def store_class(backend: Optional[str] = None) -> Type:
     return PythonStore
 
 
+def open_mazur_store(thermal: bool = True, backend: Optional[str] = None, **kwargs: Any):
+    """Store + most Lorentza/MRC (standard KarmazynOs). KARMAZYN_MAZUR=0 wyłącza most."""
+    store = open_store(thermal=thermal, backend=backend, **kwargs)
+    try:
+        from mazur_crystal import attach_lorentz_bridge
+
+        return attach_lorentz_bridge(store, mrc=True)
+    except Exception:
+        return store
+
+
 def open_store(thermal: bool = True, backend: Optional[str] = None, **kwargs: Any):
     """Utwórz Store na wybranym substracie — **preferowany szew** (jedyny w product).
 
@@ -187,6 +198,7 @@ def open_store(thermal: bool = True, backend: Optional[str] = None, **kwargs: An
     kwargs przekazywane do konstruktora (env_of, extra_reach, …).
 
     STRICT (KARMAZYN_SUBSTRATE_STRICT=1): bez cichego fallbacku native→python.
+    Dla światów Cynober z rezonansem preferuj ``open_mazur_store``.
     """
     b = substrate_backend(backend)
     if b == "both":

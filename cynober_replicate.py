@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import base64
 import json
+import os
 import re
 import socket
 import tempfile
@@ -109,6 +110,8 @@ class PeerRegistry:
                     "port": info.get("port", 0),
                     "user": info.get("user"),
                     "has_token": bool(info.get("token")),
+                    "label": info.get("label") or info.get("role") or name,
+                    "energy": float(info.get("energy", 1.0) or 1.0),
                 })
             return out
 
@@ -128,6 +131,8 @@ class PeerRegistry:
                 "port": port,
                 "user": info.get("user"),
                 "token": info.get("token"),
+                "label": str(info.get("label") or info.get("role") or name),
+                "energy": float(info.get("energy", 1.0) or 1.0),
             }
 
     def add(
@@ -138,6 +143,8 @@ class PeerRegistry:
         *,
         user: Optional[str] = None,
         token: Optional[str] = None,
+        label: Optional[str] = None,
+        energy: Optional[float] = None,
     ) -> dict:
         name = validate_peer_name(name)
         host = host.strip()
@@ -150,10 +157,22 @@ class PeerRegistry:
             entry["user"] = user
         if token:
             entry["token"] = token
+        if label:
+            entry["label"] = str(label)
+        if energy is not None:
+            entry["energy"] = float(energy)
+        else:
+            entry.setdefault("energy", 1.0)
         with self._lock:
             self._data.setdefault("peers", {})[name] = entry
             self._save()
-        return {"name": name, "host": host, "port": port}
+        return {
+            "name": name,
+            "host": host,
+            "port": port,
+            "label": entry.get("label", name),
+            "energy": entry.get("energy", 1.0),
+        }
 
     def remove(self, name: str) -> dict:
         name = validate_peer_name(name)
@@ -412,12 +431,20 @@ class _PeerRpc:
         self._hsl = None
 
     def connect(self) -> None:
-        from cynober_rpc import HS_TIMEOUT_SEC, PROTO_VERSION, perform_handshake
+        from cynober_rpc import (
+            HS_TIMEOUT_SEC,
+            PROTO_VERSION,
+            apply_tcp_keepalive,
+            perform_handshake,
+        )
         from karmazyn_handshake import _CryptoLayer
 
+        if self._sock is not None:
+            return  # już połączony — podtrzymanie sesji peera
         self._crypto = _CryptoLayer()
         self._sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self._sock.settimeout(HS_TIMEOUT_SEC)
+        apply_tcp_keepalive(self._sock)
         self._sock.connect((self.host, self.port))
         deadline = time.monotonic() + HS_TIMEOUT_SEC
         _, _, _, self._hsl = perform_handshake(
@@ -425,6 +452,7 @@ class _PeerRpc:
             client_version=PROTO_VERSION,
         )
         self._sock.settimeout(self.timeout)
+        apply_tcp_keepalive(self._sock)
 
     def query(self, text: str) -> dict:
         import json
@@ -453,8 +481,125 @@ class _PeerRpc:
             self._sock = None
 
 
-def _peer_client(peer: dict) -> _PeerRpc:
-    return _PeerRpc(peer["host"], int(peer["port"]))
+# Cache stałych tuneli peer→peer (klucz host:port). Close dopiero przy błędzie / reset.
+_peer_session_cache: Dict[str, "_PeerRpc"] = {}
+_peer_session_lock = threading.Lock()
+
+
+def _peer_cache_key(peer: dict) -> str:
+    return f"{peer.get('host', '')}:{int(peer.get('port') or 0)}"
+
+
+def reset_peer_sessions() -> None:
+    """Testy / shutdown — zamknij wszystkie cache'owane tunele peer."""
+    with _peer_session_lock:
+        sessions = list(_peer_session_cache.values())
+        _peer_session_cache.clear()
+    for s in sessions:
+        try:
+            s.close()
+        except Exception:
+            pass
+
+
+def _peer_client(peer: dict, *, reuse: bool = True) -> _PeerRpc:
+    """
+    TCP+HSL do peera. Domyślnie reuse=True — stała sesja między PULL/SYNC/gossip.
+    R wybiera peera wcześniej (resolve_peer); tu tylko hydraulika L0.
+    """
+    key = _peer_cache_key(peer)
+    if reuse:
+        with _peer_session_lock:
+            cached = _peer_session_cache.get(key)
+            if cached is not None and cached._sock is not None:
+                return cached
+    client = _PeerRpc(peer["host"], int(peer["port"]))
+    client.connect()
+    if reuse:
+        with _peer_session_lock:
+            _peer_session_cache[key] = client
+    return client
+
+
+def _peer_release(client: _PeerRpc, *, drop: bool = False) -> None:
+    """Po operacji: zostaw tunel (domyślnie) albo drop=True przy błędzie transportu."""
+    if not drop:
+        return
+    key = f"{client.host}:{int(client.port)}"
+    with _peer_session_lock:
+        if _peer_session_cache.get(key) is client:
+            _peer_session_cache.pop(key, None)
+    client.close()
+
+
+# Aliasy: wybór peera przez rezonans Lorentza (Faza 6), potem zwykły TCP+HSL
+AUTO_PEER_ALIASES = frozenset({"@", "AUTO", "RESONANCE", "REZONANS", "*"})
+
+
+def _local_peer_probe() -> dict:
+    """Lokalny kontekst rankingu — nie sekret sesji."""
+    return {
+        "label": os.environ.get(
+            "KARM_PEER_LABEL",
+            os.environ.get("CYNOBER_NODE_LABEL", "cynober rpc karminql"),
+        ),
+        "energy": float(os.environ.get("KARM_PEER_ENERGY", "1.0") or 1.0),
+        "node_id": os.environ.get("CYNOBER_NODE_ID", "local"),
+    }
+
+
+def select_peer_from_registry(
+    peers: PeerRegistry,
+    *,
+    R_min: float = 0.15,
+    local: Optional[dict] = None,
+) -> dict:
+    """
+    R → ranking → wybór → (caller) TCP → handshake → HSL.
+    Rezonans NIE wchodzi do shared_key.
+    """
+    from karmazyn_hsl import connect_plan
+
+    probe = local or _local_peer_probe()
+    entries: List[dict] = []
+    for row in peers.list_peers():
+        try:
+            entries.append(peers.get(row["name"]))
+        except ValueError:
+            continue
+    if not entries:
+        raise ValueError("Brak zarejestrowanych węzłów do rankingu rezonansu.")
+    plan = connect_plan(probe, entries, R_min=float(R_min))
+    sel = plan.get("selected")
+    if not sel:
+        raise ValueError(
+            f"Żaden peer nie osiągnął R>={R_min}. "
+            "Ustaw label/energy w peers.json albo wskaż węzeł po nazwie."
+        )
+    peer = dict(peers.get(sel["name"]))
+    peer["resonance_R"] = sel.get("R")
+    peer["connect_plan"] = {
+        "resonance_feeds_kdf": plan.get("resonance_feeds_kdf", False),
+        "pipeline": plan.get("pipeline"),
+        "ranking": plan.get("ranking"),
+    }
+    return peer
+
+
+def resolve_peer(
+    peers: PeerRegistry,
+    name: str,
+    *,
+    R_min: float = 0.15,
+    local: Optional[dict] = None,
+) -> dict:
+    """Nazwa węzła albo alias AUTO/@ → peer dict gotowy do _peer_client."""
+    raw = (name or "").strip()
+    if not raw:
+        raise ValueError("Brak nazwy węzła.")
+    if raw.upper() in AUTO_PEER_ALIASES or raw == "@":
+        return select_peer_from_registry(peers, R_min=R_min, local=local)
+    return peers.get(raw)
 
 
 def _login_peer(client: _PeerRpc, peer: dict) -> None:
@@ -680,8 +825,10 @@ def pull_world(
     sync_media: bool = True,
 ) -> dict:
     world = validate_world_name(world)
-    peer = peers.get(peer_name)
+    peer = resolve_peer(peers, peer_name)
+    peer_name = peer["name"]
     client = _peer_client(peer)
+    drop = False
     try:
         client.connect()
         _login_peer(client, peer)
@@ -735,8 +882,11 @@ def pull_world(
             "direction": "pull",
             **info,
         }
+    except (OSError, ConnectionError, TimeoutError):
+        drop = True
+        raise
     finally:
-        client.close()
+        _peer_release(client, drop=drop)
 
 
 def pull_shard(
@@ -747,8 +897,10 @@ def pull_shard(
     region: str,
 ) -> dict:
     world = validate_world_name(world)
-    peer = peers.get(peer_name)
+    peer = resolve_peer(peers, peer_name)
+    peer_name = peer["name"]
     client = _peer_client(peer)
+    drop = False
     try:
         client.connect()
         _login_peer(client, peer)
@@ -761,15 +913,20 @@ def pull_shard(
             "region": region,
             **info,
         }
+    except (OSError, ConnectionError, TimeoutError):
+        drop = True
+        raise
     finally:
-        client.close()
+        _peer_release(client, drop=drop)
 
 
 def push_world(registry: WorldRegistry, peers: PeerRegistry, world: str, peer_name: str) -> dict:
     world = validate_world_name(world)
-    peer = peers.get(peer_name)
+    peer = resolve_peer(peers, peer_name)
+    peer_name = peer["name"]
     payload = export_world_payload(registry, world)
     client = _peer_client(peer)
+    drop = False
     try:
         client.connect()
         _login_peer(client, peer)
@@ -782,18 +939,23 @@ def push_world(registry: WorldRegistry, peers: PeerRegistry, world: str, peer_na
             "remote": remote,
             "bytes": len(base64.b64decode(payload["kafd_b64"])),
         }
+    except (OSError, ConnectionError, TimeoutError):
+        drop = True
+        raise
     finally:
-        client.close()
+        _peer_release(client, drop=drop)
 
 
 def sync_world(registry: WorldRegistry, peers: PeerRegistry, world: str, peer_name: str) -> dict:
     world = validate_world_name(world)
-    peer = peers.get(peer_name)
+    peer = resolve_peer(peers, peer_name)
+    peer_name = peer["name"]
     local = registry._world_info(world)
     local_mod = float(local.get("modified_at") or 0)
     local_exists = bool(local.get("exists_on_disk"))
 
     client = _peer_client(peer)
+    drop = False
     try:
         client.connect()
         _login_peer(client, peer)
@@ -840,8 +1002,11 @@ def sync_world(registry: WorldRegistry, peers: PeerRegistry, world: str, peer_na
             remote = _remote_import(client, world, payload)
             return {"action": "SYNC_WORLD", "world": world, "peer": peer_name, "direction": "push", "remote": remote}
         raise ValueError(f"Świat '{world}' nie istnieje lokalnie ani na węźle '{peer_name}'.")
+    except (OSError, ConnectionError, TimeoutError):
+        drop = True
+        raise
     finally:
-        client.close()
+        _peer_release(client, drop=drop)
 
 
 def try_replicate_command(
@@ -857,6 +1022,32 @@ def try_replicate_command(
             "peers": peers.list_peers(),
             "server_version": SERVER_VERSION,
         }]
+
+    if upper in ("LISTA WĘZŁÓW REZONANS", "LISTA WEZLOW REZONANS"):
+        try:
+            from karmazyn_hsl import connect_plan
+
+            probe = _local_peer_probe()
+            entries = []
+            for row in peers.list_peers():
+                try:
+                    entries.append(peers.get(row["name"]))
+                except ValueError:
+                    continue
+            plan = connect_plan(probe, entries, R_min=0.0)
+            return [{
+                "status": "ok",
+                "action": "LIST_PEERS_RESONANCE",
+                "local": probe,
+                "resonance_feeds_kdf": False,
+                "pipeline": plan.get("pipeline"),
+                "selected": plan.get("selected"),
+                "ranking": plan.get("ranking"),
+                "peers": peers.list_peers(),
+                "server_version": SERVER_VERSION,
+            }]
+        except Exception as e:
+            return [{"status": "error", "action": "LIST_PEERS_RESONANCE", "message": str(e)}]
 
     m = _ADD_PEER_RE.match(stripped)
     if m:
@@ -955,6 +1146,7 @@ def try_replicate_command(
 def is_replicate_query(stripped: str, upper: str) -> bool:
     return (
         upper == "LISTA WĘZŁÓW"
+        or upper in ("LISTA WĘZŁÓW REZONANS", "LISTA WEZLOW REZONANS")
         or bool(_ADD_PEER_RE.match(stripped))
         or bool(_REMOVE_PEER_RE.match(stripped))
         or bool(_EXPORT_MANIFEST_RE.match(stripped))
@@ -972,6 +1164,7 @@ def is_replicate_query(stripped: str, upper: str) -> bool:
 def is_replicate_read_query(stripped: str, upper: str) -> bool:
     return (
         upper == "LISTA WĘZŁÓW"
+        or upper in ("LISTA WĘZŁÓW REZONANS", "LISTA WEZLOW REZONANS")
         or bool(_EXPORT_MANIFEST_RE.match(stripped))
         or bool(_EXPORT_SHARD_RE.match(stripped))
         or bool(_EXPORT_WORLD_RE.match(stripped))

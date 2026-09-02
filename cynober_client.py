@@ -7,12 +7,15 @@ Media: put_media / get_media przez KAFS (negocjacja features).
 
   from cynober_client import connect, CynoberClient
 
-  with connect() as c:
+  # Stała sesja (wiele query na jednym TCP+HSL):
+  c = connect()
+  try:
       print(c.query("ZDROWIE"))
-      print(c.session_info())
+      print(c.query("LISTA ŚWIATÓW"))  # ten sam socket
+  finally:
+      c.close()
 
-  # lub z profilem ~/.karmazyn_client.json
-  c = connect(profile="zespol")
+  # with connect() zamyka tunel przy wyjściu z bloku — OK do jednorazówek.
 """
 
 from __future__ import annotations
@@ -30,6 +33,7 @@ from cynober_rpc import (
     PROTO_VERSION,
     RPC_TIMEOUT_SEC,
     SUPPORTED_VERSIONS,
+    apply_tcp_keepalive,
     decode_rpc_response_frame,
     encode_kafs_request_frame,
     encode_rpc_request_frame,
@@ -85,6 +89,7 @@ class CynoberClient:
 
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.sock.settimeout(HS_TIMEOUT_SEC)
+        apply_tcp_keepalive(self.sock)
         try:
             self.sock.connect((self.host, self.port))
         except OSError as e:
@@ -113,7 +118,30 @@ class CynoberClient:
             raise CynoberClientError(str(e)) from e
 
         self.sock.settimeout(self.timeout)
+        apply_tcp_keepalive(self.sock)
         return self
+
+    def ensure_connected(self) -> "CynoberClient":
+        """Podtrzymaj / odtwórz tunel — bez zbędnego handshake gdy sock żyje."""
+        if self.sock is not None:
+            return self
+        return self.connect()
+
+    def _transport_dead(self, exc: BaseException) -> bool:
+        msg = str(exc).lower()
+        needles = (
+            "zamkn",
+            "closed",
+            "reset",
+            "broken",
+            "timed out",
+            "timeout",
+            "eof",
+            "nie połączono",
+            "pusta odpowiedź",
+            "tunel",
+        )
+        return any(n in msg for n in needles)
 
     def session_info(self) -> dict[str, Any]:
         """
@@ -147,9 +175,12 @@ class CynoberClient:
             "node_id_remote": (self.remote_caps or {}).get("node_id"),
         }
 
-    def query(self, text: str) -> dict:
-        if not self.sock:
-            raise CynoberClientError("Nie połączono — wywołaj connect()")
+    def query(self, text: str, *, _retried: bool = False) -> dict:
+        """
+        Jedno zapytanie na **istniejącym** tunelu (stała sesja).
+        Przy padnięciu TCP — jeden auto-reconnect + ponowienie (nie zamyka po sukcesie).
+        """
+        self.ensure_connected()
         try:
             enc_req = encode_rpc_request_frame(
                 text, self.crypto, self.hsl_link, framed=self.kafs_enabled
@@ -165,10 +196,22 @@ class CynoberClient:
             if not isinstance(data, dict):
                 raise CynoberClientError("Uszkodzona odpowiedź serwera (nie JSON)")
             return data
-        except CynoberClientError:
+        except CynoberClientError as e:
+            if not _retried and self._transport_dead(e):
+                self.close()
+                self.connect()
+                return self.query(text, _retried=True)
             raise
         except (TimeoutError, socket.timeout, OSError) as e:
-            raise CynoberClientError(f"Błąd tunelu RPC: {e}") from e
+            err = CynoberClientError(f"Błąd tunelu RPC: {e}")
+            if not _retried:
+                self.close()
+                try:
+                    self.connect()
+                    return self.query(text, _retried=True)
+                except Exception:
+                    raise err from e
+            raise err from e
         except (ValueError, json.JSONDecodeError, UnicodeDecodeError, IndexError) as e:
             raise CynoberClientError(f"Uszkodzona odpowiedź serwera: {e}") from e
 

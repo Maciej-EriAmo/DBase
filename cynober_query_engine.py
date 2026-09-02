@@ -2648,10 +2648,37 @@ class SubstrateAPI:
         return sorted(history, key=lambda x: x["timestamp"])
 
     def search_resonance(self, query: str) -> list:
-        hits = self.store.resonance(query, k=16, threshold=0.18)
+        """SEARCH — Lorentz R gdy most Mazur; inaczej HRR resonance()."""
+        hits = []
+        store = self.store
+        try:
+            if callable(getattr(store, "resonance_R", None)):
+                hits = store.resonance_R(query, k=16, threshold=0.15) or []
+            elif callable(getattr(store, "find_resonating", None)):
+                atoms = store.find_resonating(query, limit=16) or []
+                hits = []
+                for a in atoms:
+                    sc = (
+                        float(store.score(a))
+                        if callable(getattr(store, "score", None))
+                        else 0.5
+                    )
+                    hits.append((sc, a.id))
+        except Exception:
+            hits = []
+        if not hits:
+            try:
+                if callable(getattr(store, "resonance_hrr", None)):
+                    hits = store.resonance_hrr(query, k=16, threshold=0.18) or []
+                else:
+                    hits = store.resonance(query, k=16, threshold=0.18) or []
+            except Exception:
+                hits = []
         found: Set[str] = set()
         for _, atom_id in hits:
+            # native: id może być u32 — indeks często trzyma stringi logiczne
             found |= self._atom_index.get(atom_id, set())
+            found |= self._atom_index.get(str(atom_id), set())
         return sorted(found)
 
     def find_relation(self, relation: str, target: str) -> list:
@@ -3326,7 +3353,13 @@ class KarminEngine:
                 if self.in_transaction or auto_tx:
                     self.api.rollback_transaction()
                     self.in_transaction = False
-                    results.append({"status": "error", "action": "ROLLBACK", "message": "Wycofano zmiany z powodu błędu", "line": line_no})
+                    results.append({
+                        "status": "error",
+                        "action": "ROLLBACK",
+                        "message": "Wycofano zmiany z powodu błędu",
+                        "cause": error_msg,
+                        "line": line_no,
+                    })
                 if strict: raise RuntimeError(f"Błąd L{line_no}: {error_msg}") from e
                 results.append({"status": "error", "message": error_msg, "line": line_no})
                 break

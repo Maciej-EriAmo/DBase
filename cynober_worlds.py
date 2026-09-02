@@ -35,6 +35,17 @@ from cynober_paths import relocate_legacy, worlds_home
 DEFAULT_UNFOLD_RADIUS = 2
 
 
+def create_mazur_runtime() -> "WorldRuntime":
+    """Runtime świata / sesji efemerycznej — Store + most Lorentza (jak KarmazynOs)."""
+    try:
+        from mazur_crystal import open_mazur_store
+
+        store = open_mazur_store(thermal=True)
+    except Exception:
+        store = kernel.Store(thermal=True)
+    return WorldRuntime(KarminLambdaBridge(store))
+
+
 def lazy_load_enabled() -> bool:
     raw = os.environ.get("CYNOBER_LAZY_LOAD", "1").strip().lower()
     return raw not in ("0", "false", "no", "off")
@@ -449,7 +460,7 @@ class WorldRegistry:
         }
 
     def _create_runtime(self) -> WorldRuntime:
-        return WorldRuntime(KarminLambdaBridge(kernel.Store(thermal=True)))
+        return create_mazur_runtime()
 
     def _load_world(self, name: str) -> World:
         runtime = self._create_runtime()

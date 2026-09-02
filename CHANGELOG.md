@@ -2,6 +2,28 @@
 
 Format: skrót dla deweloperów. Protokół wire (**Cynober-Secure-1.2**) jest wersjonowany osobno od pakietu.
 
+## 8.2.4 (dev)
+
+### Mazur Crystal / Lorentz (standard KarmazynOs)
+- Pakiet `mazur_crystal/` — most na Store (+ MRC); `create_mazur_runtime` / `open_mazur_store`.
+- Światy i sesje efemeryczne serwera owinięte mostem (`KARMAZYN_MAZUR=0` wyłącza).
+- `search_resonance` → Lorentz \(R\), fallback HRR.
+- Docs: [`docs/MAZUR_CRYSTAL.md`](docs/MAZUR_CRYSTAL.md).
+
+### HSL Faza 6 — wybór peera
+- `rank_peers` / `select_peer` / `connect_plan` w `karmazyn_hsl.py` (\(R\) ∉ KDF).
+- `resolve_peer`: alias `@` / `AUTO`; `LISTA WĘZŁÓW REZONANS`.
+- peers.json: `label`, `energy`.
+
+### Stałe połączenia
+- TCP keepalive (klient/serwer); rate-limit nie zamyka sesji.
+- Cache tuneli peer (PULL/SYNC/gossip); `CynoberClient.ensure_connected` + 1× reconnect.
+- Test: `test_persistent_session_many_queries`.
+
+### Demo / GameStore
+- `seed_demo_world(reset=True)` idempotentny; RpcBackend pokazuje prawdziwy błąd (nie sam ROLLBACK).
+- `game_memory_demo --world` → `ZAPISZ ŚWIAT` + poprawione podsumowanie trwałości.
+
 ## 8.2.3
 
 - **MEDIA LIST "bąbel"** — lista bindingów mediów przy encji (lore-editor `lista_mediow` po RPC).

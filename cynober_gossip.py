@@ -503,21 +503,34 @@ def import_soul_payload(
 
 
 def gossip_peer_query(peers: Any, peer_name: str, query: str) -> dict:
-    """Zapytanie RPC do zarejestrowanego węzła (peers.json)."""
-    from cynober_replicate import _login_peer, _peer_client
+    """Zapytanie RPC do zarejestrowanego węzła (peers.json).
 
-    peer = peers.get(peer_name)
+    peer_name może być aliasem AUTO/@ — wybór przez rezonans Lorentza,
+    potem zwykły TCP + handshake (R ∉ KDF).
+    """
+    from cynober_replicate import (
+        _login_peer,
+        _peer_client,
+        _peer_release,
+        resolve_peer,
+    )
+
+    peer = resolve_peer(peers, peer_name)
     client = _peer_client(peer)
-    client.connect()
+    drop = False
     try:
+        client.connect()
         _login_peer(client, peer)
         resp = client.query(query)
         row = resp.get("results", [{}])[0]
         if row.get("status") != "ok":
             raise RuntimeError(row.get("message", "Błąd zapytania na węźle"))
         return row
+    except (OSError, ConnectionError, TimeoutError):
+        drop = True
+        raise
     finally:
-        client.close()
+        _peer_release(client, drop=drop)
 
 
 def try_gossip_command(

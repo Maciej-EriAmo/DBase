@@ -41,3 +41,20 @@ class TestCynoberClient(unittest.TestCase):
             self.assertEqual(m["action"], "SERVER_METRICS")
         finally:
             c.close()
+
+    def test_persistent_session_many_queries(self):
+        """Stałe połączenie: wiele query na jednym TCP (bez reconnect)."""
+        c = CynoberClient(port=self.port)
+        c.connect()
+        try:
+            sock0 = c.sock
+            fd0 = sock0.fileno()
+            for _ in range(5):
+                row = c.query_line("ZDROWIE")
+                self.assertEqual(row["action"], "HEALTH")
+                self.assertIs(c.sock, sock0)
+                self.assertEqual(c.sock.fileno(), fd0)
+            self.assertTrue(c.session_info()["connected"])
+        finally:
+            c.close()
+            self.assertIsNone(c.sock)

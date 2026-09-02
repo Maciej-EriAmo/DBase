@@ -41,6 +41,12 @@ class CynoberClient:
         try:
             self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             self.sock.settimeout(10.0)
+            try:
+                from cynober_rpc import apply_tcp_keepalive
+
+                apply_tcp_keepalive(self.sock)
+            except Exception:
+                pass
             self.sock.connect((self.host, self.port))
 
             # deadline w handshake to ABSOLUTNY znacznik time.monotonic()

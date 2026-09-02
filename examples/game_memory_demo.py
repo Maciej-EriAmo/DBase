@@ -42,16 +42,21 @@ def _section(title: str) -> None:
     print("=" * 60)
 
 
-def run_demo(store: GameStore, *, via: str) -> None:
+def run_demo(store: GameStore, *, via: str, world: str | None = None) -> None:
     _section(f"Połączenie: {via}")
     stats = store.stats()
     print(f"  Sesja izolowana: {stats.get('session_isolated', 'n/d (tryb lokalny)')}")
     print(f"  Etykieta sesji:  {stats.get('session_label', 'local')}")
     print(f"  Aktywne tunele:  {stats.get('active_sessions', '—')}")
     print(f"  Bąble w sesji:   {stats.get('bubbles', 0)}")
+    if world:
+        print(f"  Świat trwały:    {world} (współdzielony + ZAPISZ)")
 
     _section("1. Świat startowy (UTRWAL + WSTRZYKNIJ + JSON + POŁĄCZ)")
     store.seed_demo_world()
+    if world:
+        flushed = store.flush_world()
+        print(f"  ZAPISZ ŚWIAT → {flushed.get('action', flushed)}")
     gandalf = store.show("Gandalf")
     print(f"  Gandalf — cechy: {list(gandalf.get('properties', {}).keys())}")
     print(f"  Relacje: {gandalf.get('relations', [])}")
@@ -103,9 +108,15 @@ def run_demo(store: GameStore, *, via: str) -> None:
         print(f"  Gandalf.Pamięć = {props.get('Pamięć', '—')}")
 
     _section("Podsumowanie")
-    print("  Ta sesja RPC żyje tylko w Twoim tunelu (v7.0).")
-    print("  Drugi klient nie zobaczy Gandalfa ani questów z tego demo.")
-    print("  Rozłączenie = utrata stanu, chyba że ZAPISZ w tej samej sesji.")
+    if world:
+        print(f"  Świat \"{world}\" jest trwały i współdzielony na serwerze.")
+        print("  Drugi klient: WYBIERZ ŚWIAT \"" + world + "\" — zobaczy Gandalfa/questy.")
+        print("  Rozłączenie TCP ≠ utrata stanu (seed zrobił ZAPISZ ŚWIAT).")
+        print("  Auto-flush serwera też dogrywa dirty → .kafd.")
+    else:
+        print("  Bez --world: sesja RPC jest izolowana (tunel = prywatny Store).")
+        print("  Drugi klient nie zobaczy Gandalfa z tego demo.")
+        print("  Rozłączenie = utrata stanu, chyba że użyjesz trwałego świata (--world).")
 
 
 def main() -> int:
@@ -122,7 +133,7 @@ def main() -> int:
     try:
         if args.local:
             store = connect_local()
-            run_demo(store, via="lokalny KarminEngine")
+            run_demo(store, via="lokalny KarminEngine", world=None)
         else:
             cfg = load_config()
             if args.profile:
@@ -148,12 +159,13 @@ def main() -> int:
             via = f"RPC {host}:{port} (profil: {prof_name})"
             if args.world:
                 via += f' | świat: {args.world}'
-            run_demo(store, via=via)
+            run_demo(store, via=via, world=args.world)
         return 0
     except (ConnectionError, OSError, RuntimeError) as e:
-        print(f"\n[!] Nie udało się połączyć z serwerem: {e}", file=sys.stderr)
-        print("    Uruchom: python cynober_server.py", file=sys.stderr)
-        print("    Lub użyj: python examples/game_memory_demo.py --local", file=sys.stderr)
+        print(f"\n[!] Błąd demo / połączenia: {e}", file=sys.stderr)
+        print("    Uruchom serwer: python cynober_server.py", file=sys.stderr)
+        print("    Lub lokalnie:   python examples/game_memory_demo.py --local", file=sys.stderr)
+        print("    Trwały świat:   seed czyści Gandalf/Aldric/Quest_Smok przed wstrzyknięciem.", file=sys.stderr)
         return 1
     except KeyboardInterrupt:
         print("\n[!] Przerwano.")

@@ -19,7 +19,14 @@ class KarminLambdaBridge:
     """Jeden Store, dwa wejścia: KarminQL (engine) i mini-Lisp (evaluator)."""
 
     def __init__(self, store: Optional[kernel.Store] = None):
-        self.store = store or kernel.Store(thermal=True)
+        if store is None:
+            try:
+                from mazur_crystal import open_mazur_store
+
+                store = open_mazur_store(thermal=True)
+            except Exception:
+                store = kernel.Store(thermal=True)
+        self.store = store
         self.engine = KarminEngine(self.store)
         self.evaluator = Evaluator(self.store, env_label="__lambda__")
         self._last_karmin: List[dict] = []

@@ -40,6 +40,48 @@ SUPPORTED_VERSIONS = frozenset({PROTO_VERSION, LEGACY_VERSION_11, LEGACY_VERSION
 
 RPC_TIMEOUT_SEC = 300.0
 HS_TIMEOUT_SEC = 10.0
+
+# Podtrzymanie stałych sesji TCP (idle ≠ rozłączenie)
+TCP_KEEPALIVE_IDLE_SEC = 60
+TCP_KEEPALIVE_INTERVAL_SEC = 10
+TCP_KEEPALIVE_COUNT = 5
+
+
+def apply_tcp_keepalive(
+    sock,
+    *,
+    idle: int = TCP_KEEPALIVE_IDLE_SEC,
+    interval: int = TCP_KEEPALIVE_INTERVAL_SEC,
+    count: int = TCP_KEEPALIVE_COUNT,
+) -> None:
+    """SO_KEEPALIVE (+ platformowe timery, gdy dostępne)."""
+    import sys
+
+    try:
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
+    except OSError:
+        return
+    # Linux / niektóre BSD
+    for opt, val in (
+        (getattr(socket, "TCP_KEEPIDLE", None), idle),
+        (getattr(socket, "TCP_KEEPINTVL", None), interval),
+        (getattr(socket, "TCP_KEEPCNT", None), count),
+    ):
+        if opt is None:
+            continue
+        try:
+            sock.setsockopt(socket.IPPROTO_TCP, opt, int(val))
+        except OSError:
+            pass
+    # Windows: SIO_KEEPALIVE_VALS — argumentem jest krotka (onoff, ms, ms)
+    if sys.platform == "win32":
+        try:
+            sock.ioctl(
+                getattr(socket, "SIO_KEEPALIVE_VALS", 0x98000004),
+                (1, int(idle * 1000), int(interval * 1000)),
+            )
+        except (OSError, AttributeError, ValueError, TypeError):
+            pass
 REPLAY_WINDOW_SEC = 300.0
 CRYPTO_PRIORITY = ("hss", "ecdh", "simple")
 

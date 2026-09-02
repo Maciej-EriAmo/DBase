@@ -28,6 +28,17 @@ def _last(results: List[dict]) -> dict:
     return results[-1] if results else {}
 
 
+def _prefer_error_row(results: List[dict]) -> Optional[dict]:
+    """Serwer (strict=False) często zwraca ROLLBACK, potem właściwy błąd — bierz ten drugi."""
+    errors = [r for r in results if r.get("status") == "error"]
+    if not errors:
+        return None
+    for r in errors:
+        if r.get("action") != "ROLLBACK":
+            return r
+    return errors[0]
+
+
 def _esc(name: str) -> str:
     return name.replace("\\", "\\\\").replace('"', '\\"')
 
@@ -81,13 +92,16 @@ class RpcBackend:
         results, transport_err = parse_response_payload(payload)
         if transport_err:
             raise GameStoreError(transport_err)
-        for row in results:
-            if row.get("status") == "error":
-                line = row.get("line")
-                msg = row.get("message", "nieznany błąd")
+        if strict:
+            err = _prefer_error_row(results)
+            if err is not None:
+                line = err.get("line")
+                msg = err.get("message", "nieznany błąd")
+                cause = err.get("cause")
+                if cause:
+                    msg = f"{msg} ({cause})"
                 prefix = f"L{line}: " if line is not None else ""
-                if strict:
-                    raise GameStoreError(f"{prefix}{msg}")
+                raise GameStoreError(f"{prefix}{msg}")
         return results
 
     def close(self) -> None:
@@ -216,8 +230,16 @@ class GameStore:
         row = self.run_line(f'SYNC ŚWIAT "{_esc(world)}" Z "{_esc(peer)}"', strict=True)
         return {k: v for k, v in row.items() if k not in ("status", "action")}
 
-    def seed_demo_world(self) -> None:
-        """NPC, gracz, quest, relacje i pamięć tekstowa (JSON w cechach)."""
+    def seed_demo_world(self, *, reset: bool = True) -> None:
+        """NPC, gracz, quest, relacje i pamięć tekstowa (JSON w cechach).
+
+        reset=True (domyślnie): usuwa poprzednie bąble demo — bezpieczne przy
+        ponownym odpaleniu na trwałym świecie (--world rivendell).
+        """
+        if reset:
+            for name in ("Gandalf", "Aldric", "Quest_Smok"):
+                # brak bąbla ≠ błąd krytyczny
+                self.run(f'USUŃ BĄBEL "{_esc(name)}"', strict=False)
         self.run(
             '''
 UTRWAL "Gandalf"

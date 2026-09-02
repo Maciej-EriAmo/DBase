@@ -18,6 +18,16 @@
 
 **Kanoniczne:** łącze znaczenia = HSL + Surface/bąbel, nie „mamy socket TCP”.
 
+**Faza 6 (Mazur / Lorentz):** wybór peera przez \(R\) *przed* TCP:
+
+```text
+rezonans → ranking → select_peer → TCP → handshake → HSL → klucz sesji
+```
+
+`R` **nie** wchodzi do KDF (`resonance_feeds_kdf: false`).  
+Alias węzła: `SYNC … Z "@"` / `"AUTO"`. Ranking: `LISTA WĘZŁÓW REZONANS`.  
+Światy / sesje: `open_mazur_store` / `create_mazur_runtime` (most + MRC, jak KarmazynOs).
+
 ---
 
 ## 2. Dwa reżimy L0 — opis połączenia
@@ -105,4 +115,5 @@ python -m unittest tests.test_key_predict tests.test_qpredict tests.test_hsl_ses
 | Data | Uwagi |
 |------|--------|
 | 2026-08-10 | KPC + qpredict + spięcie L0/QKD/docs; HSL hook bootstrap/epoch |
+| 2026-04-09 | Faza 6 Mazur: peer \(R\) przed TCP; most Store; stałe sesje TCP (keepalive / peer cache) |
 | 2026-08-10 | Pakiet **8.2.2** na PyPI; docs/manual/README wyrównane; `python -m cynober_server` |

@@ -69,6 +69,7 @@ from cynober_worlds import (
     load_runtime_from_kafd,
     save_runtime_to_kafd,
     validate_world_name,
+    create_mazur_runtime,
 )
 
 from cynober_rpc import (
@@ -123,7 +124,7 @@ class CynoberFacade:
         self._registry = registry or get_world_registry()
         self._auth = get_auth_store(self._registry.base_dir)
         self._auth_user: str | None = None
-        self._ephemeral = WorldRuntime(KarminLambdaBridge(kernel.Store(thermal=True)))
+        self._ephemeral = create_mazur_runtime()
         self._world: World | None = None
         self._lock = threading.Lock()
 
@@ -590,7 +591,7 @@ class CynoberFacade:
             name = self._world.name
             self._registry.release(name)
             self._world = None
-            self._ephemeral = WorldRuntime(KarminLambdaBridge(kernel.Store(thermal=True)))
+            self._ephemeral = create_mazur_runtime()
             return [{"status": "ok", "action": "DETACH_WORLD", "world": name}]
 
         if upper == "ZAPISZ ŚWIAT":
@@ -720,7 +721,7 @@ class CynoberFacade:
         if self._world is not None and self._world.name == name:
             self._registry.release(name)
             self._world = None
-            self._ephemeral = WorldRuntime(KarminLambdaBridge(kernel.Store(thermal=True)))
+            self._ephemeral = create_mazur_runtime()
         try:
             self._registry.delete(name)
         except ValueError as e:
@@ -916,7 +917,8 @@ def handle_client(conn: socket.socket, addr, query_limit: SessionQueryLimiter | 
                     conn, crypto, error_result(rl_msg, action="RATE_LIMIT"),
                     hsl_link, framed=framed,
                 )
-                break
+                # Nie zamykaj stałej sesji — klient może poczekać i pytać dalej
+                continue
 
             # KAFS upload chunk (między PUT START a PUT END)
             try:
@@ -1065,6 +1067,12 @@ def run_server(host='0.0.0.0', port=8080):
     try:
         while True:
             conn, addr = srv.accept()
+            try:
+                from cynober_rpc import apply_tcp_keepalive
+
+                apply_tcp_keepalive(conn)
+            except Exception:
+                pass
             ip = addr[0]
             ok, msg = limiter.acquire_connection(ip)
             if not ok:

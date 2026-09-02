@@ -20,7 +20,7 @@ Relacyjno-grafowa baza danych na termodynamicznym rdzeniu **KarmazynOS**, z tran
 | GameStore | — | `game_store.py` |
 | KAFD / KAFX | v2.1 + journal | `karmazyn_kafd.py`, `karmazyn_cipher.py`, `karmazyn_thermal.py` · [docs/KAFD.md](docs/KAFD.md) |
 
-Pełna składnia i API: [`cynober_manual.md`](cynober_manual.md) · KAFD / KAFX / klatki: [`docs/KAFD.md`](docs/KAFD.md) · sesja L0/KPC: [`docs/SESSION_L0_KPC.md`](docs/SESSION_L0_KPC.md) · historia: [`CHANGELOG.md`](CHANGELOG.md)
+Pełna składnia i API: [`cynober_manual.md`](cynober_manual.md) · KAFD / KAFX / klatki: [`docs/KAFD.md`](docs/KAFD.md) · sesja L0/KPC: [`docs/SESSION_L0_KPC.md`](docs/SESSION_L0_KPC.md) · most Lorentza / peer \(R\): [`docs/MAZUR_CRYSTAL.md`](docs/MAZUR_CRYSTAL.md) · historia: [`CHANGELOG.md`](CHANGELOG.md)
 
 ## Trzy filary
 
@@ -77,6 +77,16 @@ cynober-server
 cynober-cli
 cynober-konfigurator
 ```
+
+**Klient CLI** (osobny terminal, przy działającym serwerze):
+
+```bash
+python Cynober_db.py
+# albo
+python Cynober_db.py --profile lokalny
+```
+
+SDK: `from cynober_client import connect` — stała sesja = wiele `query` na jednym TCP (patrz [`docs/MAZUR_CRYSTAL.md`](docs/MAZUR_CRYSTAL.md)).
 
 Katalog `Scripts` (np. `%LOCALAPPDATA%\Python\pythoncore-3.14-64\Scripts`) musi być w **User PATH**, inaczej PowerShell nie znajdzie `cynober-server.exe`.
 
