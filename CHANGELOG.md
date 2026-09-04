@@ -4,9 +4,10 @@ Format: skrót dla deweloperów. Protokół wire (**Cynober-Secure-1.2**) jest w
 
 ## 8.2.5
 
-### Packaging hotfix
+### Packaging hotfix (PyPI)
 - **`cynober_paths` w wheel** — brakowało w `py-modules`; PyPI 8.2.4 psuło `import cynober_worlds` / serwer / lore-editor.
-- Rebuild + republish wymagany (`pip install -U cynober-db==8.2.5`).
+- Opublikowane na PyPI (wheel + sdist). Docs: [`docs/SECURITY_CONNECTION.md`](docs/SECURITY_CONNECTION.md), README wersje → 8.2.5.
+- Konsumenci: `pip install -U "cynober-db>=8.2.5"` (lore-editor **0.7.9**).
 
 ## 8.2.4
 

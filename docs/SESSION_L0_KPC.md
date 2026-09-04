@@ -36,14 +36,17 @@ Alias węzła: `SYNC … Z "@"` / `"AUTO"`. Ranking: `LISTA WĘZŁÓW REZONANS`.
 
 ```text
 L0 = TCP :8080
-  → powitanie (capabilities, session_id)
+  → powitanie (capabilities, session_id) + anty-replay (ts, session_id)
   → HSS KEM (główne shared_key na klasycznym kanale)
   → opc. PSK / KARM_QKD_SEED (ten sam slot KDF co przyszły QKD)
-  → HSL (Φ², epoch, PrismMask, KPC bootstrap)
+  → HSL Faza 2: hsl_link / hsl_cap jako HSL1‖AEAD (nie cleartext JSON)
+  → KPC bootstrap
   → RPC + opc. KAFS
 ```
 
 `ZDROWIE` / `session_info()`: `l0_carrier: "tcp"`.
+
+**Od 8.2.4:** bramki `CYNOBER_MIN_CRYPTO` / `ALLOW_LEGACY` / `ALLOW_SIMPLE`; produkcja: [`SECURITY_CONNECTION.md`](SECURITY_CONNECTION.md).
 
 ### 2.2 Docelowo (L0 = sieć kwantowa / QKD)
 

@@ -15,6 +15,17 @@ open_store / Store → LorentzBridge (+ MRC)   # KARMAZYN_MAZUR=0 wyłącza
 
 `SEARCH` / `search_resonance` → najpierw \(R\), fallback HRR.
 
+### MRC / kontekst sesji (8.2.4+)
+
+```text
+USTAW KONTEKST "atom_id"          # lub "Bąbel.Właściwość"
+POKAŻ KONTEKST
+TICK n                            # karmi MRC przy włączonym retention
+```
+
+Gdy `context_id` jest ustawiony, nowe atomy (KarminQL `WSTRZYKNIJ` / `atom_new`) dostają domyślny `Tracer`.  
+`KARMAZYN_MAZUR=0` → bare Store (bez mostu / bez tych komend).
+
 ## Sieć (Faza 6)
 
 ```text
@@ -30,9 +41,10 @@ Lokalnie: `KARM_PEER_LABEL`, `KARM_PEER_ENERGY`, `CYNOBER_NODE_ID`.
 
 ## Stałe połączenia TCP
 
-- Klient: jeden tunel na wiele `query`; `ensure_connected` + auto-reconnect (1×)
+- Klient: jeden tunel na wiele `query`; `ensure_connected` (liveness `fileno`) + auto-reconnect (1×)
 - Serwer: rate-limit **nie** zamyka sesji; TCP keepalive
-- Peer RPC: cache tuneli między PULL/SYNC/gossip
+- Peer RPC: cache tuneli między PULL/SYNC/gossip + reconnect na `_PeerRpc`
+- Mid-`MEDIA PUT`: abort przy padnięciu transportu (nie kontynuuj na nowej sesji)
 
 ```python
 c = connect()
@@ -59,13 +71,14 @@ Trwały świat: po seedzie demo robi `ZAPISZ ŚWIAT`.
 ## Testy
 
 ```powershell
-$env:KARMAZYN_SUBSTRATE = "python"
+$env:KARMAZYN_SUBSTRATE = "native"
 $env:KARMAZYN_MAZUR = "1"
-python -m unittest tests.test_mazur_dbase tests.test_hsl_peer_rank tests.test_cynober_client -v
+python -m unittest tests.test_mazur_dbase tests.test_hsl_peer_rank tests.test_cynober_client tests.test_peer_tunnel_e2e -v
 ```
 
 ## Powiązania
 
 - KarmazynOs: `Documents/MAZUR_CRYSTAL.md`
 - L0/KPC: [`SESSION_L0_KPC.md`](SESSION_L0_KPC.md)
+- Bezpieczeństwo: [`SECURITY_CONNECTION.md`](SECURITY_CONNECTION.md)
 - Manual: [`../cynober_manual.md`](../cynober_manual.md)

@@ -8,19 +8,22 @@ Relacyjno-grafowa baza danych na termodynamicznym rdzeniu **KarmazynOS**, z tran
 
 | Komponent | Wersja | Plik |
 |-----------|--------|------|
-| **Pakiet PyPI / serwer** | **8.2.2** | `pyproject.toml` · `cynober_ops.SERVER_VERSION` |
-| Klient SDK | 8.2.2 | `cynober_client.py` (`session_info`, media KAFS) |
+| **Pakiet PyPI / serwer** | **8.2.5** | `pyproject.toml` · `cynober_ops.SERVER_VERSION` |
+| Klient SDK | 8.2.5 | `cynober_client.py` (`session_info`, media KAFS, reconnect) |
 | Klient CLI | v1.8.0 | `Cynober_db.py` |
 | Protokół wire | **Cynober-Secure-1.2** | `cynober_rpc.py` (numer protokołu ≠ numer pakietu) |
-| HSL | HSL-1.1 | `karmazyn_hsl.py` (+ KPC bootstrap/epoch) |
+| HSL | HSL-1.1 + **HSL1** AEAD na link/cap | `karmazyn_hsl.py` (+ KPC bootstrap/epoch) |
 | KPC / qpredict | 1.0 | `karmazyn_key_predict.py`, `karmazyn_qpredict.py` |
+| Mazur Crystal | LorentzBridge + MRC | `mazur_crystal/` · [docs/MAZUR_CRYSTAL.md](docs/MAZUR_CRYSTAL.md) |
 | KarminQL | v6.9 | `cynober_query_engine.py` |
 | Jądro KarmazynOS | v1.1.0 | `karmazyn_kernel.py` / `karmazyn_substrate.py` |
 | Substrat Rust (DB_karmin) | 0.1.0-karmazyn-substrate | `native/` + `karmazyn_backend.py` |
 | GameStore | — | `game_store.py` |
 | KAFD / KAFX | v2.1 + journal | `karmazyn_kafd.py`, `karmazyn_cipher.py`, `karmazyn_thermal.py` · [docs/KAFD.md](docs/KAFD.md) |
 
-Pełna składnia i API: [`cynober_manual.md`](cynober_manual.md) · KAFD / KAFX / klatki: [`docs/KAFD.md`](docs/KAFD.md) · sesja L0/KPC: [`docs/SESSION_L0_KPC.md`](docs/SESSION_L0_KPC.md) · most Lorentza / peer \(R\): [`docs/MAZUR_CRYSTAL.md`](docs/MAZUR_CRYSTAL.md) · historia: [`CHANGELOG.md`](CHANGELOG.md)
+Pełna składnia i API: [`cynober_manual.md`](cynober_manual.md) · KAFD: [`docs/KAFD.md`](docs/KAFD.md) · sesja L0/KPC: [`docs/SESSION_L0_KPC.md`](docs/SESSION_L0_KPC.md) · Mazur / peer \(R\): [`docs/MAZUR_CRYSTAL.md`](docs/MAZUR_CRYSTAL.md) · **bezpieczeństwo tunelu:** [`docs/SECURITY_CONNECTION.md`](docs/SECURITY_CONNECTION.md) · historia: [`CHANGELOG.md`](CHANGELOG.md)
+
+> **Uwaga:** PyPI **8.2.4** było zepsute (brak `cynober_paths` w wheel). Instaluj **≥ 8.2.5**.
 
 ## Trzy filary
 
@@ -65,7 +68,7 @@ Wymagania: **Python 3.10+**.
 ### Z PyPI (zalecane dla zespołu)
 
 ```bash
-pip install -U "cynober-db>=8.2.2"
+pip install -U "cynober-db>=8.2.5"
 ```
 
 **Start serwera** (Windows: jeśli `cynober-server` nie jest w PATH — normalne przy Python Store):
@@ -185,7 +188,7 @@ Projekt jest w **fazie użytkowej dla early adopterów** — działa end-to-end,
 - KarminQL v6.9 z rozbudowanym dialektem SQL-owym (JOIN, CTE, okna, JSON, EXPLAIN, indeksy)
 - **Jądro v1.1.0:** reach-GC, `retained_tomb`, dual-emit tick (`both`/`batch`/`per_atom`), publiczne API bez `Store.reg`
 - Serwer v8.0: **izolacja sesji** + **trwałe światy** + **auth/role** + **ops** + **replikacja manifest-first** + **shardy KAFD** + **lazy unfold**
-- Pakiet PyPI [`cynober-db`](https://pypi.org/project/cynober-db/) **8.2.2** (KPC/HSL, `session_info`, media KAFS)
+- Pakiet PyPI [`cynober-db`](https://pypi.org/project/cynober-db/) **8.2.5** (HSL1, security gates, `session_info`, media KAFS; nie 8.2.4)
 - Tunel HSS + HSL + opcjonalny PSK/QKD-seed
 - Trwałość: `ZAPISZ ŚWIAT`, auto-flush co 60s, kopie zapasowe z `shards/` i `proca/`
 - Integracja pandas, CSV, `GameStore` dla gier i prototypów

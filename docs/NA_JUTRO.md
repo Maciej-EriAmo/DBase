@@ -1,38 +1,29 @@
 # Na jutro
 
-## Zrobione w bazie (media)
+## Domknięte (2026-09, cynober-db 8.2.4 → 8.2.5)
 
-| Faza | Co |
-|------|-----|
-| 0 | `karmazyn_media` local attach / KAFD / SOUL limit |
-| 2 | pipe / open / CLI |
-| 3 | KAFS over RPC: caps, MEDIA PUT/GET/STAT, `CynoberClient.put_media/get_media` |
-| 4 | **A_STREAM lokalnie:** head + `media_seg`, `force_stream` / `stream_threshold`, `iter_bytes`, KAFD roundtrip |
-| 4b | **KAFS PUT/GET** commit/load przez `get_bytes` + stream head gdy `KARM_MEDIA_STREAM_THRESHOLD` |
-| lore F1 | lore-editor: `dodaj_media` / panel „Dołącz plik” |
-| 5 | lore `podglad_media` + panel Podgląd (Tk/PIL jak Luneta) |
-| 6 | `media_index` w manifeście + `sync_missing_media` / pull |
-
-## Spike dekodera (DONE)
-
-- `IncrementalVideoDecoder` — MP4 klatka-po-klatce gdy hot  
-- Audyt: `docs/AUDIT_MEDIA_CANVAS.md`  
-- Plan substratu: `docs/PLAN_DEKODERY_SUBSTRAT.md` (D1–D3)
+| Tor | Co |
+|-----|-----|
+| Sieć 1→4 | RPC reconnect, gossip ACL/REZONANS, NativeStore hydrate bind, Mazur wheel + KONTEKST |
+| Security | Legacy/MIN_CRYPTO gates, HSL1 encrypt link/cap, scrypt+lockout, `SECURE_BOOT`, suite `test_security_audit` |
+| Packaging | `cynober_paths` w wheel (**8.2.5** na PyPI) |
+| Docs | [`SECURITY_CONNECTION.md`](SECURITY_CONNECTION.md), SESSION/MAZUR/README zsynchronizowane |
+| lore-editor | **0.7.9** wymaga `>=8.2.5` |
 
 ## Opcjonalnie później
 
-- D1: `media_frame` atoms w Store  
-- async decode worker  
+- D1–D3: dekodery substratu ([`PLAN_DEKODERY_SUBSTRAT.md`](PLAN_DEKODERY_SUBSTRAT.md))
+- REST/HTTP — **nie** (jeden wire Karmazyn)
+- Argon2 zamiast scrypt (opcjonalny extra)
+- Następna sesja DBase: **mocny audyt + code review** (nie feature-first)
 
-## Zrobione (KAFD)
+## Zrobione wcześniej (media / KAFD)
 
-- mmap reader KAFD (plain `KAFDReader.from_path`)  
-- dziennik KAFS, v2.1 footer, GOP, KAFX — [`docs/KAFD.md`](KAFD.md)  
-
-## Później / inny repo
-
-- REST/HTTP — **nie**
+| Faza | Co |
+|------|-----|
+| 0–6 | media local + KAFS + A_STREAM + lore podgląd + `sync_missing_media` |
+| KAFD | v2.1 journal, KAFX, ThermalLog — [`KAFD.md`](KAFD.md) |
 
 ---
 
-*Aktualizacja po incremental decoder + audit + plan.*
+*Aktualizacja po release 8.2.5 + docs security.*
