@@ -333,6 +333,50 @@ def link_nonce_from_caps(local_caps: dict[str, Any], remote_caps: dict[str, Any]
     return hashlib.sha256("|".join(parts).encode("utf-8")).digest()
 
 
+# Prefiks ramek HSL po ustaleniu klucza sesji (nie cleartext JSON).
+_HSL_WIRE_MAGIC = b"HSL1"
+_HSL_AAD_LINK = b"cynober-hsl-link-v1"
+_HSL_AAD_CAP = b"cynober-hsl-cap-v1"
+
+
+def _hsl_crypto_from_shared(shared_key: bytes, mode: str = "hss"):
+    """Tymczasowa warstwa encrypt dla Fazy 2 (gdy wołający podał tylko bytes)."""
+    from karmazyn_handshake import _CryptoLayer
+
+    c = _CryptoLayer()
+    c._key = shared_key
+    c._mode = mode if mode in ("hss", "ecdh", "simple") else "hss"
+    return c
+
+
+def _send_hsl_msg(sock, obj: dict[str, Any], crypto, *, aad: bytes) -> None:
+    """Wyślij hsl_link / hsl_cap zaszyfrowane kluczem sesji (po handshake)."""
+    from karmazyn_handshake import _send_frame, _send_json
+    import json as _json
+
+    raw = _json.dumps(obj, ensure_ascii=False, sort_keys=True).encode("utf-8")
+    if crypto is not None and getattr(crypto, "_key", None):
+        enc = crypto.encrypt(raw, aad=aad)
+        _send_frame(sock, _HSL_WIRE_MAGIC + enc)
+    else:
+        # testy / awaryjnie — cleartext (nie produkcja)
+        _send_json(sock, obj)
+
+
+def _recv_hsl_msg(sock, deadline: float, crypto, *, aad: bytes) -> dict[str, Any]:
+    from karmazyn_handshake import _recv_frame
+    import json as _json
+
+    raw = _recv_frame(sock, deadline)
+    if raw.startswith(_HSL_WIRE_MAGIC):
+        if crypto is None or not getattr(crypto, "_key", None):
+            raise RuntimeError("HSL: otrzymano zaszyfrowaną ramkę bez klucza sesji")
+        plain = crypto.decrypt(raw[len(_HSL_WIRE_MAGIC) :], aad=aad)
+        return _json.loads(plain.decode("utf-8", errors="replace"))
+    # Kompatybilność wstecz: cleartext JSON (stary peer)
+    return _json.loads(raw.decode("utf-8", errors="replace"))
+
+
 def perform_hsl_link(
     sock: socket.socket,
     shared_key: bytes,
@@ -343,13 +387,16 @@ def perform_hsl_link(
     *,
     phi2: bytes | None = None,
     qkd_seed: bytes | None = None,
+    crypto=None,
+    crypto_mode: str | None = None,
 ) -> HSLLink:
     """
     Faza 2 HSL po handshake krypto: wymiana commit Φ² + potwierdzenie rezonansu.
     Bez ujawniania Φ² — tylko H(commit) i HMAC(s_target, 'establish').
-    """
-    from karmazyn_handshake import _recv_json, _send_json
 
+    Od 8.2.4: hsl_link / hsl_cap idą **zaszyfrowane** kluczem sesji (HSL1‖AEAD),
+    żeby node_id / epoch / commit / qkd_fp nie leciały cleartext po wire.
+    """
     phi2 = phi2 or load_phi2()
     qkd = qkd_seed if qkd_seed is not None else load_qkd_seed()
     epoch = current_epoch()
@@ -358,6 +405,11 @@ def perform_hsl_link(
     remote_id = str(remote_caps.get("node_id", "unknown"))
     commit_local = link_commit(phi2, link_nonce)
     fp_local = qkd_fingerprint(qkd)
+
+    if crypto is None:
+        crypto = _hsl_crypto_from_shared(
+            shared_key, mode=(crypto_mode or "hss")
+        )
 
     local_msg: dict[str, Any] = {
         "type": "hsl_link",
@@ -370,11 +422,11 @@ def perform_hsl_link(
         local_msg["qkd_fp"] = fp_local
 
     if is_server:
-        remote_msg = _recv_json(sock, deadline)
-        _send_json(sock, local_msg)
+        remote_msg = _recv_hsl_msg(sock, deadline, crypto, aad=_HSL_AAD_LINK)
+        _send_hsl_msg(sock, local_msg, crypto, aad=_HSL_AAD_LINK)
     else:
-        _send_json(sock, local_msg)
-        remote_msg = _recv_json(sock, deadline)
+        _send_hsl_msg(sock, local_msg, crypto, aad=_HSL_AAD_LINK)
+        remote_msg = _recv_hsl_msg(sock, deadline, crypto, aad=_HSL_AAD_LINK)
 
     if remote_msg.get("type") != "hsl_link":
         raise RuntimeError("HSL: oczekiwano hsl_link, otrzymano inny typ ramki")
@@ -412,11 +464,11 @@ def perform_hsl_link(
 
     cap_msg = {"type": "hsl_cap", "cap": local_cap}
     if is_server:
-        remote_cap_msg = _recv_json(sock, deadline)
-        _send_json(sock, cap_msg)
+        remote_cap_msg = _recv_hsl_msg(sock, deadline, crypto, aad=_HSL_AAD_CAP)
+        _send_hsl_msg(sock, cap_msg, crypto, aad=_HSL_AAD_CAP)
     else:
-        _send_json(sock, cap_msg)
-        remote_cap_msg = _recv_json(sock, deadline)
+        _send_hsl_msg(sock, cap_msg, crypto, aad=_HSL_AAD_CAP)
+        remote_cap_msg = _recv_hsl_msg(sock, deadline, crypto, aad=_HSL_AAD_CAP)
 
     if remote_cap_msg.get("type") != "hsl_cap":
         raise RuntimeError("HSL: oczekiwano hsl_cap")

@@ -179,7 +179,9 @@ Synchronizacja trwałych światów między serwerami Cynober (ten sam tunel HSS+
 | Polecenie | Opis | Auth (gdy włączone) |
 |-----------|------|---------------------|
 | `LISTA WĘZŁÓW` | Katalog peerów | globalny reader+ |
+| `LISTA WĘZŁÓW REZONANS` | Ranking peerów Lorentz \(R\) (label/energy; \(R\) ∉ KDF) | globalny reader+ |
 | `DODAJ WĘZEŁ "n" HOST "h" PORT 8080` | Rejestracja węzła | globalny admin |
+| `… ETYKIETA "role" ENERGIA 1.2` | Opcjonalnie label/energy pod AUTO/`@` | globalny admin |
 | `USUŃ WĘZEŁ "n"` | Usunięcie węzła | globalny admin |
 | `PULL ŚWIAT "w" Z "peer"` | Manifest-first: manifest + meta, potem shardy | admin w świecie |
 | `PUSH ŚWIAT "w" DO "peer"` | Pełny export (manifest + shardy) na węzeł | admin w świecie |
@@ -194,6 +196,22 @@ Synchronizacja trwałych światów między serwerami Cynober (ten sam tunel HSS+
 **Manifest-first (v8.0):** `PULL ŚWIAT` najpierw pobiera manifest i `index.json`, następnie każdy `region_<n>.kafd` osobno — mniejszy pierwszy transfer, shardy na żądanie. `EKSPORT ŚWIATA` nadal zwraca komplet (kompatybilność z v7.4).
 
 Opcjonalnie przy dodawaniu węzła: `UŻYTKOWNIK "repl" TOKEN "sekret"` — logowanie przy połączeniu replikacji.
+Opcjonalnie rezonans: `ETYKIETA "scout" ENERGIA 0.8` (aliasy `LABEL` / `ENERGY`) — zapis w `peers.json`.
+Wybór peera bez nazwy: `PULL/SYNC … Z "@"` / `"AUTO"` / `"REZONANS"` (HSL Faza 6). Env lokalne: `KARM_PEER_LABEL`, `KARM_PEER_ENERGY`.
+
+Duże media po GOSSIP SOUL (`media_ref`):
+- `GOSSIP FETCH MEDIA "atom_id" Z "peer"` — jeden blob (MEDIA GET/KAFS)
+- `GOSSIP FETCH MEDIA Z "peer"` — wszystkie lokalne atomy z `media_ref` bez `data`
+- albo `PULL ŚWIAT` + `sync_missing_media`
+
+Mazur / MRC (gdy `KARMAZYN_MAZUR=1`): `USTAW KONTEKST "atom_id"` lub `"Bąbel.Właściwość"`; `POKAŻ KONTEKST`; `TICK` karmi MRC.
+
+Bezpieczeństwo tunelu (produkcja):
+- `CYNOBER_MIN_CRYPTO=hss` + `CYNOBER_ALLOW_LEGACY=0` + `CYNOBER_ALLOW_SIMPLE=0`
+- `KARM_PSK=…`, `KARM_HSS_PROFILE=standard|production`, auth.json `enabled`
+- `CYNOBER_SECURE_BOOT=1` — odmawia startu przy złej posture na public bind
+- HSL Faza 2: ramki `hsl_link`/`hsl_cap` szyfrowane (`HSL1`); auth tokeny = scrypt (+ lockout ZALOGUJ)
+- Publish: `.\scripts\publish_pypi.ps1` (wymaga `TWINE_PASSWORD` / `.pypirc`)
 
 `GameStore`: `list_peers()`, `add_peer()`, `pull_world()`, `push_world()`, `sync_world()`.
 

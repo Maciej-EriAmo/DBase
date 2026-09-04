@@ -298,7 +298,7 @@ POŁĄCZ "Aldric" Z "Gandalf" JAKO "spotkał"
         return list(row.get("matches", []))
 
     def search_resonance(self, query: str) -> List[str]:
-        """Rezonans HRR (SZUKAJ) — najlepiej na krótkich etykietach atomów (np. Klucz)."""
+        """Rezonans Lorentz→HRR (SZUKAJ) — najlepiej na krótkich etykietach atomów (np. Klucz)."""
         row = self.run_line(f'SZUKAJ "{_esc(query)}"', strict=True)
         return list(row.get("matches", []))
 

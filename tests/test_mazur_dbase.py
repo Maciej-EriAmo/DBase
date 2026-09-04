@@ -48,6 +48,18 @@ class TestSearchResonance(unittest.TestCase):
         found = eng.api.search_resonance("system active")
         self.assertIsInstance(found, list)
 
+    def test_wstrzyknij_szukaj_returns_bubble(self):
+        """E2E: WSTRZYKNIJ → indeks → SZUKAJ zwraca nazwę bąbla (Lorentz)."""
+        from cynober_worlds import create_mazur_runtime
+
+        rt = create_mazur_runtime()
+        eng = rt.bridge.engine
+        eng.api.create_bubble("Sonda")
+        eng.api.add_property("Sonda", "Tag", '"klucz rezonansowy mazur"')
+        found = eng.api.search_resonance("klucz rezonansowy")
+        self.assertIsInstance(found, list)
+        self.assertIn("Sonda", found)
+
 
 class TestPeerResonanceNet(unittest.TestCase):
     def test_resolve_auto_picks_near_peer(self):
@@ -87,6 +99,24 @@ class TestPeerResonanceNet(unittest.TestCase):
             p = resolve_peer(peers, "far")
             self.assertEqual(p["name"], "far")
             self.assertEqual(p["host"], "10.0.0.9")
+
+    def test_dodaj_wezel_label_energy_grammar(self):
+        from cynober_replicate import PeerRegistry, try_replicate_command
+
+        with tempfile.TemporaryDirectory() as td:
+            peers = PeerRegistry(Path(td))
+            rows = try_replicate_command(
+                'DODAJ WĘZEŁ "scout" HOST "10.0.0.5" PORT 9005 ETYKIETA "cynober rpc" ENERGIA 0.7',
+                "DODAJ WĘZEŁ",
+                registry=None,  # type: ignore[arg-type]
+                peers=peers,
+            )
+            self.assertEqual(rows[0]["status"], "ok")
+            self.assertEqual(rows[0]["label"], "cynober rpc")
+            self.assertAlmostEqual(float(rows[0]["energy"]), 0.7)
+            info = peers.get("scout")
+            self.assertEqual(info["label"], "cynober rpc")
+            self.assertAlmostEqual(float(info["energy"]), 0.7)
 
 
 if __name__ == "__main__":

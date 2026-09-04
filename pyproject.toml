@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "cynober-db"
-version = "8.2.3"
+version = "8.2.5"
 description = "Cynober DB — relacyjno-grafowa baza z tunelem post-quantum HSS+HSL i KarminQL"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -52,6 +52,7 @@ py-modules = [
     "cynober_media_rpc",
     "cynober_ops",
     "cynober_pandas_bridge",
+    "cynober_paths",
     "cynober_query_engine",
     "cynober_rate_limit",
     "cynober_replicate",
@@ -88,7 +89,7 @@ py-modules = [
 ]
 
 [tool.setuptools.packages.find]
-include = ["native*"]
+include = ["native*", "mazur_crystal*"]
 exclude = ["native.karmazyn_substrate*", "native.karmazyn_substrate_rs*"]
 
 [tool.setuptools.package-data]

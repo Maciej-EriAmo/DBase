@@ -78,6 +78,7 @@ class TestCynoberRpcCodec(unittest.TestCase):
         remote = {"version": "Cynober-Secure-1.1", "crypto": ["hss", "ecdh", "simple"]}
         self.assertEqual(select_crypto_mode(local, remote), "hss")
 
+    @patch.dict(os.environ, {"CYNOBER_ALLOW_LEGACY": "1", "CYNOBER_ALLOW_SIMPLE": "1"}, clear=False)
     def test_legacy_forces_simple(self):
         local = build_local_caps()
         remote = {"version": LEGACY_VERSION, "crypto": ["simple"]}

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-cynober_server.py — Bezpieczny Serwer Bazy Danych Cynober DB (v8.2.3)
+cynober_server.py — Bezpieczny Serwer Bazy Danych Cynober DB (v8.2.4)
 ==========================================================================
 Zastępuje serwer HTTP. L0 Carrier = TCP (nakładka; QKD = seed w HSL KDF, paper §6.4).
 Protokół: HSS + HSL (+ KPC przy establish/epoch) + KarminQL-RPC + MEDIA/KAFS.
@@ -19,6 +19,7 @@ v8.0: shardy KAFD per region grafu, replikacja manifest-first.
 v8.1: gossip SOUL (bąble+bindings+atomy) nad RPC — BubbleVFS-lite.
 v8.2: KPC w HSL (bootstrap/epoch), ZDROWIE l0/kpc, klient session_info + media errors.
 v8.2.3: MEDIA LIST "bąbel" — lista bindingów mediów (lore-editor).
+v8.2.4: native hydrate, ACL REZONANS/gossip sesji, legacy gate, FETCH MEDIA, MRC kontekst.
 """
 
 from __future__ import annotations
@@ -222,9 +223,40 @@ class CynoberFacade:
         m = _LOGIN_RE.match(stripped)
         if m:
             user, token = m.group(1), m.group(2)
+            if self._auth.enabled and self._auth.is_login_locked(user):
+                rem = int(self._auth.login_lock_remaining(user)) + 1
+                self._auth.audit(
+                    user=user,
+                    world=self.world_name or "*",
+                    action="LOGIN_LOCKOUT",
+                    query='ZALOGUJ "…" TOKEN "…"',
+                    allowed=False,
+                )
+                return [{
+                    "status": "error",
+                    "action": "LOGIN_LOCKOUT",
+                    "message": f"Zbyt wiele nieudanych logowań — spróbuj za {rem}s.",
+                }]
             if self._auth.verify_login(user, token):
                 self._auth_user = user
+                self._auth.clear_login_failures(user)
+                self._auth.audit(
+                    user=user,
+                    world=self.world_name or "*",
+                    action="LOGIN",
+                    query='ZALOGUJ "…" TOKEN "…"',
+                    allowed=True,
+                )
                 return [{"status": "ok", "action": "LOGIN", "user": user}]
+            if self._auth.enabled:
+                self._auth.record_login_failure(user)
+            self._auth.audit(
+                user=user,
+                world=self.world_name or "*",
+                action="LOGIN_FAIL",
+                query='ZALOGUJ "…" TOKEN "…"',
+                allowed=False,
+            )
             return [{"status": "error", "message": "Nieprawidłowy użytkownik lub token."}]
 
         if upper == "WYLOGUJ":
@@ -383,6 +415,7 @@ class CynoberFacade:
             node_id=_node_id(),
             peers=get_peer_registry(self._registry.base_dir),
             api=api,
+            world=self.world_name,
         )
         if resp and resp[0].get("status") == "ok" and self._world is not None:
             self._auth.audit(
@@ -398,31 +431,59 @@ class CynoberFacade:
         return resp
 
     def _check_gossip_permission(self, stripped: str, upper: str) -> list | None:
-        """GOSSIP na dołączonym świecie podlega ACL; sesja efemeryczna — bez blokady."""
+        """
+        GOSSIP podlega ACL gdy auth włączone.
+        Sesja efemeryczna NIE jest już „bez blokady”: SYNC/FETCH używa peers.json
+        (confused deputy) — wymaga globalnego admin; EXPORT → global reader.
+        """
         if not self._auth.enabled:
-            return None
-        if self._world is None:
             return None
         if not self._auth_user:
             return [{"status": "error", "message": "Wymagane logowanie: ZALOGUJ \"user\" TOKEN \"...\"."}]
 
-        world = self._world.name
         is_export = upper.startswith("GOSSIP EKSPORT")
+        is_sync = upper.startswith("GOSSIP SYNC")
+        is_fetch = upper.startswith("GOSSIP FETCH")
+
+        if self._world is None:
+            if is_export:
+                if self._auth.has_min_role(self._auth_user, "*", ROLE_READER):
+                    return None
+                return [{
+                    "status": "error",
+                    "message": "GOSSIP EKSPORT (sesja) wymaga globalnej roli reader.",
+                }]
+            # IMPORT lokalny: writer*; SYNC/FETCH peer: admin* (tokeny peers.json)
+            if is_sync or is_fetch:
+                if self._auth.has_min_role(self._auth_user, "*", ROLE_ADMIN):
+                    return None
+                return [{
+                    "status": "error",
+                    "message": "GOSSIP SYNC/FETCH (sesja) wymaga globalnej roli admin.",
+                }]
+            if self._auth.has_min_role(self._auth_user, "*", ROLE_WRITER):
+                return None
+            return [{
+                "status": "error",
+                "message": "GOSSIP IMPORT (sesja) wymaga globalnej roli writer.",
+            }]
+
+        world = self._world.name
         if is_export:
             if self._auth.has_min_role(self._auth_user, world, ROLE_READER):
                 return None
             return [{"status": "error", "message": f"GOSSIP EKSPORT wymaga roli reader w '{world}'."}]
 
-        # IMPORT / SYNC — zapis
+        # IMPORT / SYNC / FETCH — zapis (+ peer dla SYNC/FETCH)
         if self._auth.has_min_role(self._auth_user, world, ROLE_WRITER):
             return None
-        return [{"status": "error", "message": f"GOSSIP IMPORT/SYNC wymaga roli writer w '{world}'."}]
+        return [{"status": "error", "message": f"GOSSIP IMPORT/SYNC/FETCH wymaga roli writer w '{world}'."}]
 
     def _check_replicate_permission(self, stripped: str, upper: str) -> list | None:
         if not self._auth.enabled:
             return None
 
-        if upper == "LISTA WĘZŁÓW":
+        if upper in ("LISTA WĘZŁÓW", "LISTA WĘZŁÓW REZONANS", "LISTA WEZLOW REZONANS"):
             if self._auth_user and self._auth.has_min_role(self._auth_user, "*", ROLE_READER):
                 return None
             if not self._auth_user:
@@ -457,8 +518,15 @@ class CynoberFacade:
     def _check_ops_permission(self, stripped: str, upper: str) -> list | None:
         if not self._auth.enabled:
             return None
-        if upper in ("ZDROWIE", "METRYKI SERWERA"):
+        if upper == "ZDROWIE":
+            # ZDROWIE zostaje otwarte (liveness); bogate METRYKI — reader+
             return None
+        if upper == "METRYKI SERWERA":
+            if self._auth_user and self._auth.has_min_role(self._auth_user, "*", ROLE_READER):
+                return None
+            if not self._auth_user:
+                return [{"status": "error", "message": "Wymagane logowanie: ZALOGUJ \"user\" TOKEN \"...\"."}]
+            return [{"status": "error", "message": "METRYKI SERWERA wymaga globalnej roli reader."}]
 
         world = world_from_ops_query(stripped)
         if world is None:
@@ -761,6 +829,40 @@ class CynoberFacade:
             bridge.store.settle(n)
             return [{"status": "ok", "action": "TICK", "cycles": n}]
 
+        # Mazur MRC: kontekst sesji (retention / Λ)
+        if upper.startswith("USTAW KONTEKST") or upper.startswith("SET CONTEXT"):
+            store = bridge.store
+            if not hasattr(store, "set_context"):
+                return [{"status": "error", "message": "Store bez Mazur set_context (KARMAZYN_MAZUR=0?)."}]
+            m = re.match(
+                r'^(?:USTAW\s+KONTEKST|SET\s+CONTEXT)\s+"([^"]+)"$',
+                query.strip(),
+                re.IGNORECASE,
+            )
+            if not m:
+                return [{
+                    "status": "error",
+                    "message": 'Składnia: USTAW KONTEKST "atom_id" albo USTAW KONTEKST "Bąbel.Właściwość"',
+                }]
+            ref = m.group(1).strip()
+            atom = store.get_atom(ref) if callable(getattr(store, "get_atom", None)) else None
+            if atom is None and "." in ref:
+                bname, key = ref.split(".", 1)
+                b = bridge.engine.api._bubble_index.get(bname)
+                aid = (getattr(b, "bindings", {}) or {}).get(key) if b else None
+                atom = store.get_atom(aid) if aid else None
+            if atom is None:
+                return [{"status": "error", "message": f"Brak atomu/kontekstu „{ref}”."}]
+            cid = store.set_context(atom)
+            if hasattr(store, "enable_resonance_retention"):
+                store.enable_resonance_retention(True)
+            return [{"status": "ok", "action": "SET_CONTEXT", "context_id": cid}]
+
+        if upper in ("POKAŻ KONTEKST", "SHOW CONTEXT"):
+            store = bridge.store
+            cid = getattr(store, "context_id", None)
+            return [{"status": "ok", "action": "SHOW_CONTEXT", "context_id": cid}]
+
         if upper.startswith("ZAPISZ"):
             parts = query.split(maxsplit=1)
             path = parts[1].strip() if len(parts) > 1 else "zrzut_cynober.kafd"
@@ -1022,6 +1124,42 @@ def handle_client(conn: socket.socket, addr, query_limit: SessionQueryLimiter | 
         conn.close()
 
 
+def _warn_security_posture(*, host: str, auth_enabled: bool, hss_prof: str) -> None:
+    """Ostrzeżenia przy starcie — public bind / brak PSK / toy HSS / legacy."""
+    from cynober_rpc import allow_legacy_protocol, allow_simple_crypto
+
+    publicish = host in ("0.0.0.0", "::", "") or host not in (
+        "127.0.0.1",
+        "::1",
+        "localhost",
+    )
+    psk = bool(os.environ.get("KARM_PSK", "").strip())
+    secure_boot = os.environ.get("CYNOBER_SECURE_BOOT", "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
+    problems: list[str] = []
+    if publicish and not auth_enabled:
+        problems.append("auth WYŁĄCZONY przy nie-loopback bind")
+    if publicish and not psk:
+        problems.append("brak KARM_PSK (MITM na KEM bez PSK)")
+    if (hss_prof or "proto").lower() == "proto" and publicish:
+        problems.append("KARM_HSS_PROFILE=proto (toy) — ustaw standard/production")
+    if allow_legacy_protocol() and publicish:
+        problems.append("legacy 1.0 dozwolone — CYNOBER_ALLOW_LEGACY=0 + MIN_CRYPTO=hss")
+    if allow_simple_crypto() and publicish:
+        problems.append("simple/XOR w caps — CYNOBER_ALLOW_SIMPLE=0 lub MIN_CRYPTO=hss")
+    for msg in problems:
+        print(f"  UWAGA BEZPIECZEŃSTWO: {msg}")
+    if secure_boot and problems:
+        raise SystemExit(
+            "CYNOBER_SECURE_BOOT=1: odrzucono start — napraw posture "
+            "(auth, KARM_PSK, HSS profile, legacy/simple)."
+        )
+
+
 def run_server(host='0.0.0.0', port=8080):
     from cynober_client_config import get_server_config
     from cynober_ops import SERVER_VERSION
@@ -1062,6 +1200,7 @@ def run_server(host='0.0.0.0', port=8080):
         print(f"  Auto-flush światów: co {af_cfg['interval_sec']}s (dirty → .kafd)")
     else:
         print("  Auto-flush światów: wyłączony (CYNOBER_AUTO_FLUSH_SEC=0)")
+    _warn_security_posture(host=host, auth_enabled=bool(auth.enabled), hss_prof=hss_prof)
     print("=" * 60)
 
     try:

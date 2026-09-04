@@ -39,6 +39,16 @@ _IMPORT_SOUL_RE = re.compile(
 )
 _SYNC_SOUL_RE = re.compile(r'^GOSSIP\s+SYNC\s+SOUL\s+Z\s+"([^"]+)"$', re.IGNORECASE)
 
+# ── MEDIA (v8.2.4) — dociągnij blob po media_ref z SOUL ───────────────────────
+_FETCH_MEDIA_ONE_RE = re.compile(
+    r'^GOSSIP\s+FETCH\s+MEDIA\s+"([^"]+)"\s+Z\s+"([^"]+)"$',
+    re.IGNORECASE,
+)
+_FETCH_MEDIA_ALL_RE = re.compile(
+    r'^GOSSIP\s+FETCH\s+MEDIA\s+Z\s+"([^"]+)"$',
+    re.IGNORECASE,
+)
+
 
 def is_gossip_query(stripped: str, upper: str) -> bool:
     return (
@@ -48,6 +58,8 @@ def is_gossip_query(stripped: str, upper: str) -> bool:
         or _EXPORT_SOUL_RE.match(stripped) is not None
         or _IMPORT_SOUL_RE.match(stripped) is not None
         or _SYNC_SOUL_RE.match(stripped) is not None
+        or _FETCH_MEDIA_ONE_RE.match(stripped) is not None
+        or _FETCH_MEDIA_ALL_RE.match(stripped) is not None
     )
 
 
@@ -261,9 +273,10 @@ def _serialize_atom_soul(
         if allow:
             meta["data_b64"] = base64.b64encode(raw).decode("ascii")
         else:
-            # ref dla przyszłego GOSSIP FETCH MEDIA (Faza 6)
+            # ref → GOSSIP FETCH MEDIA (KAFS / MEDIA GET na peerze)
             cas = md.get("_cas") or hashlib.sha256(raw).digest()[:12].hex()
             meta["media_ref"] = {
+                "id": aid,
                 "size": size,
                 "mime": str(md.get("mime") or "application/octet-stream"),
                 "cas": str(cas),
@@ -540,8 +553,9 @@ def try_gossip_command(
     node_id: str,
     peers: Any = None,
     api: Any = None,
+    world: str | None = None,
 ) -> List[dict] | None:
-    """Wykonaj GOSSIP EKSPORT/IMPORT/SYNC (PHI lub SOUL) na aktywnym Store."""
+    """Wykonaj GOSSIP EKSPORT/IMPORT/SYNC/FETCH (PHI/SOUL/MEDIA) na aktywnym Store."""
     # ── PHI ────────────────────────────────────────────────────────────────
     m = _EXPORT_PHI_RE.match(stripped)
     if m:
@@ -631,4 +645,144 @@ def try_gossip_command(
         except Exception as e:
             return [{"status": "error", "action": "GOSSIP_SYNC_SOUL", "message": str(e)}]
 
+    # ── FETCH MEDIA ────────────────────────────────────────────────────────
+    m = _FETCH_MEDIA_ONE_RE.match(stripped)
+    if m:
+        if peers is None:
+            return [{
+                "status": "error",
+                "action": "GOSSIP_FETCH_MEDIA",
+                "message": "Brak rejestru węzłów (peers.json)",
+            }]
+        try:
+            return [fetch_media_from_peer(
+                store, peers, m.group(2), atom_ids=[m.group(1)], world=world,
+            )]
+        except Exception as e:
+            return [{"status": "error", "action": "GOSSIP_FETCH_MEDIA", "message": str(e)}]
+
+    m = _FETCH_MEDIA_ALL_RE.match(stripped)
+    if m:
+        if peers is None:
+            return [{
+                "status": "error",
+                "action": "GOSSIP_FETCH_MEDIA",
+                "message": "Brak rejestru węzłów (peers.json)",
+            }]
+        try:
+            return [fetch_media_from_peer(
+                store, peers, m.group(1), atom_ids=None, world=world,
+            )]
+        except Exception as e:
+            return [{"status": "error", "action": "GOSSIP_FETCH_MEDIA", "message": str(e)}]
+
     return None
+
+
+def _atoms_needing_media(store: Any, atom_ids: list[str] | None) -> list[str]:
+    need: list[str] = []
+    if atom_ids is not None:
+        for aid in atom_ids:
+            a = store.get_atom(str(aid))
+            if a is None:
+                continue
+            md = getattr(a, "metadata", None) or {}
+            data = md.get("data")
+            if isinstance(data, (bytes, bytearray)) and data:
+                continue
+            need.append(str(aid))
+        return need
+    for a in store.atoms():
+        md = getattr(a, "metadata", None) or {}
+        ref = md.get("media_ref")
+        data = md.get("data")
+        if ref and not (isinstance(data, (bytes, bytearray)) and data):
+            need.append(str(a.id))
+        elif md.get("mime") and not (isinstance(data, (bytes, bytearray)) and data):
+            # head bez blobu (np. po SOUL z samym mime)
+            if str(getattr(a, "S", "")) in ("media", "media_seg") or "mime" in md:
+                need.append(str(a.id))
+    return need
+
+
+def fetch_media_from_peer(
+    store: Any,
+    peers: Any,
+    peer_name: str,
+    *,
+    atom_ids: list[str] | None = None,
+    world: str | None = None,
+) -> dict:
+    """
+    Dociągnij bajty mediów z peera (MEDIA GET / KAFS) do lokalnych atomów.
+    Uzupełnia metadata['data'] / mime / _cas; usuwa media_ref po sukcesie.
+    """
+    from cynober_client import CynoberClient, CynoberClientError
+    from cynober_replicate import resolve_peer
+
+    peer = resolve_peer(peers, peer_name)
+    ids = _atoms_needing_media(store, atom_ids)
+    if not ids:
+        return {
+            "status": "ok",
+            "action": "GOSSIP_FETCH_MEDIA",
+            "peer": peer.get("name") or peer_name,
+            "fetched": 0,
+            "missing": 0,
+            "ok": True,
+        }
+
+    host = peer.get("host") or "127.0.0.1"
+    port = int(peer.get("port") or 8080)
+    c = CynoberClient(host, port)
+    fetched = 0
+    errors: list[dict] = []
+    try:
+        c.connect()
+        user, token = peer.get("user"), peer.get("token")
+        if user and token:
+            row = c.query_line(f'ZALOGUJ "{user}" TOKEN "{token}"')
+            if row.get("status") != "ok":
+                return {
+                    "status": "error",
+                    "action": "GOSSIP_FETCH_MEDIA",
+                    "peer": peer.get("name") or peer_name,
+                    "fetched": 0,
+                    "missing": len(ids),
+                    "ok": False,
+                    "message": row.get("message") or "login fail",
+                }
+        if world:
+            c.query_line(f'WYBIERZ ŚWIAT "{world}"')
+        if not c.kafs_enabled:
+            # MEDIA GET może iść inline base64 bez KAFS — spróbuj mimo to
+            pass
+        for mid in ids:
+            try:
+                data, mime, _meta = c.get_media(mid)
+                atom = store.get_atom(mid)
+                if atom is None:
+                    errors.append({"id": mid, "error": "brak lokalnego atomu"})
+                    continue
+                atom.metadata["data"] = data
+                atom.metadata["mime"] = mime or atom.metadata.get("mime") or "application/octet-stream"
+                atom.metadata["_cas"] = hashlib.sha256(data).digest()[:12].hex()
+                atom.metadata.pop("media_ref", None)
+                fetched += 1
+            except (CynoberClientError, OSError, ValueError) as e:
+                errors.append({"id": mid, "error": str(e)})
+    finally:
+        try:
+            c.close()
+        except Exception:
+            pass
+
+    return {
+        "status": "ok" if not errors or fetched else "error",
+        "action": "GOSSIP_FETCH_MEDIA",
+        "peer": peer.get("name") or peer_name,
+        "fetched": fetched,
+        "missing": len(ids) - fetched,
+        "errors": errors,
+        "ok": fetched > 0 or not ids,
+    }

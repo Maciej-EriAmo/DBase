@@ -121,10 +121,22 @@ class CynoberClient:
         apply_tcp_keepalive(self.sock)
         return self
 
+    def _sock_alive(self) -> bool:
+        """True gdy lokalny deskryptor wygląda na żywy (bez probe sieciowego)."""
+        sock = self.sock
+        if sock is None:
+            return False
+        try:
+            return int(sock.fileno()) >= 0
+        except (OSError, ValueError):
+            return False
+
     def ensure_connected(self) -> "CynoberClient":
         """Podtrzymaj / odtwórz tunel — bez zbędnego handshake gdy sock żyje."""
-        if self.sock is not None:
+        if self._sock_alive():
             return self
+        if self.sock is not None:
+            self.close()
         return self.connect()
 
     def _transport_dead(self, exc: BaseException) -> bool:
@@ -285,10 +297,22 @@ class CynoberClient:
         if start.get("status") != "ok":
             raise CynoberClientError(start.get("message") or "MEDIA PUT START failed")
         seq = 0
-        for chunk in iter_chunks(data, chunk_size=chunk_size or KAFS_CHUNK_MAX):
-            self._send_kafs(encode_kafs_data(wire_id, seq, len(data), chunk))
-            seq += 1
-        end = self.query_line(f'MEDIA PUT END "{atom_id}"')
+        try:
+            for chunk in iter_chunks(data, chunk_size=chunk_size or KAFS_CHUNK_MAX):
+                self._send_kafs(encode_kafs_data(wire_id, seq, len(data), chunk))
+                seq += 1
+            end = self.query_line(f'MEDIA PUT END "{atom_id}"')
+        except CynoberClientError as e:
+            # Mid-PUT: nowa sesja TCP nie zna MediaSession — nie kontynuuj; START od nowa.
+            self.close()
+            raise CynoberClientError(
+                f"MEDIA PUT przerwany (transport) — wywołaj put_media ponownie od START: {e}"
+            ) from e
+        except (OSError, TimeoutError) as e:
+            self.close()
+            raise CynoberClientError(
+                f"MEDIA PUT przerwany (transport) — wywołaj put_media ponownie od START: {e}"
+            ) from e
         if end.get("status") != "ok":
             raise CynoberClientError(end.get("message") or "MEDIA PUT END failed")
         return end

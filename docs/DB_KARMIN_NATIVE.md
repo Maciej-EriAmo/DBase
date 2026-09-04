@@ -10,16 +10,23 @@ Implementacja: ten pakiet (**cynober-db** / DBase).
 Aplikacje (lore-editor, Studio, GameStore, …)
         │
         ▼
-   KarminQL / światy / KAFD     ← warstwa DB_karmin
+   KarminQL / światy / KAFD / RPC     ← warstwa DB_karmin
         │
         ▼
-   karmazyn_kernel.Store        ← fasada
+   create_mazur_runtime() → LorentzBridge   ← KARMAZYN_MAZUR (default ON)
+        │
+        ▼
+   karmazyn_kernel.Store / open_store()     ← fasada
         │
    ┌────┴────┐
    ▼         ▼
 NativeStore  PythonStore        ← KARMAZYN_SUBSTRATE=native|python
 (Rust GC)    (referencja)
 ```
+
+Sieć (Cynober-Secure) nie wybiera substratu — widzi tylko API Store po fasadzie.
+Hydrate KAFD / rollback muszą iść przez `Bubble.bind` (nie `bindings = dict`),
+inaczej NativeStore reach-GC nie widzi bindingów.
 
 ## Identyfikatory atomów
 

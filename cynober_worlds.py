@@ -200,6 +200,8 @@ def _finalize_kafd_load(
     bridge: KarminLambdaBridge,
     query_indexes: dict[str, Any] | None,
 ) -> None:
+    from karmazyn_media import apply_bubble_bindings
+
     store = bridge.store
     engine = bridge.engine
     for a in list(store.atoms()):
@@ -215,7 +217,8 @@ def _finalize_kafd_load(
             bindings = meta.get("bindings") if isinstance(meta.get("bindings"), dict) else {}
         if nazwa not in engine.api._bubble_index:
             b = store.bubble_new(label=nazwa)
-            b.bindings = dict(bindings or {})
+            # NativeStore: bind() → Rust reach-GC; dict assign omija core.
+            apply_bubble_bindings(store, b, bindings)
             store.set_root(b)
             engine.api._bubble_index[nazwa] = b
         else:
@@ -223,7 +226,7 @@ def _finalize_kafd_load(
             existing = engine.api._bubble_index[nazwa]
             cur = dict(getattr(existing, "bindings", {}) or {})
             cur.update(dict(bindings or {}))
-            existing.bindings = cur
+            apply_bubble_bindings(store, existing, cur)
         store.delete_atom(a.id)
     if hasattr(store, "sync_id_counter"):
         store.sync_id_counter()

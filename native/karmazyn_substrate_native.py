@@ -1321,7 +1321,11 @@ class NativeStore:
                 except Exception:
                     continue
                 for x in raw or ():
-                    ids.append(int(getattr(x, "id", x)))
+                    try:
+                        # Mazur/guest zwracają publiczne sid (str); core chce aid (int).
+                        ids.append(int(store._aid(x)))
+                    except Exception:
+                        continue
             return ids
 
         if self._extra_hooks:

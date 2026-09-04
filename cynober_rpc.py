@@ -95,9 +95,42 @@ DEFAULT_FEATURES = (FEATURE_KAFS, FEATURE_MEDIA_PUT, FEATURE_MEDIA_GET)
 # Chunk KAFS (bajty payloadu danych, bez nagłówka)
 KAFS_CHUNK_MAX = 1024 * 1024  # 1 MiB
 
-# Anty-replay: session_id widziane w oknie czasowym (RAM, nie persystentne).
-_SEEN_SESSIONS: set[str] = set()
+# Anty-replay: session_id → timestamp (RAM, nie persystentne).
+_SEEN_SESSIONS: dict[str, float] = {}
 _MAX_SEEN_SESSIONS = 10_000
+
+
+def _env_flag(name: str) -> str:
+    return os.environ.get(name, "").strip().lower()
+
+
+def allow_legacy_protocol() -> bool:
+    """
+    Legacy Cynober-Secure-1.0 (simple, bez HSL/anty-replay).
+    Domyślnie: ON dla lokalnego/dev; OFF gdy MIN_CRYPTO=hss|ecdh albo CYNOBER_ALLOW_LEGACY=0.
+    """
+    v = _env_flag("CYNOBER_ALLOW_LEGACY")
+    if v in ("1", "true", "yes", "on"):
+        return True
+    if v in ("0", "false", "no", "off"):
+        return False
+    min_c = _env_flag("CYNOBER_MIN_CRYPTO")
+    if min_c in ("hss", "ecdh"):
+        return False
+    return True
+
+
+def allow_simple_crypto() -> bool:
+    """XOR/simple — tylko świadomie albo gdy MIN_CRYPTO nie wymusza silniejszego."""
+    v = _env_flag("CYNOBER_ALLOW_SIMPLE")
+    if v in ("1", "true", "yes", "on"):
+        return True
+    if v in ("0", "false", "no", "off"):
+        return False
+    min_c = _env_flag("CYNOBER_MIN_CRYPTO")
+    if min_c in ("hss", "ecdh"):
+        return False
+    return True
 
 
 def is_compatible_version(version: str | None) -> bool:
@@ -105,11 +138,16 @@ def is_compatible_version(version: str | None) -> bool:
 
 
 def build_local_caps() -> dict[str, Any]:
-    crypto: list[str] = ["simple"]
+    crypto: list[str] = []
+    if allow_simple_crypto():
+        crypto.append("simple")
     if _CRYPTO_OK:
         crypto.append("ecdh")
     if _HSS_AVAILABLE:
         crypto.append("hss")
+    if not crypto:
+        # awaryjnie: bez żadnego trybu handshake padnie czytelnie
+        crypto = ["simple"] if allow_simple_crypto() else (["hss"] if _HSS_AVAILABLE else ["ecdh"])
 
     force = os.environ.get("CYNOBER_FORCE_CRYPTO", "").strip().lower()
     if force in CRYPTO_PRIORITY:
@@ -179,6 +217,22 @@ def clear_replay_cache() -> None:
     _SEEN_SESSIONS.clear()
 
 
+def _prune_seen_sessions(now: float | None = None) -> None:
+    """Usuń stare session_id (poza oknem) zamiast kasować całą pamięć."""
+    now = time.time() if now is None else float(now)
+    cutoff = now - REPLAY_WINDOW_SEC
+    stale = [sid for sid, ts in _SEEN_SESSIONS.items() if ts < cutoff]
+    for sid in stale:
+        _SEEN_SESSIONS.pop(sid, None)
+    if len(_SEEN_SESSIONS) <= _MAX_SEEN_SESSIONS:
+        return
+    # Overflow: wyrzuć najstarsze, zostaw świeże.
+    ordered = sorted(_SEEN_SESSIONS.items(), key=lambda kv: kv[1])
+    drop_n = len(_SEEN_SESSIONS) - _MAX_SEEN_SESSIONS
+    for sid, _ in ordered[: max(0, drop_n)]:
+        _SEEN_SESSIONS.pop(sid, None)
+
+
 def _get_psk() -> bytes:
     return os.environ.get("KARM_PSK", "").encode("utf-8")
 
@@ -207,35 +261,45 @@ def validate_remote_caps(local: dict, remote: dict) -> None:
     session_id = remote.get("session_id", "")
     if not session_id:
         raise RuntimeError("Anty-replay: brak session_id w caps zdalnych")
+    _prune_seen_sessions(local_ts)
     if session_id in _SEEN_SESSIONS:
         raise RuntimeError(f"Anty-replay: session_id '{session_id}' już użyty")
 
-    _SEEN_SESSIONS.add(session_id)
-    if len(_SEEN_SESSIONS) > _MAX_SEEN_SESSIONS:
-        _SEEN_SESSIONS.clear()
+    _SEEN_SESSIONS[session_id] = float(remote_ts or local_ts)
+    _prune_seen_sessions(local_ts)
 
 
 def select_crypto_mode(local: dict, remote: dict) -> str:
-    """Wybierz tryb: legacy 1.0 → simple; 1.1 → najsilniejszy wspólny."""
+    """Wybierz tryb: legacy 1.0 → simple (gdy dozwolone); inaczej najsilniejszy wspólny ≥ MIN_CRYPTO."""
+    min_crypto = os.environ.get("CYNOBER_MIN_CRYPTO", "").strip().lower()
     if local.get("version") == LEGACY_VERSION or remote.get("version") == LEGACY_VERSION:
+        if min_crypto in ("hss", "ecdh"):
+            raise RuntimeError(
+                f"Legacy Cynober-Secure-1.0 niedozwolone przy CYNOBER_MIN_CRYPTO={min_crypto}"
+            )
+        if not allow_legacy_protocol():
+            raise RuntimeError(
+                "Legacy Cynober-Secure-1.0 wyłączone (ustaw CYNOBER_ALLOW_LEGACY=1 tylko świadomie)"
+            )
         common = set(local.get("crypto", [])) & set(remote.get("crypto", []))
-        if "simple" in common:
+        if "simple" in common and allow_simple_crypto():
             return "simple"
-        raise RuntimeError("Klient 1.0 wymaga wspólnego trybu simple")
+        raise RuntimeError("Klient 1.0 wymaga wspólnego trybu simple (i CYNOBER_ALLOW_SIMPLE)")
 
     common = set(local.get("crypto", [])) & set(remote.get("crypto", []))
-    min_crypto = os.environ.get("CYNOBER_MIN_CRYPTO", "").strip().lower()
     order = CRYPTO_PRIORITY
     if min_crypto in CRYPTO_PRIORITY:
         idx = order.index(min_crypto)
         order = order[idx:]
 
     for mode in order:
+        if mode == "simple" and not allow_simple_crypto():
+            continue
         if mode in common:
             return mode
     raise RuntimeError(
         f"Brak wspólnego trybu krypto: lokalny={local.get('crypto')} "
-        f"zdalny={remote.get('crypto')}"
+        f"zdalny={remote.get('crypto')} min={min_crypto or '∅'}"
     )
 
 
@@ -308,6 +372,16 @@ def perform_handshake(
             f"otrzymano {remote_ver!r}"
         )
 
+    # Serwer: odrzuć legacy zanim wejdziemy w simple/bez HSL.
+    if is_server and (
+        remote_ver == LEGACY_VERSION or local_caps.get("version") == LEGACY_VERSION
+    ):
+        if not allow_legacy_protocol():
+            raise RuntimeError(
+                "Odrzucono legacy Cynober-Secure-1.0 "
+                "(CYNOBER_ALLOW_LEGACY=0 lub CYNOBER_MIN_CRYPTO=hss|ecdh)"
+            )
+
     # Legacy 1.0 nie wysyłała ts/session_id — pomijamy anty-replay.
     if remote_ver != LEGACY_VERSION and local_caps.get("version") != LEGACY_VERSION:
         validate_remote_caps(local_caps, remote_caps)
@@ -326,6 +400,8 @@ def perform_handshake(
             remote_caps,
             is_server,
             deadline,
+            crypto=crypto,
+            crypto_mode=mode,
         )
 
     return mode, local_caps, remote_caps, hsl_link

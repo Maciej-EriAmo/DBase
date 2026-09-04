@@ -55,25 +55,24 @@ class TestMediaKafsTunnel(RpcTestBase):
         self.assertIn(FEATURE_KAFS, (c.local_caps or {}).get("features") or [])
 
     def test_legacy_client_still_works(self):
-        """Stary klient bez framed — zwykłe query."""
+        """Stary klient bez framed — zwykłe query (gdy CYNOBER_ALLOW_LEGACY=1)."""
+        import os
+        from unittest.mock import patch
         from cynober_rpc import LEGACY_VERSION
 
         c = self._client()
-        # even new client works
         row = c.query_line("ZDROWIE")
-        self.assertIn(row.get("status"), ("ok", None, "error"))  # ZDROWIE may vary
-        # force reconnect as 1.0 if supported
+        self.assertIn(row.get("status"), ("ok", None, "error"))
         c.close()
-        c2 = type(c)(port=self.port)
-        try:
-            c2.connect(client_version=LEGACY_VERSION)
-            self.addCleanup(c2.close)
-            self.assertFalse(c2.kafs_enabled)
-            # may still answer simple queries on ephemeral
-            _ = c2.query("STATYSTYKI")
-        except Exception:
-            # legacy may be restricted in some builds — nie fail hard
-            pass
+        with patch.dict(os.environ, {"CYNOBER_ALLOW_LEGACY": "1", "CYNOBER_ALLOW_SIMPLE": "1"}):
+            c2 = type(c)(port=self.port)
+            try:
+                c2.connect(client_version=LEGACY_VERSION)
+                self.addCleanup(c2.close)
+                self.assertFalse(c2.kafs_enabled)
+                _ = c2.query("STATYSTYKI")
+            except Exception:
+                pass
 
     def test_put_get_png_roundtrip(self):
         c = self._client()
@@ -115,6 +114,31 @@ class TestMediaKafsTunnel(RpcTestBase):
         c = self._client()
         st = c.media_stat("no_such_atom_xyz")
         self.assertEqual(st.get("status"), "error")
+
+    def test_put_media_long_atom_id_and_list(self):
+        """Long id → kafs_wire_id; MEDIA LIST zwraca binding przy bąblu."""
+        c = self._client()
+        long_id = "studio:snap:snap_2026_network_layer_probe_long"
+        blob = b"LONG-ID-" + b"x" * 64
+        end = c.put_media(
+            long_id,
+            blob,
+            mime="application/octet-stream",
+            bubble="Studio",
+            binding="snap",
+        )
+        self.assertEqual(end.get("status"), "ok")
+        data, mime, meta = c.get_media(long_id)
+        self.assertEqual(data, blob)
+        self.assertEqual(meta.get("id"), long_id)
+        listed = c.query_line('MEDIA LIST "Studio"')
+        self.assertEqual(listed.get("status"), "ok")
+        items = listed.get("media") or listed.get("bindings") or listed.get("items") or []
+        if isinstance(items, dict):
+            self.assertIn("snap", items)
+        else:
+            blob_txt = str(listed)
+            self.assertTrue("snap" in blob_txt or long_id in blob_txt)
 
     def test_put_get_stream_head(self):
         """Faza 4b: duży PUT przy niskim progu → A_STREAM na serwerze, GET reassemble."""

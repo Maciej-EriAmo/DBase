@@ -1833,11 +1833,18 @@ class SubstrateAPI:
         idx.clear()
         idx.update(bs["bubble_index"])
 
-        for name, b in idx.items():
-            if name in bs["bindings"]:
-                b.bindings = bs["bindings"][name]
-
+        # Najpierw atomy (bind wymaga istniejących targetów), potem binds → Rust core.
         self.store.restore_atoms(bs["atoms"], bs["atom_T"])
+        try:
+            from karmazyn_media import apply_bubble_bindings
+
+            for name, b in idx.items():
+                if name in bs["bindings"]:
+                    apply_bubble_bindings(self.store, b, bs["bindings"][name])
+        except Exception:
+            for name, b in idx.items():
+                if name in bs["bindings"]:
+                    b.bindings = bs["bindings"][name]
 
         self.store.roots[:] = bs["roots"]
         self.store.bubbles[:] = bs["bubbles"]
@@ -2258,9 +2265,27 @@ class SubstrateAPI:
         self._check_constraints(bubble_name, key, val)
         atom = self.store.atom_new(S=key, E=KarminType.to_str(val), value=KarminType.to_str(val))
         atom.metadata.update({'timestamp': int(time.time() * 1000), 'v': val})
+        self._maybe_attach_mazur_tracer(atom, val)
         bubble.bind(key, atom)
         self._update_index(bubble_name, key, val, add=True)
         self._track_atom(bubble_name, atom.id, add=True)
+
+    def _maybe_attach_mazur_tracer(self, atom, val) -> None:
+        """Gdy Store = LorentzBridge i jest kontekst — ustaw Tracer (energia z liczby lub 1.0)."""
+        store = self.store
+        if not hasattr(store, "set_context"):
+            return
+        if getattr(store, "context_id", None) is None:
+            return
+        try:
+            from mazur_crystal.tracer import Tracer, has_tracer, set_tracer
+
+            if has_tracer(atom):
+                return
+            energy = float(val) if isinstance(val, (int, float)) else 1.0
+            set_tracer(atom, Tracer(energy=energy))
+        except Exception:
+            pass
 
     def update_property(self, bubble_name: str, key: str, value_raw: str):
         bubble = self._get_bubble(bubble_name)
@@ -2282,6 +2307,7 @@ class SubstrateAPI:
 
         atom = self.store.atom_new(S=key, E=KarminType.to_str(new_val), value=KarminType.to_str(new_val))
         atom.metadata.update({'timestamp': int(time.time() * 1000), 'v': new_val})
+        self._maybe_attach_mazur_tracer(atom, new_val)
         bubble.bind(key, atom)
         self._update_index(bubble_name, key, new_val, add=True)
         self._track_atom(bubble_name, atom.id, add=True)

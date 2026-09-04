@@ -110,11 +110,18 @@ class TestCynoberRpcTunnel(RpcTestBase):
         c = self._client()
         self.assertEqual(c.query("STATYSTYKI")["results"][0]["action"], "STATS")
 
+    @patch.dict(os.environ, {"CYNOBER_ALLOW_LEGACY": "1", "CYNOBER_ALLOW_SIMPLE": "1"}, clear=False)
     def test_legacy_client_gets_simple(self):
         c = CynoberRpcClient(port=self.port)
         c.connect(client_version=LEGACY_VERSION)
         self.addCleanup(c.close)
         self.assertEqual(c.crypto_mode, "simple")
+
+    @patch.dict(os.environ, {"CYNOBER_ALLOW_LEGACY": "0", "CYNOBER_MIN_CRYPTO": "hss"}, clear=False)
+    def test_reject_legacy_when_min_crypto_hss(self):
+        c = CynoberRpcClient(port=self.port)
+        with self.assertRaises(Exception):
+            c.connect(client_version=LEGACY_VERSION)
 
     def test_stats_roundtrip(self):
         c = self._client()

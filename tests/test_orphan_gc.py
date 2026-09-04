@@ -76,6 +76,30 @@ class TestOrphanGC(unittest.TestCase):
             self.assertIsNotNone(typ_atom)
             self.assertEqual(typ_atom.metadata.get("v"), "Dokument")
 
+    def test_kafd_hydrate_bindings_survive_settle(self):
+        """Po load KAFD bind() musi wejść do reach-GC (NativeStore) — settle nie kosí props."""
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "w.kafd"
+            self._bubble("Doc")
+            self.api.add_property("Doc", "Typ", '"Dokument"')
+            typ_aid = self.api._bubble_index["Doc"].bindings["Typ"]
+            save_runtime_to_kafd(self.bridge, path)
+
+            bridge2 = KarminLambdaBridge(kernel.Store(thermal=True))
+            load_runtime_from_kafd(bridge2, path, query_indexes=None)
+            doc = bridge2.engine.api._bubble_index["Doc"]
+            typ_aid2 = doc.bindings.get("Typ")
+            self.assertIsNotNone(typ_aid2)
+            if hasattr(bridge2.store, "settle"):
+                bridge2.store.settle(80)
+            else:
+                for _ in range(80):
+                    bridge2.store.tick()
+            self.assertIsNotNone(bridge2.store.get_atom(typ_aid2))
+            self.assertEqual(
+                bridge2.store.get_atom(typ_aid2).metadata.get("v"), "Dokument"
+            )
+
 
 class TestPersistGC(unittest.TestCase):
     def test_flush_drops_hist_orphans(self):

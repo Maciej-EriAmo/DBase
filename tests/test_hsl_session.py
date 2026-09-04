@@ -148,16 +148,38 @@ class TestHSLHandshake(unittest.TestCase):
             "hsl": HSL_VERSION,
         }
         deadline = time.monotonic() + 5.0
-        from karmazyn_handshake import _recv_json, _send_json
+        from karmazyn_hsl import (
+            _HSL_AAD_CAP,
+            _HSL_AAD_LINK,
+            _hsl_crypto_from_shared,
+            _recv_hsl_msg,
+            _send_hsl_msg,
+            link_nonce_from_caps,
+        )
+
+        crypto_c = _hsl_crypto_from_shared(shared, mode="hss")
 
         def client():
-            _send_json(s_cli, {
-                "type": "hsl_link", "version": HSL_VERSION,
-                "epoch": current_epoch(), "node_id": "node_cli",
-                "commit": link_commit(self.phi_b, b"nonce").hex(),
-            })
-            _recv_json(s_cli, deadline)
-            _send_json(s_cli, {"type": "hsl_cap", "cap": "0" * 64})
+            nonce = link_nonce_from_caps(remote_caps, local_caps)
+            _send_hsl_msg(
+                s_cli,
+                {
+                    "type": "hsl_link",
+                    "version": HSL_VERSION,
+                    "epoch": current_epoch(),
+                    "node_id": "node_cli",
+                    "commit": link_commit(self.phi_b, nonce).hex(),
+                },
+                crypto_c,
+                aad=_HSL_AAD_LINK,
+            )
+            _recv_hsl_msg(s_cli, deadline, crypto_c, aad=_HSL_AAD_LINK)
+            _send_hsl_msg(
+                s_cli,
+                {"type": "hsl_cap", "cap": "0" * 64},
+                crypto_c,
+                aad=_HSL_AAD_CAP,
+            )
 
         t = threading.Thread(target=client, daemon=True)
         t.start()

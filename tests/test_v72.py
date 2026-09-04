@@ -47,7 +47,20 @@ class TestWorldAuth(unittest.TestCase):
     def tearDownClass(cls):
         cls.harness.stop()
         time.sleep(0.1)
+        try:
+            # Wyłącz auth i wyczyść singleton — inaczej trucze kolejne suite w tym samym procesie.
+            auth = reset_auth_store_for_tests(cls._tmp.name)
+            auth.write_config_for_tests(users={}, acl={}, enabled=False)
+        except Exception:
+            pass
         os.environ.pop("CYNOBER_WORLDS_DIR", None)
+        try:
+            from cynober_world_auth import _auth_stores, _auth_lock
+
+            with _auth_lock:
+                _auth_stores.clear()
+        except Exception:
+            pass
         try:
             cls._tmp.cleanup()
         except OSError:
@@ -137,6 +150,16 @@ class TestWorldAuth(unittest.TestCase):
         r = outsider.query('WYBIERZ ŚWIAT "secure"')
         self.assertEqual(r["results"][0]["status"], "error")
         self.assertIn("Brak dostępu", r["results"][0]["message"])
+
+    def test_lista_wezlow_rezonans_requires_auth(self):
+        """LISTA WĘZŁÓW REZONANS — ta sama bramka co LISTA WĘZŁÓW (global reader)."""
+        c = self._client()
+        denied = c.query("LISTA WĘZŁÓW REZONANS")
+        self.assertEqual(denied["results"][0]["status"], "error")
+        c.query('ZALOGUJ "admin" TOKEN "admin-secret"')
+        ok = c.query("LISTA WĘZŁÓW REZONANS")
+        self.assertEqual(ok["results"][0]["status"], "ok")
+        self.assertEqual(ok["results"][0]["action"], "LIST_PEERS_RESONANCE")
 
     def test_reader_cannot_gossip_import_on_world(self):
         c = self._client()

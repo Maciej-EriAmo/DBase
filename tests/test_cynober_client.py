@@ -58,3 +58,20 @@ class TestCynoberClient(unittest.TestCase):
         finally:
             c.close()
             self.assertIsNone(c.sock)
+
+    def test_query_reconnects_after_dead_sock(self):
+        """ensure_connected + query: martwy lokalny sock → nowy handshake."""
+        c = CynoberClient(port=self.port)
+        c.connect()
+        try:
+            row = c.query_line("ZDROWIE")
+            self.assertEqual(row["action"], "HEALTH")
+            dead = c.sock
+            dead.close()
+            self.assertFalse(c._sock_alive())
+            row2 = c.query_line("ZDROWIE")
+            self.assertEqual(row2["action"], "HEALTH")
+            self.assertTrue(c._sock_alive())
+            self.assertIsNot(c.sock, dead)
+        finally:
+            c.close()

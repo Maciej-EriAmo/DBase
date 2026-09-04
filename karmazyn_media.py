@@ -196,6 +196,32 @@ def sync_bubble_record(store: Any, bubble: Any) -> Optional[str]:
     return rec.id
 
 
+def apply_bubble_bindings(store: Any, bubble: Any, bindings: dict | None) -> None:
+    """
+    Ustaw bindingi przez Bubble.bind (Rust GC + Python dict).
+    Samo `bubble.bindings = dict` omija NativeStore._core.bind → reap po tick.
+    """
+    if bubble is None:
+        return
+    for name, aid in dict(bindings or {}).items():
+        if not name or aid is None or aid == "":
+            continue
+        sid = str(aid)
+        try:
+            target = (
+                store.get_atom(sid)
+                if callable(getattr(store, "get_atom", None))
+                else None
+            )
+            if target is not None and callable(getattr(bubble, "bind", None)):
+                bubble.bind(str(name), target)
+                continue
+        except Exception:
+            pass
+        if getattr(bubble, "bindings", None) is not None:
+            bubble.bindings[str(name)] = sid
+
+
 def restore_bubbles(store: Any, *, as_root: bool = True) -> dict[str, Any]:
     """
     Po load_documents: odtwórz Bubble z atomów __bubble__.
@@ -215,23 +241,7 @@ def restore_bubbles(store: Any, *, as_root: bool = True) -> dict[str, Any]:
         if not isinstance(bindings, dict):
             bindings = {}
         b = ensure_bubble(store, label, as_root=as_root and not out)
-        # ustaw bindings na id (stringi)
-        for name, aid in bindings.items():
-            if not name or not aid:
-                continue
-            try:
-                # prefer bind(name, atom) gdy atom istnieje
-                target = store.get_atom(str(aid)) if callable(getattr(store, "get_atom", None)) else None
-                if target is not None and callable(getattr(b, "bind", None)):
-                    b.bind(str(name), target)
-                else:
-                    # surowy zapis id
-                    if not hasattr(b, "bindings") or b.bindings is None:
-                        continue
-                    b.bindings[str(name)] = str(aid)
-            except Exception:
-                if hasattr(b, "bindings"):
-                    b.bindings[str(name)] = str(aid)
+        apply_bubble_bindings(store, b, bindings)
         out[label] = b
     return out
 
@@ -264,6 +274,27 @@ def _segment_ids(atom: Any) -> list[str]:
     return [str(s) for s in segs if s]
 
 
+def _media_T(size_bytes: int, override: Optional[float] = None) -> float:
+    """Temperatura atomu mediów — zawsze ≥ T_HOT, żeby lazy load nie zwijał payloadu."""
+    if override is not None:
+        try:
+            from karmazyn_atom import T_HOT
+
+            return max(float(override), float(T_HOT))
+        except Exception:
+            return float(override)
+    try:
+        from karmazyn_atom import T_HOT
+    except Exception:
+        T_HOT = 70.0  # type: ignore
+    import math
+
+    kb = max(1.0, float(size_bytes) / 1024.0)
+    # historycznie spadało z rozmiarem — ale poniżej T_HOT łamało lazy fold
+    raw = max(20.0, 65.0 - math.log10(kb) * 10.0)
+    return max(float(T_HOT), float(raw))
+
+
 def attach_bytes(
     store: Any,
     bubble_or_label: Any,
@@ -271,7 +302,7 @@ def attach_bytes(
     data: Union[bytes, bytearray, memoryview],
     *,
     mime: str = "application/octet-stream",
-    T: float = 50.0,
+    T: Optional[float] = None,
     as_root: bool = True,
     sync_bubble: bool = True,
     warn_over: int = DEFAULT_WARN_BYTES,
@@ -292,6 +323,7 @@ def attach_bytes(
     if not binding:
         raise MediaError("Wymagana nazwa bindingu (np. 'portret').")
     mime = (mime or "application/octet-stream").strip() or "application/octet-stream"
+    use_T = _media_T(len(raw), T)
 
     thr = stream_threshold_effective(stream_threshold)
     seg_sz = segment_size_effective(segment_size)
@@ -303,7 +335,7 @@ def attach_bytes(
             binding,
             raw,
             mime=mime,
-            T=T,
+            T=use_T,
             as_root=as_root,
             sync_bubble=sync_bubble,
             segment_size=seg_sz,
@@ -321,7 +353,7 @@ def attach_bytes(
         S=MEDIA_S,
         E=f"{binding}@{label}"[:120],
         value=None,
-        T=float(T),
+        T=float(use_T),
     )
     atom.metadata["data"] = raw
     atom.metadata["mime"] = mime
@@ -481,11 +513,7 @@ def attach_file(
         raise MediaError(f"Brak pliku: {p}")
     use_mime = mime or _guess_mime(p)
     size = p.stat().st_size
-    if T is None:
-        import math
-
-        kb = max(1, size / 1024)
-        T = max(20.0, 65.0 - math.log10(kb) * 10)
+    use_T = _media_T(size, T)
 
     thr = stream_threshold_effective(stream_threshold)
     seg_sz = segment_size_effective(segment_size)
@@ -497,7 +525,7 @@ def attach_file(
             binding,
             p,
             mime=use_mime,
-            T=float(T),
+            T=float(use_T),
             as_root=as_root,
             sync_bubble=sync_bubble,
             segment_size=seg_sz,
@@ -511,7 +539,7 @@ def attach_file(
         binding,
         data,
         mime=use_mime,
-        T=float(T),
+        T=float(use_T),
         as_root=as_root,
         sync_bubble=sync_bubble,
         stream_threshold=stream_threshold,

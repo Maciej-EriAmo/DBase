@@ -8,6 +8,7 @@ Role: reader < writer < admin. Konfiguracja: {worlds_dir}/auth.json
 from __future__ import annotations
 
 import hashlib
+import hmac
 import json
 import os
 import re
@@ -48,9 +49,75 @@ def _normalize_role(role: str) -> str:
     return r
 
 
-def _hash_token(salt: str, token: str) -> str:
+# KDF: scrypt (stdlib) — wolniejsze od SHA256; legacy sha256 akceptowane + upgrade.
+_SCRYPT_N = 2**14
+_SCRYPT_R = 8
+_SCRYPT_P = 1
+_SCRYPT_DKLEN = 32
+
+# Lockout po nieudanych ZALOGUJ (RAM; per proces).
+_LOGIN_FAIL_WINDOW_SEC = 300.0
+_LOGIN_FAIL_MAX = 5
+_LOGIN_LOCKOUT_SEC = 60.0
+
+
+def _hash_token_sha256(salt: str, token: str) -> str:
+    """Legacy (v7.2–8.2.3) — tylko weryfikacja / migracja."""
     payload = f"{salt}:{token}".encode("utf-8")
     return hashlib.sha256(payload).hexdigest()
+
+
+def _hash_token_scrypt(salt: str, token: str) -> str:
+    salt_b = bytes.fromhex(salt) if re.fullmatch(r"[0-9a-fA-F]+", salt or "") else (salt or "").encode("utf-8")
+    if len(salt_b) < 8:
+        salt_b = hashlib.sha256(salt_b or b"cynober").digest()
+    dk = hashlib.scrypt(
+        token.encode("utf-8"),
+        salt=salt_b,
+        n=_SCRYPT_N,
+        r=_SCRYPT_R,
+        p=_SCRYPT_P,
+        dklen=_SCRYPT_DKLEN,
+    )
+    return f"scrypt${_SCRYPT_N}${_SCRYPT_R}${_SCRYPT_P}${dk.hex()}"
+
+
+def _hash_token(salt: str, token: str) -> str:
+    """Aktualny format zapisu (scrypt)."""
+    return _hash_token_scrypt(salt, token)
+
+
+def _verify_token_hash(salt: str, token: str, stored: str) -> tuple[bool, bool]:
+    """
+    Zwraca (ok, needs_rehash).
+    needs_rehash=True gdy legacy SHA256 — po udanym loginie zapisz scrypt.
+    """
+    stored = (stored or "").strip()
+    if stored.startswith("scrypt$"):
+        try:
+            _tag, n_s, r_s, p_s, hx = stored.split("$", 4)
+            n, r, p = int(n_s), int(r_s), int(p_s)
+        except ValueError:
+            return False, False
+        salt_b = bytes.fromhex(salt) if re.fullmatch(r"[0-9a-fA-F]+", salt or "") else (salt or "").encode("utf-8")
+        if len(salt_b) < 8:
+            salt_b = hashlib.sha256(salt_b or b"cynober").digest()
+        try:
+            dk = hashlib.scrypt(
+                token.encode("utf-8"),
+                salt=salt_b,
+                n=n,
+                r=r,
+                p=p,
+                dklen=len(bytes.fromhex(hx)),
+            )
+        except (ValueError, TypeError):
+            return False, False
+        return hmac.compare_digest(dk.hex(), hx), False
+    # legacy bare sha256 hex
+    legacy = _hash_token_sha256(salt, token)
+    ok = hmac.compare_digest(legacy, stored)
+    return ok, ok  # sukces legacy → rehash
 
 
 class WorldAuthStore:
@@ -60,6 +127,9 @@ class WorldAuthStore:
         self._audit_path = self._base / "audit.log"
         self._lock = threading.RLock()
         self._data = self._load()
+        # user -> list[fail_ts]; lock until monotonic
+        self._fail_ts: Dict[str, list[float]] = {}
+        self._locked_until: Dict[str, float] = {}
 
     @property
     def enabled(self) -> bool:
@@ -92,16 +162,53 @@ class WorldAuthStore:
         tmp.write_text(json.dumps(self._data, ensure_ascii=False, indent=2), encoding="utf-8")
         tmp.replace(self._path)
 
+    def is_login_locked(self, user: str) -> bool:
+        """True gdy zbyt wiele nieudanych ZALOGUJ w oknie (lockout)."""
+        now = time.time()
+        with self._lock:
+            until = self._locked_until.get(user, 0.0)
+            if until > now:
+                return True
+            if until and until <= now:
+                self._locked_until.pop(user, None)
+            return False
+
+    def login_lock_remaining(self, user: str) -> float:
+        with self._lock:
+            return max(0.0, self._locked_until.get(user, 0.0) - time.time())
+
+    def record_login_failure(self, user: str) -> None:
+        now = time.time()
+        with self._lock:
+            stamps = [t for t in self._fail_ts.get(user, []) if now - t < _LOGIN_FAIL_WINDOW_SEC]
+            stamps.append(now)
+            self._fail_ts[user] = stamps
+            if len(stamps) >= _LOGIN_FAIL_MAX:
+                self._locked_until[user] = now + _LOGIN_LOCKOUT_SEC
+                self._fail_ts[user] = []
+
+    def clear_login_failures(self, user: str) -> None:
+        with self._lock:
+            self._fail_ts.pop(user, None)
+            self._locked_until.pop(user, None)
+
     def verify_login(self, user: str, token: str) -> bool:
         with self._lock:
             if not self._data.get("enabled"):
                 return True
+            if self.is_login_locked(user):
+                return False
             users = self._data.get("users", {})
             entry = users.get(user)
             if not entry:
                 return False
             salt = self._data.get("salt", "")
-            return entry.get("token_hash") == _hash_token(salt, token)
+            stored = str(entry.get("token_hash") or "")
+            ok, needs_rehash = _verify_token_hash(salt, token, stored)
+            if ok and needs_rehash:
+                entry["token_hash"] = _hash_token(salt, token)
+                self._save()
+            return ok
 
     def role_for(self, user: Optional[str], world: Optional[str]) -> Optional[str]:
         if not user:

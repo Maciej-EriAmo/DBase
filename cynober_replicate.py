@@ -32,7 +32,9 @@ _PEER_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_\-]{0,63}$")
 
 _ADD_PEER_RE = re.compile(
     r'^DODAJ\s+WĘZEŁ\s+"([^"]+)"\s+HOST\s+"([^"]+)"\s+PORT\s+(\d+)'
-    r'(?:\s+UŻYTKOWNIK\s+"([^"]+)"\s+TOKEN\s+"([^"]+)")?$',
+    r'(?:\s+UŻYTKOWNIK\s+"([^"]+)"\s+TOKEN\s+"([^"]+)")?'
+    r'(?:\s+(?:ETYKIETA|LABEL)\s+"([^"]+)")?'
+    r'(?:\s+(?:ENERGIA|ENERGY)\s+(-?\d+(?:\.\d+)?))?$',
     re.IGNORECASE,
 )
 _REMOVE_PEER_RE = re.compile(r'^USUŃ\s+WĘZEŁ\s+"([^"]+)"$', re.IGNORECASE)
@@ -430,6 +432,15 @@ class _PeerRpc:
         self._crypto = None
         self._hsl = None
 
+    def _sock_alive(self) -> bool:
+        sock = self._sock
+        if sock is None:
+            return False
+        try:
+            return int(sock.fileno()) >= 0
+        except (OSError, ValueError):
+            return False
+
     def connect(self) -> None:
         from cynober_rpc import (
             HS_TIMEOUT_SEC,
@@ -439,8 +450,10 @@ class _PeerRpc:
         )
         from karmazyn_handshake import _CryptoLayer
 
-        if self._sock is not None:
+        if self._sock_alive():
             return  # już połączony — podtrzymanie sesji peera
+        if self._sock is not None:
+            self.close()
         self._crypto = _CryptoLayer()
         self._sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self._sock.settimeout(HS_TIMEOUT_SEC)
@@ -454,23 +467,30 @@ class _PeerRpc:
         self._sock.settimeout(self.timeout)
         apply_tcp_keepalive(self._sock)
 
-    def query(self, text: str) -> dict:
+    def query(self, text: str, *, _retried: bool = False) -> dict:
         import json
         from cynober_rpc import build_rpc_request, decrypt_rpc_response, encrypt_rpc_request
         from karmazyn_handshake import _compress, _decompress, _recv_frame, _send_frame
 
-        if not self._sock or not self._crypto:
-            raise RuntimeError("Brak połączenia z węzłem.")
-        req = json.dumps(
-            build_rpc_request(text, self._hsl), ensure_ascii=False
-        ).encode("utf-8")
-        enc = encrypt_rpc_request(self._crypto, _compress(req), self._hsl)
-        _send_frame(self._sock, enc)
-        enc_resp = _recv_frame(self._sock)
-        if not enc_resp:
-            raise ConnectionError("Węzeł zamknął połączenie.")
-        raw = _decompress(decrypt_rpc_response(self._crypto, enc_resp, self._hsl))
-        return json.loads(raw.decode("utf-8"))
+        if not self._sock_alive() or not self._crypto:
+            self.connect()
+        try:
+            req = json.dumps(
+                build_rpc_request(text, self._hsl), ensure_ascii=False
+            ).encode("utf-8")
+            enc = encrypt_rpc_request(self._crypto, _compress(req), self._hsl)
+            _send_frame(self._sock, enc)
+            enc_resp = _recv_frame(self._sock)
+            if not enc_resp:
+                raise ConnectionError("Węzeł zamknął połączenie.")
+            raw = _decompress(decrypt_rpc_response(self._crypto, enc_resp, self._hsl))
+            return json.loads(raw.decode("utf-8"))
+        except (ConnectionError, OSError, TimeoutError) as e:
+            if _retried:
+                raise
+            self.close()
+            self.connect()
+            return self.query(text, _retried=True)
 
     def close(self) -> None:
         if self._sock:
@@ -479,6 +499,8 @@ class _PeerRpc:
             except OSError:
                 pass
             self._sock = None
+            self._crypto = None
+            self._hsl = None
 
 
 # Cache stałych tuneli peer→peer (klucz host:port). Close dopiero przy błędzie / reset.
@@ -511,8 +533,14 @@ def _peer_client(peer: dict, *, reuse: bool = True) -> _PeerRpc:
     if reuse:
         with _peer_session_lock:
             cached = _peer_session_cache.get(key)
-            if cached is not None and cached._sock is not None:
+            if cached is not None and cached._sock_alive():
                 return cached
+            if cached is not None:
+                _peer_session_cache.pop(key, None)
+                try:
+                    cached.close()
+                except Exception:
+                    pass
     client = _PeerRpc(peer["host"], int(peer["port"]))
     client.connect()
     if reuse:
@@ -696,6 +724,9 @@ def sync_missing_media(
     """
     Faza 6: dociągnij brakujące media przez KAFS (CynoberClient).
     Wymaga kafs-stream na peerze.
+
+    Celowo osobny tunel od `_peer_session_cache` (PULL/SYNC/gossip): KAFS mux
+    na sesji MediaSession nie miesza się z krótkimi RPC peer↔peer.
     """
     world = validate_world_name(world)
     from karmazyn_media_preview import build_media_index
@@ -1052,9 +1083,12 @@ def try_replicate_command(
     m = _ADD_PEER_RE.match(stripped)
     if m:
         try:
+            energy_raw = m.group(7)
             info = peers.add(
                 m.group(1), m.group(2), int(m.group(3)),
                 user=m.group(4), token=m.group(5),
+                label=m.group(6),
+                energy=float(energy_raw) if energy_raw is not None else None,
             )
             return [{"status": "ok", "action": "ADD_PEER", **info}]
         except ValueError as e:

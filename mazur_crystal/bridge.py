@@ -120,16 +120,30 @@ class LorentzBridge:
             except Exception:
                 T = 50.0
         ret = self._inner.create_atom(id, S, E, T, **kwargs)
-        # native: ret = u32; python: często string id
+        # native: ret = u32 / string sid; python: często string id
         aid = ret if ret is not None else id
-        if tracer is not None:
-            atom = self._inner.get_atom(aid)
-            if atom is None and isinstance(id, str):
-                # native: szukaj po _requested_id
-                atom = self._find_by_requested(id)
-            if atom is not None:
+        atom = self._inner.get_atom(aid)
+        if atom is None and isinstance(id, str):
+            atom = self._find_by_requested(id)
+        if atom is not None:
+            if tracer is not None:
                 set_tracer(atom, tracer)
+            elif self.context_id is not None:
+                # sesja z kontekstem → domyślny tracer (MRC / d_E)
+                set_tracer(atom, Tracer(energy=1.0))
         return ret
+
+    def atom_new(self, *args, **kwargs):
+        """KarminQL path (add_property) — doklej tracer gdy jest kontekst MRC."""
+        tracer = kwargs.pop("tracer", None)
+        atom = self._inner.atom_new(*args, **kwargs)
+        if atom is None:
+            return atom
+        if tracer is not None:
+            set_tracer(atom, tracer)
+        elif self.context_id is not None:
+            set_tracer(atom, Tracer(energy=1.0))
+        return atom
 
     def _find_by_requested(self, logical: str):
         try:
