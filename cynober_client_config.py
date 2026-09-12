@@ -261,6 +261,12 @@ def resolve_server_bind(argv: list[str] | None = None) -> tuple[str, int, str]:
         )
         sys.exit(0)
 
+    if args and args[0].startswith("-"):
+        raise SystemExit(
+            f"[!] Nieznana flaga: {args[0]!r}.\n"
+            "Użycie: python cynober_server.py [bind_host] [port]  (--help po opis)."
+        )
+
     if len(args) >= 1 and not args[0].startswith("-"):
         host = args[0]
         port = int(args[1]) if len(args) >= 2 else DEFAULT_PORT
@@ -308,6 +314,12 @@ def resolve_client_target(argv: list[str] | None = None) -> tuple[str, int, str]
         _, prof = get_active_profile(cfg)
         apply_profile_secrets(prof)
         return str(prof["host"]), int(prof["port"]), str(name)
+
+    if args and args[0].startswith("-"):
+        raise SystemExit(
+            f"[!] Nieznana flaga: {args[0]!r}.\n"
+            "Użycie: python Cynober_db.py [host] [port] | --profile NAZWA  (--help po opis)."
+        )
 
     if len(args) >= 1 and not args[0].startswith("-"):
         host = args[0]
