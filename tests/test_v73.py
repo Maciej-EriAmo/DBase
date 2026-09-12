@@ -72,6 +72,7 @@ class TestServerOps(unittest.TestCase):
 
     def test_server_metrics(self):
         c = self._client()
+        c.query('ZALOGUJ "admin" TOKEN "admin-secret"')
         c.query("ZDROWIE")
         m = c.query("METRYKI SERWERA")
         data = m["results"][0]["data"]

@@ -21,6 +21,12 @@ for p in (
 os.environ.setdefault("KARMAZYN_SUBSTRATE", "python")
 os.environ["KARMAZYN_MAZUR"] = "1"
 
+try:
+    import karmazyn_host  # noqa: F401
+    _HAS_KARMAZYN_HOST = True
+except ImportError:
+    _HAS_KARMAZYN_HOST = False
+
 from mazur_crystal import (  # noqa: E402
     LorentzBridge,
     Tracer,
@@ -93,6 +99,7 @@ class TestLorentzBridgePython(unittest.TestCase):
         self.assertIsNotNone(s.mrc)
 
 
+@unittest.skipUnless(_HAS_KARMAZYN_HOST, "karmazyn_host (KarmazynOs) niedostępny w tym repo")
 class TestHostBindings(unittest.TestCase):
     def test_recall_uses_lorentz_layer(self):
         from karmazyn_host import KarmazynHost
