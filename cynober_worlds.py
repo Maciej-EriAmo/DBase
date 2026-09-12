@@ -483,6 +483,7 @@ class WorldRegistry:
                 query_indexes=meta.get("query_indexes"),
                 lazy=True,
                 shard_paths=runtime.shard_index,
+                world=name,
             )
             runtime.folded_atoms = folded
         user_indexes = set(meta.get("user_indexes", []))

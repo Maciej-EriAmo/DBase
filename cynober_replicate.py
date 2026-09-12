@@ -402,6 +402,7 @@ def import_world_payload(
                     query_indexes=(meta or {}).get("query_indexes"),
                     lazy=False,
                     shard_paths=new_rt.shard_index,
+                    world=name,
                 )
             finally:
                 Path(tmp_path).unlink(missing_ok=True)
