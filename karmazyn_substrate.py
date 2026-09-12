@@ -202,10 +202,14 @@ class Store:
         self.roots = []
         self.thermal = thermal
         self._env_of = env_of or (lambda v: None)   # rdzeń nie zna języka
-        # extra_reach: dostawca dodatkowych osiągalnych id atomów dla front-endów
-        # o płaskim członkostwie (np. Luneta: atomy trzymane przez bąble-kontenery).
-        # Scheme go nie używa (osiągalność idzie przez korzenie leksykalne + env_of).
-        self._extra_reach = extra_reach or (lambda: ())
+        # extra_reach: dostawcy dodatkowych osiągalnych id atomów dla front-endów
+        # o płaskim członkostwie (np. Luneta: atomy trzymane przez bąble-kontenery;
+        # mazur_crystal: retencja przez rezonans). Scheme go nie używa (osiągalność
+        # idzie przez korzenie leksykalne + env_of). Wiele hooków, jak w native API
+        # (register_extra_reach/unregister_extra_reach), łączonych sumą zbiorów.
+        self._extra_reach_hooks = []
+        if extra_reach is not None:
+            self._extra_reach_hooks.append(("init", extra_reach))
         self._decay = decay
         self._n = 0
         self.reaped = 0
@@ -218,6 +222,14 @@ class Store:
     @property
     def tick_count(self):
         return self._tick_count
+
+    def register_extra_reach(self, fn, *, name="guest"):
+        """Podepnij dostawcę dodatkowych osiągalnych id (patrz komentarz w __init__)."""
+        self._extra_reach_hooks = [(n, f) for n, f in self._extra_reach_hooks if n != name]
+        self._extra_reach_hooks.insert(0, (name, fn))
+
+    def unregister_extra_reach(self, name="guest"):
+        self._extra_reach_hooks = [(n, f) for n, f in self._extra_reach_hooks if n != name]
 
     # ── enkapsulacja rejestru (S2) ────────────────────────────────────────────
     @property
@@ -477,7 +489,11 @@ class Store:
                 self._push_envs(env, stack)      # env domknięcia / lista env (S1)
             if b.parent is not None:
                 stack.append(b.parent)           # łańcuch leksykalny
-        reach.update(self._extra_reach())
+        for _name, fn in self._extra_reach_hooks:
+            try:
+                reach.update(fn())
+            except Exception:
+                continue
         return reach, seen
 
     def _reachable(self):
