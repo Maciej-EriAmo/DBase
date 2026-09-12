@@ -2,10 +2,29 @@
 """Dane Cynober / Karmin_DB — poza drzewem kodu (LOCALAPPDATA\\Cynober)."""
 from __future__ import annotations
 
+import json
 import os
 import shutil
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
+
+
+def int_env(name: str, default: int) -> int:
+    """Odczytaj dodatnią liczbę całkowitą ze zmiennej środowiskowej (albo `default`)."""
+    raw = (os.environ.get(name) or "").strip()
+    if not raw:
+        return default
+    try:
+        return max(0, int(raw))
+    except ValueError:
+        return default
+
+
+def atomic_write_json(path: Path, data: Any) -> None:
+    """Zapisz `data` jako JSON atomowo (tmp + replace), żeby nie zostawić uciętego pliku."""
+    tmp = path.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    tmp.replace(path)
 
 
 def data_home() -> Path:

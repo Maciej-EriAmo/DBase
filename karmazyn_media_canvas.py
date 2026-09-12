@@ -28,6 +28,8 @@ from typing import Any, Dict, List, Optional, Sequence, Set, Tuple, Union
 from karmazyn_media import MediaError, get_bytes
 from karmazyn_media_incremental import (
     IncrementalVideoDecoder,
+    _frame_to_png,
+    _resize_rgba,
     is_video_path,
     open_incremental,
 )
@@ -46,24 +48,6 @@ T_HOT = 80.0
 DEFAULT_FPS = 12.0
 MAX_VIDEO_FRAMES = 180  # cap RAM (~kilka sekund przy 12 fps)
 MAX_EDGE = 960
-
-
-def _frame_to_png(frame) -> bytes:
-    assert Image is not None
-    buf = io.BytesIO()
-    frame.convert("RGBA").save(buf, format="PNG", optimize=False)
-    return buf.getvalue()
-
-
-def _resize_rgba(im, max_edge: int):
-    w, h = im.size
-    if max(w, h) <= max_edge:
-        return im
-    sc = max_edge / max(w, h)
-    return im.resize(
-        (max(1, int(w * sc)), max(1, int(h * sc))),
-        Image.Resampling.BILINEAR,
-    )
 
 
 def decode_static_png(data: bytes, *, max_edge: int = MAX_EDGE) -> Tuple[List[bytes], List[float], Tuple[int, int]]:

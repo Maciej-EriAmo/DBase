@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from cynober_ops import SERVER_VERSION
+from cynober_paths import atomic_write_json
 from cynober_worlds import (
     WorldRegistry,
     _kafd_path,
@@ -96,9 +97,7 @@ class PeerRegistry:
                 self._data = {"peers": {}}
 
     def _save(self) -> None:
-        tmp = self._path.with_suffix(".json.tmp")
-        tmp.write_text(json.dumps(self._data, ensure_ascii=False, indent=2), encoding="utf-8")
-        tmp.replace(self._path)
+        atomic_write_json(self._path, self._data)
 
     def list_peers(self) -> List[dict]:
         with self._lock:

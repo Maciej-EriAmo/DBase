@@ -4,21 +4,12 @@ cynober_rate_limit.py — limity połączeń i zapytań (ochrona przed flood / D
 
 from __future__ import annotations
 
-import os
 import threading
 import time
 from collections import defaultdict
 from typing import Any
 
-
-def _int_env(name: str, default: int) -> int:
-    raw = os.environ.get(name, "").strip()
-    if not raw:
-        return default
-    try:
-        return max(0, int(raw))
-    except ValueError:
-        return default
+from cynober_paths import int_env as _int_env
 
 
 def default_rate_limit_config() -> dict[str, int]:

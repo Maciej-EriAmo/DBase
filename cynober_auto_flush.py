@@ -4,21 +4,11 @@ cynober_auto_flush.py — okresowy zapis brudnych światów (v7.8, faza 0)
 
 from __future__ import annotations
 
-import os
 import threading
 from typing import Any
 
+from cynober_paths import int_env as _int_env
 from cynober_worlds import WorldRegistry
-
-
-def _int_env(name: str, default: int) -> int:
-    raw = os.environ.get(name, "").strip()
-    if not raw:
-        return default
-    try:
-        return max(0, int(raw))
-    except ValueError:
-        return default
 
 
 def default_auto_flush_config() -> dict[str, int]:

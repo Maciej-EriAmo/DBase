@@ -603,6 +603,33 @@ def _regexp_match(value: Any, pattern: str) -> bool:
         return False
 
 
+def _split_top_level(text: str, kw: str) -> List[str]:
+    """Dziel `text` po `kw` na najwyższym poziomie zagnieżdżenia (poza nawiasami/cudzysłowem)."""
+    kw_upper = f" {kw.upper()} "
+    parts: List[str] = []
+    start = 0
+    depth = 0
+    in_quote = False
+    i = 0
+    while i < len(text):
+        ch = text[i]
+        if ch == '"':
+            in_quote = not in_quote
+        elif not in_quote:
+            if ch == "(":
+                depth += 1
+            elif ch == ")":
+                depth -= 1
+            elif depth == 0 and text[i:].upper().startswith(kw_upper):
+                parts.append(text[start:i].strip())
+                i += len(kw_upper)
+                start = i
+                continue
+        i += 1
+    parts.append(text[start:].strip())
+    return [p for p in parts if p]
+
+
 # ─── 3. PARSER WARUNKÓW ───────────────────────────────────────────────────
 
 class ConditionParser:
@@ -736,29 +763,7 @@ class ConditionParser:
         raise SyntaxError(f"Niezamknięty nawias w: {text}")
 
     def _split_top(self, text: str, kw: str) -> List[str]:
-        kw_upper = f" {kw.upper()} "
-        parts: List[str] = []
-        start = 0
-        depth = 0
-        in_quote = False
-        i = 0
-        while i < len(text):
-            ch = text[i]
-            if ch == '"':
-                in_quote = not in_quote
-            elif not in_quote:
-                if ch == "(":
-                    depth += 1
-                elif ch == ")":
-                    depth -= 1
-                elif depth == 0 and text[i:].upper().startswith(kw_upper):
-                    parts.append(text[start:i].strip())
-                    i += len(kw_upper)
-                    start = i
-                    continue
-            i += 1
-        parts.append(text[start:].strip())
-        return [p for p in parts if p]
+        return _split_top_level(text, kw)
 
 
 # ─── 4. PARSER ZAPYTAŃ ──────────────────────────────────────────────────
@@ -1470,31 +1475,6 @@ class KarminParser:
             conds_str = conds_str[:m.start()] + conds_str[m.end():]
         return conds_str.strip(), limit, offset, sort_by, sort_desc, group_by, having_action, having_op, having_val, distinct
 
-    def _split_top_set_op(self, text: str, kw: str) -> List[str]:
-        kw_upper = f" {kw.upper()} "
-        parts: List[str] = []
-        start = 0
-        depth = 0
-        in_quote = False
-        i = 0
-        while i < len(text):
-            ch = text[i]
-            if ch == '"':
-                in_quote = not in_quote
-            elif not in_quote:
-                if ch == "(":
-                    depth += 1
-                elif ch == ")":
-                    depth -= 1
-                elif depth == 0 and text[i:].upper().startswith(kw_upper):
-                    parts.append(text[start:i].strip())
-                    i += len(kw_upper)
-                    start = i
-                    continue
-            i += 1
-        parts.append(text[start:].strip())
-        return [p for p in parts if p]
-
     def _extract_trailing_modifiers(self, line: str) -> Tuple[str, Optional[Tuple[str, ...]], bool, Optional[int], Optional[int]]:
         sort_by, sort_desc, limit, offset = None, False, None, None
         if m := re.search(r'\s+LIMIT\s+(\d+)\s*$', line, re.IGNORECASE):
@@ -1531,7 +1511,7 @@ class KarminParser:
         return node
 
     def _parse_set_intersect(self, text: str) -> ASTNode:
-        parts = self._split_top_set_op(text, SET_INTERSECT_OP)
+        parts = _split_top_level(text, SET_INTERSECT_OP)
         if len(parts) == 1:
             return self._parse_query_atom(parts[0])
         node = self._parse_query_atom(parts[0])
@@ -1542,7 +1522,7 @@ class KarminParser:
     def _parse_set_union(self, text: str) -> ASTNode:
         text = text.strip()
         for op in SET_UNION_OPS:
-            parts = self._split_top_set_op(text, op)
+            parts = _split_top_level(text, op)
             if len(parts) > 1:
                 node = self._parse_set_intersect(parts[0])
                 for part in parts[1:]:

@@ -17,6 +17,8 @@ import time
 from pathlib import Path
 from typing import Dict, List, Optional, Set
 
+from cynober_paths import atomic_write_json
+
 ROLE_READER = "reader"
 ROLE_WRITER = "writer"
 ROLE_ADMIN = "admin"
@@ -157,9 +159,7 @@ class WorldAuthStore:
             self._data = self._load()
 
     def _save(self) -> None:
-        tmp = self._path.with_suffix(".json.tmp")
-        tmp.write_text(json.dumps(self._data, ensure_ascii=False, indent=2), encoding="utf-8")
-        tmp.replace(self._path)
+        atomic_write_json(self._path, self._data)
 
     def is_login_locked(self, user: str) -> bool:
         """True gdy zbyt wiele nieudanych ZALOGUJ w oknie (lockout)."""
