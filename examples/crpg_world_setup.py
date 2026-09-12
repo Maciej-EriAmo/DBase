@@ -123,7 +123,7 @@ def main() -> None:
         stats = store.stats()
         print(f"  Bąble: {stats.get('bubbles', 0)}")
         print(f"  Gracze: {store.find_players()}")
-        print(f"  Potwory (Rola=Potwór):", end=" ")
+        print("  Potwory (Rola=Potwór):", end=" ")
         row = store.run_line('ZNAJDŹ GDZIE "Rola" = "Potwór"', strict=True)
         print(row.get("matches", []))
         print(f"  Quest giverzy: {store.quest_givers('Quest_Oczyść_Loch')}")

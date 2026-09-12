@@ -25,7 +25,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Set, Tuple, Union
 
-from karmazyn_media import MediaError, get_bytes, is_stream_atom
+from karmazyn_media import MediaError, get_bytes
 from karmazyn_media_incremental import (
     IncrementalVideoDecoder,
     is_video_path,
@@ -625,7 +625,6 @@ def play_file(
       python -m karmazyn_media_canvas play klip.gif
       python -m karmazyn_media_canvas play film.mp4   # klatki jeśli da się zdekodować
     """
-    from pathlib import Path as _P
     import mimetypes
 
     p = Path(path).expanduser()
@@ -932,7 +931,7 @@ def main(argv: Optional[list] = None) -> int:
         # podłącz film przez mini-atom w store
         from karmazyn_media import MEDIA_S
 
-        fa = store.atom_new(S=MEDIA_S, E="film@Demo", value=None, T=80.0)
+        store.atom_new(S=MEDIA_S, E="film@Demo", value=None, T=80.0)
         # zapisz pierwszą klatkę jako data — load_store_atom zdekoduje static;
         # zamiast tego: open window z już załadowanym canvasem
         try:
@@ -995,6 +994,5 @@ def main(argv: Optional[list] = None) -> int:
 
 
 if __name__ == "__main__":
-    import sys
 
     raise SystemExit(main())

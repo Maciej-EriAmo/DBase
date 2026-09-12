@@ -47,7 +47,7 @@ import socket
 import struct
 import threading
 import time
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, List, Optional, Tuple
 
 # ── Importy KarmazynOS (graceful degradation) ─────────────────────────────────
 
@@ -516,7 +516,7 @@ class KarmazynHandshake:
         conn.settimeout(timeout)
         self._log(f"[KSH] Łączę się z {host}:{port} ...")
         conn.connect((host, port))
-        self._log(f"[KSH] Połączono")
+        self._log("[KSH] Połączono")
         try:
             return self._run_protocol(conn, role="client")
         finally:
@@ -873,15 +873,11 @@ def _run_demo() -> None:
             self.age   = 0
 
     class _MockPhi:
-        def __init__(self, atoms):
-            self._atoms = list(atoms)
-            self._index = {a.id: a for a in self._atoms}
-
         class _Matrix:
             def __init__(self, phi): self._phi = phi
             def atoms(self): return self._phi._atoms
 
-        def __init__(self, atoms):        # noqa: F811
+        def __init__(self, atoms):
             self._atoms = list(atoms)
             self._index = {a.id: a for a in self._atoms}
             self.matrix = type("M", (), {

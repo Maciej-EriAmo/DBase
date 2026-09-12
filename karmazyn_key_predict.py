@@ -38,7 +38,7 @@ import secrets
 import struct
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Iterable, Optional, Sequence
+from typing import Any, Iterable, Sequence
 
 
 # ── HKDF (spójny styl z karmazyn_hsl) ─────────────────────────────────────────

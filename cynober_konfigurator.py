@@ -168,7 +168,7 @@ def _show_server() -> None:
     print(f"    Równoczesne na IP:         {rl.get('max_connections_per_ip', 0)}")
     print(f"    Nowe połączenia/IP/min:    {rl.get('max_new_connections_per_ip_per_min', 0)}")
     print(f"    Zapytania na sesję/min:   {rl.get('max_queries_per_minute', 0)}")
-    print(f"    (0 = wyłącz dany limit)")
+    print("    (0 = wyłącz dany limit)")
     ips = list_local_ips()
     if ips:
         print("\n  Adresy LAN do wpisania w profilu klienta (Termux):")

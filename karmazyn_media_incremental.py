@@ -21,7 +21,7 @@ import io
 import os
 import tempfile
 from pathlib import Path
-from typing import Any, Iterator, List, Optional, Tuple, Union
+from typing import Iterator, Optional, Tuple, Union
 
 from karmazyn_media import MediaError
 

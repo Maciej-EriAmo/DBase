@@ -7,7 +7,6 @@ O(n log n) mnożenie w Z_q[X]/(X^n+1) dla profili standard/production (n potęga
 from __future__ import annotations
 
 import hashlib
-from typing import Tuple
 
 import numpy as np
 

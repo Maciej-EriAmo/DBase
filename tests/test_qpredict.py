@@ -15,17 +15,12 @@ import unittest
 import numpy as np
 
 from karmazyn_qpredict import (
-    DIMENSIONS,
-    N_DIM,
     compare_improvement_methods,
     embed_bytes,
     evolve_interference,
     fidelity,
-    gauge_fix,
     measure_interference_accuracy,
-    normalize_state,
     predict_state,
-    residual,
 )
 
 

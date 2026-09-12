@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import hashlib
-import time
 import unittest
 
 from cynober_rpc import (

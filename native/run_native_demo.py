@@ -302,7 +302,6 @@ def step_dbase() -> None:
     try:
         # zgodność prawa: orphan na Store z DBase (python ref w tamtym drzewie)
         # nie podmieniamy native KarmazynOs — tylko sprawdzamy, że DBase ma substrat
-        import importlib.util
 
         sub_path = os.path.join(dbase, "karmazyn_substrate.py")
         if os.path.isfile(sub_path):

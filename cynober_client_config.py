@@ -9,7 +9,6 @@ import os
 import socket
 import sys
 import time
-from pathlib import Path
 from typing import Any
 
 CONFIG_VERSION = 2

@@ -3,7 +3,7 @@
 import unittest
 
 import karmazyn_kernel as kernel
-from cynober_query_engine import KarminEngine, KarminParser, CondAnd, CondCompare
+from cynober_query_engine import KarminEngine, KarminParser, CondAnd
 
 
 def _last(results):

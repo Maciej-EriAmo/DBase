@@ -12,7 +12,7 @@ import os
 import shutil
 from collections import defaultdict
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Dict, List, Optional, Set, Tuple
 
 from karmazyn_atom import T_HOT
 

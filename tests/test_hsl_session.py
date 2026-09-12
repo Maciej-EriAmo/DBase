@@ -23,10 +23,8 @@ from karmazyn_hsl import (
     derive_frame_key,
     hybrid_link_seed,
     link_commit,
-    load_phi2,
     perform_hsl_link,
     prism_target,
-    qkd_fingerprint,
     verify_capability,
 )
 from karmazyn_handshake import _CryptoLayer, _compress

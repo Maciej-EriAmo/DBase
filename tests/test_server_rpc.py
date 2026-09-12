@@ -11,7 +11,6 @@ from unittest.mock import patch
 from cynober_server import handle_client
 from cynober_rpc import (
     LEGACY_VERSION,
-    LEGACY_VERSION_11,
     PROTO_VERSION,
     SUPPORTED_VERSIONS,
     decrypt_rpc_response,

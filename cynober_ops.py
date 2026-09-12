@@ -12,7 +12,7 @@ import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Dict, List, Optional
 
 from cynober_worlds import (
     WorldRegistry,
@@ -20,7 +20,6 @@ from cynober_worlds import (
     _meta_path,
     _proca_dir,
     load_runtime_from_kafd,
-    save_runtime_to_kafd,
     validate_world_name,
 )
 
@@ -242,7 +241,7 @@ class WorldBackupManager:
             raise ValueError(f"Kopia '{bid}' nie istnieje dla świata '{name}'.")
         src_kafd = src / f"{name}.kafd"
         if not src_kafd.is_file():
-            raise ValueError(f"Uszkodzona kopia: brak pliku .kafd.")
+            raise ValueError("Uszkodzona kopia: brak pliku .kafd.")
         with self._registry._lock:
             world = self._registry._worlds.get(name)
             if world is not None and world.refs > 0:

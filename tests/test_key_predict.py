@@ -7,7 +7,6 @@ Soft predictor mierzony osobno — nie wolno pastować soft do KDF bez accuracy 
 
 from __future__ import annotations
 
-import os
 import secrets
 import unittest
 from unittest.mock import patch
@@ -20,10 +19,7 @@ from karmazyn_key_predict import (
     accept_key_rotation,
     context_blob,
     evolve_exact,
-    key_commit,
     measure_predictor_accuracy,
-    predict_next_ctx_digest,
-    soft_residual,
     thermal_digest,
 )
 from karmazyn_hsl import (

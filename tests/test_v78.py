@@ -16,9 +16,7 @@ from cynober_auto_flush import (
 from cynober_worlds import (
     _meta_path,
     _proca_dir,
-    export_query_indexes,
     reset_world_registry_for_tests,
-    restore_query_indexes,
 )
 from karmazyn_atom import T_WARM
 from karmazyn_proca import ProcaCoordinate

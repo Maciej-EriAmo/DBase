@@ -28,8 +28,8 @@ import time
 import hashlib
 import json
 import zlib
-from typing import List, Dict, Any, Optional, Tuple, Iterable
-from dataclasses import dataclass, field, asdict
+from typing import List, Dict, Any, Optional, Tuple
+from dataclasses import dataclass, field
 import threading
 
 try:
@@ -194,9 +194,9 @@ class ThermalFrame:
         if not (len(self.atom_ids) == self.num_atoms):
             return False, f"atom_ids length {len(self.atom_ids)} != num_atoms {self.num_atoms}"
         if not (len(self.temperatures) == self.num_atoms):
-            return False, f"temperatures length != num_atoms"
+            return False, "temperatures length != num_atoms"
         if not (len(self.states) == self.num_atoms):
-            return False, f"states length != num_atoms"
+            return False, "states length != num_atoms"
         if self.entropies and len(self.entropies) != self.num_atoms:
             return False, f"entropies length {len(self.entropies)} != num_atoms"
         # Wektor: opcjonalny, ale jeśli jest — atom_id musi być w atom_ids

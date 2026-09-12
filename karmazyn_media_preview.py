@@ -19,13 +19,12 @@ import io
 import threading
 from collections import OrderedDict
 from dataclasses import dataclass
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Optional, Tuple
 
 from karmazyn_media import (
     MediaError,
     get_bytes,
     is_stream_atom,
-    materialize_temp,
     open_media,
     open_with_system,
     try_external_player,

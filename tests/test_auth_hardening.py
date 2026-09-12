@@ -5,11 +5,9 @@ from __future__ import annotations
 import tempfile
 import time
 import unittest
-from pathlib import Path
 
 from cynober_world_auth import (
     _LOGIN_FAIL_MAX,
-    _LOGIN_LOCKOUT_SEC,
     _hash_token,
     _hash_token_sha256,
     _verify_token_hash,

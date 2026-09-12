@@ -66,7 +66,6 @@ class TestPeerResonanceNet(unittest.TestCase):
         from cynober_replicate import (
             PeerRegistry,
             resolve_peer,
-            select_peer_from_registry,
         )
 
         with tempfile.TemporaryDirectory() as td:

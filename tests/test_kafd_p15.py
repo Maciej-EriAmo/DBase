@@ -6,7 +6,6 @@ import struct
 import tempfile
 import threading
 import unittest
-import zlib
 
 from karmazyn_kafd import (
     F_FOOTER_TOC,

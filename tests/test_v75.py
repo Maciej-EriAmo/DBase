@@ -2,7 +2,6 @@
 
 import os
 import tempfile
-import time
 import unittest
 from unittest.mock import patch
 
@@ -13,13 +12,12 @@ from karmazyn_hsl import (
     HSLLink,
     capability_token,
     current_epoch,
-    hybrid_link_seed,
     link_commit,
     prism_target,
     verify_capability,
 )
-from karmazyn_hss import HSSDaemon, PROFILES, hss_use_ntt, resolve_hss_profile
-from karmazyn_hss_ntt import kem_pubkey_ntt, ntt_compatible, ntt_poly_mul
+from karmazyn_hss import PROFILES
+from karmazyn_hss_ntt import kem_pubkey_ntt, ntt_compatible
 from karmazyn_qkd import clear_qkd_cache, load_qkd_bytes, qkd_source_label
 
 

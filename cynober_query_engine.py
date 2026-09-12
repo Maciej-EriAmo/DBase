@@ -2335,7 +2335,7 @@ class SubstrateAPI:
     def disconnect_bubbles(self, source_name: str, target_name: str, relation: str):
         source_bubble = self._get_bubble(source_name)
         bind_key = f"rel:{relation}:{target_name}"
-        if bind_key not in source_bubble.bindings: raise KeyError(f"Brak relacji")
+        if bind_key not in source_bubble.bindings: raise KeyError("Brak relacji")
         source_bubble.bindings.pop(bind_key, None)
 
     def live_atom_ids(self, *, keep_hist: bool = False) -> set:

@@ -12,7 +12,7 @@ Poprawki v1.4.1:
 """
 
 import hashlib, json, os, struct, tempfile, time
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, Optional
 import numpy as np
 
 PFLD_MAGIC   = b"PFLD"
@@ -122,7 +122,7 @@ class ProcaFieldSource:
         else:
             self.m_vector = default_m_vector_for_dim(self.phi_dim)
         if len(self.m_vector) != self.phi_dim:
-            raise ValueError(f"Niezgodność wymiarów m_vector")
+            raise ValueError("Niezgodność wymiarów m_vector")
         self.m_vector_version = m_vector_version
         self.T = float(T)
         self.field_id = hashlib.sha256(data).hexdigest()
@@ -135,7 +135,7 @@ class ProcaFieldSource:
 
     def coordinate_delta(self, phi):
         if len(phi) != self.phi_dim:
-            raise ValueError(f"Nieprawidłowy wymiar phi")
+            raise ValueError("Nieprawidłowy wymiar phi")
         return np.asarray(phi, dtype=np.float32) - self.phi_source
 
     def serialize(self) -> bytes:
@@ -166,7 +166,7 @@ class ProcaFieldSource:
         if crc_stored != (zlib.crc32(raw[:-4]) & 0xFFFFFFFF):
             raise ValueError("CRC niezgodny")
         off = 4
-        _ver = struct.unpack('>H', raw[off:off+2])[0]; off += 2
+        struct.unpack('>H', raw[off:off+2]); off += 2  # wersja pola (nieużywana tu)
         fid_len = struct.unpack('>H', raw[off:off+2])[0]; off += 2
         field_id = raw[off:off+fid_len].decode('ascii'); off += fid_len
         phi_dim = struct.unpack('>H', raw[off:off+2])[0]; off += 2

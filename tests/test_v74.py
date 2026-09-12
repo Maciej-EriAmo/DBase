@@ -156,7 +156,7 @@ class TestReplicationE2E(unittest.TestCase):
         cb = self._client(self._peer_port)
         cb.query(f'WYBIERZ ŚWIAT "{world}"')
         cb.query(f'UTRWAL "{tag}"')
-        cb.query(f'ZAPISZ ŚWIAT')
+        cb.query('ZAPISZ ŚWIAT')
         cb.close()
 
         sync = ca.query(f'SYNC ŚWIAT "{world}" Z "peer-b"')

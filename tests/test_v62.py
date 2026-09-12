@@ -7,7 +7,7 @@ import unittest
 
 import karmazyn_kernel as kernel
 from cynober_query_engine import KarminEngine, KarminParser
-from cynober_query_engine import CreateViewNode, RequireUniqueNode
+from cynober_query_engine import CreateViewNode
 
 
 def _last(results):

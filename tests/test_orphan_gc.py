@@ -1,13 +1,11 @@
 """Testy GC osieroconych atomów i licznika id po wczytaniu KAFD."""
 
-import os
 import tempfile
 import unittest
 from pathlib import Path
 
 import karmazyn_kernel as kernel
 from cynober_worlds import (
-    _meta_path,
     load_runtime_from_kafd,
     reset_world_registry_for_tests,
     save_runtime_to_kafd,
@@ -82,7 +80,6 @@ class TestOrphanGC(unittest.TestCase):
             path = Path(tmp) / "w.kafd"
             self._bubble("Doc")
             self.api.add_property("Doc", "Typ", '"Dokument"')
-            typ_aid = self.api._bubble_index["Doc"].bindings["Typ"]
             save_runtime_to_kafd(self.bridge, path)
 
             bridge2 = KarminLambdaBridge(kernel.Store(thermal=True))

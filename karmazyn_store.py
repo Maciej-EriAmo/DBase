@@ -290,7 +290,6 @@ def _ingest_atom_bytes(
     Zarejestruj atom z bajtów KAFD store.
     Zwraca (utworzono, zwinięty).
     """
-    from karmazyn_atom import T_HOT
 
     try:
         head, data = _decode_atom(atom_bytes)

@@ -9,7 +9,6 @@ zapożyczonym z protokołu Karmazyn Handshake.
 import os
 import socket
 import json
-import sys
 import time
 
 from cynober_rpc import (
@@ -357,7 +356,7 @@ class CynoberClient:
         print("  python cynober_konfigurator.py     — klient (1–5) + serwer (6–9)")
         print("  python Cynober_db.py IP [port]     — jednorazowo bez profilu")
         print("  python Cynober_db.py --profile NAZWA")
-        print(f"  Plik profili: ~/.karmazyn_client.json")
+        print("  Plik profili: ~/.karmazyn_client.json")
 
         print("\n[Polecenia powłoki klienta]")
         print("  POMOC / HELP     — ten podręcznik")

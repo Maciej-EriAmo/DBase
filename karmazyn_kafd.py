@@ -74,7 +74,7 @@ import os
 import struct
 import time
 import threading
-from io import BytesIO, RawIOBase
+from io import BytesIO
 from typing import Any, Dict, Iterator, List, Optional, Tuple
 
 
@@ -378,15 +378,6 @@ class KAFDWriter:
         atom = KAFDAtom.from_file(path, atom_id)
         self.add(atom)
         return atom
-
-    def build(self) -> bytes:
-        """
-        Zbuduj kompletny KAFD blob w pamieci.
-        Uzyj dla plikow, bubli, handshake payload.
-        """
-        buf = BytesIO()
-        self._write_to(buf)
-        return buf.getvalue()
 
     def _get_mime_idx(self, mime: str) -> int:
         if mime not in self._mime_dict:
@@ -1087,7 +1078,6 @@ def _detect_mime(data: bytes, atom_id: str = "") -> str:
 # ─────────────────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
-    import sys
 
     print("=" * 60)
     print("  KAFD v2.0 -- test")

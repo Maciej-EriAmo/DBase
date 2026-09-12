@@ -26,7 +26,6 @@ import time
 from typing import Any, Optional
 
 from cynober_rpc import (
-    FRAME_KAFS,
     FRAME_RPC,
     HS_TIMEOUT_SEC,
     KAFS_CHUNK_MAX,
@@ -388,7 +387,6 @@ def connect(
         apply_profile_secrets,
         apply_server_secrets,
         get_active_profile,
-        get_server_config,
         load_config,
     )
 

@@ -485,7 +485,7 @@ class _PeerRpc:
                 raise ConnectionError("Węzeł zamknął połączenie.")
             raw = _decompress(decrypt_rpc_response(self._crypto, enc_resp, self._hsl))
             return json.loads(raw.decode("utf-8"))
-        except (ConnectionError, OSError, TimeoutError) as e:
+        except (ConnectionError, OSError, TimeoutError):
             if _retried:
                 raise
             self.close()

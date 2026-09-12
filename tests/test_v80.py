@@ -1,6 +1,5 @@
 """Testy v8.0: shardy per region grafu i replikacja manifest-first (faza 3)."""
 
-import base64
 import os
 import socket
 import subprocess

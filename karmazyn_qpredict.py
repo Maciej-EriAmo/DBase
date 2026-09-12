@@ -37,7 +37,7 @@ from __future__ import annotations
 import hashlib
 import math
 from dataclasses import dataclass
-from typing import Iterable, Optional, Sequence
+from typing import Sequence
 
 import numpy as np
 

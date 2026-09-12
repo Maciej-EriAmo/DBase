@@ -7,8 +7,7 @@ Cienka warstwa nad KarminQL: NPC, questy, graf relacji, JSON, SZUKAJ, TICK.
 
 from __future__ import annotations
 
-import json
-from typing import Any, List, Optional, Protocol, Union
+from typing import Any, List, Optional, Protocol
 
 import karmazyn_kernel as kernel
 from cynober_query_engine import KarminEngine
