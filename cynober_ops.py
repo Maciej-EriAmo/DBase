@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-cynober_ops.py — operacje serwera v8.2.2 (metryki, zdrowie, kopie światów)
+cynober_ops.py — operacje serwera v8.2.6 (metryki, zdrowie, kopie światów)
 """
 
 from __future__ import annotations
@@ -32,7 +32,7 @@ def _load_meta(path: Path) -> dict:
     except (OSError, json.JSONDecodeError):
         return {}
 
-SERVER_VERSION = "8.2.5"
+SERVER_VERSION = "8.2.6"
 
 _BACKUP_WORLD_RE = re.compile(
     r'^KOPIA\s+ZAPASOWA\s+ŚWIATA\s+"([^"]+)"$',

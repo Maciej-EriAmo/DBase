@@ -41,10 +41,10 @@ Lokalnie: `KARM_PEER_LABEL`, `KARM_PEER_ENERGY`, `CYNOBER_NODE_ID`.
 
 ## Stałe połączenia TCP
 
-- Klient: jeden tunel na wiele `query`; `ensure_connected` (liveness `fileno`) + auto-reconnect (1×)
+- Klient: jeden tunel na wiele `query`; `ensure_connected` (liveness `fileno`). Martwy socket przed wysłaniem jest otwierany od nowa. Po wysłaniu ramki timeout nie powtarza polecenia.
 - Serwer: rate-limit **nie** zamyka sesji; TCP keepalive
-- Peer RPC: cache tuneli między PULL/SYNC/gossip + reconnect na `_PeerRpc`
-- Mid-`MEDIA PUT`: abort przy padnięciu transportu (nie kontynuuj na nowej sesji)
+- Peer RPC: cache tuneli między PULL/SYNC/gossip; jedno zapytanie naraz na gniazdo
+- Mid-`MEDIA PUT` i urwany `MEDIA GET`: zamknięcie tunelu (nowa sesja nie czyta resztek poprzedniego strumienia). Czysty `KAFS ERR` zostawia tunel. Zerwana lista mediów wstaje raz: login, ten sam świat, powtórka tego jednego pobrania.
 
 ```python
 c = connect()

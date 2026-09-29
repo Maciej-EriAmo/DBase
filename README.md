@@ -8,8 +8,8 @@ Relacyjno-grafowa baza danych na termodynamicznym rdzeniu **KarmazynOS**, z tran
 
 | Komponent | Wersja | Plik |
 |-----------|--------|------|
-| **Pakiet PyPI / serwer** | **8.2.5** | `pyproject.toml` · `cynober_ops.SERVER_VERSION` |
-| Klient SDK | 8.2.5 | `cynober_client.py` (`session_info`, media KAFS, reconnect) |
+| **Pakiet / serwer** | **8.2.6** | `pyproject.toml` · `cynober_ops.SERVER_VERSION` |
+| Klient SDK | 8.2.6 | `cynober_client.py` (`session_info`, media KAFS, reconnect) |
 | Klient CLI | v1.8.0 | `Cynober_db.py` |
 | Protokół wire | **Cynober-Secure-1.2** | `cynober_rpc.py` (numer protokołu ≠ numer pakietu) |
 | HSL | HSL-1.1 + **HSL1** AEAD na link/cap | `karmazyn_hsl.py` (+ KPC bootstrap/epoch) |
@@ -23,7 +23,7 @@ Relacyjno-grafowa baza danych na termodynamicznym rdzeniu **KarmazynOS**, z tran
 
 Pełna składnia i API: [`cynober_manual.md`](cynober_manual.md) · KAFD: [`docs/KAFD.md`](docs/KAFD.md) · sesja L0/KPC: [`docs/SESSION_L0_KPC.md`](docs/SESSION_L0_KPC.md) · Mazur / peer \(R\): [`docs/MAZUR_CRYSTAL.md`](docs/MAZUR_CRYSTAL.md) · **bezpieczeństwo tunelu:** [`docs/SECURITY_CONNECTION.md`](docs/SECURITY_CONNECTION.md) · historia: [`CHANGELOG.md`](CHANGELOG.md)
 
-> **Uwaga:** PyPI **8.2.4** było zepsute (brak `cynober_paths` w wheel). Instaluj **≥ 8.2.5**.
+> **Uwaga:** ostatni wheel na PyPI to **8.2.5**. Wheel **8.2.4** był zepsuty (brak `cynober_paths`). To repozytorium ma numer **8.2.6**.
 
 ## Trzy filary
 
@@ -68,7 +68,7 @@ Wymagania: **Python 3.10+**.
 ### Z PyPI (zalecane dla zespołu)
 
 ```bash
-pip install -U "cynober-db>=8.2.5"
+pip install -U "cynober-db>=8.2.5"   # wheel na PyPI; źródła tego repo = 8.2.6
 ```
 
 **Start serwera** (Windows: jeśli `cynober-server` nie jest w PATH — normalne przy Python Store):
@@ -188,7 +188,7 @@ Projekt jest w **fazie użytkowej dla early adopterów** — działa end-to-end,
 - KarminQL v6.9 z rozbudowanym dialektem SQL-owym (JOIN, CTE, okna, JSON, EXPLAIN, indeksy)
 - **Jądro v1.1.0:** reach-GC, `retained_tomb`, dual-emit tick (`both`/`batch`/`per_atom`), publiczne API bez `Store.reg`
 - Serwer v8.0: **izolacja sesji** + **trwałe światy** + **auth/role** + **ops** + **replikacja manifest-first** + **shardy KAFD** + **lazy unfold**
-- Pakiet PyPI [`cynober-db`](https://pypi.org/project/cynober-db/) **8.2.5** (HSL1, security gates, `session_info`, media KAFS; nie 8.2.4)
+- Pakiet w repozytorium **8.2.6** (HSL1, security gates, `session_info`, media KAFS, tunel klienta). Wheel na PyPI: [`cynober-db`](https://pypi.org/project/cynober-db/) **8.2.5**
 - Tunel HSS + HSL + opcjonalny PSK/QKD-seed
 - Trwałość: `ZAPISZ ŚWIAT`, auto-flush co 60s, kopie zapasowe z `shards/` i `proca/`
 - Integracja pandas, CSV, `GameStore` dla gier i prototypów
@@ -212,6 +212,9 @@ Projekt jest w **fazie użytkowej dla early adopterów** — działa end-to-end,
 | v7.9 ✓ | Lazy load | Manifest przy `WYBIERZ ŚWIAT`, `ROZWIJ` / `CEL` + promień grafu |
 | **v8.0** ✓ | **Shardy** | Regiony grafu → `shards/<świat>/`; replikacja manifest-first |
 | **v8.1** ✓ (slice) | Gossip SOUL | `GOSSIP EKSPORT/IMPORT/SYNC SOUL` — bąble+bindings+atomy (BubbleVFS-lite); pełne `.soul`/Proca — dalej |
+| **v8.2.4** ✓ | Sieć + security | HSL1 AEAD, bramki legacy, scrypt, FETCH MEDIA, Mazur KONTEKST |
+| **v8.2.5** ✓ | Packaging | `cynober_paths` w wheel |
+| **v8.2.6** ✓ | ACL + klient | rola max(świat, `*`), media zostają przy `ZAPISZ`, tunel bez powtórki po wysłaniu |
 
 **Dlaczego nie REST:** HTTP dałby znajome narzędzia, ale drugi silnik transportu i gorsze wykorzystanie HSL. Produktem jest **Cynober end-to-end** — post-quantum oriented tunnel + KarminQL + światy, nie „JSON API obok”.
 

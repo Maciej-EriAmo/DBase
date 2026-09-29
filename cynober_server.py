@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-cynober_server.py — Bezpieczny Serwer Bazy Danych Cynober DB (v8.2.4)
+cynober_server.py — Bezpieczny Serwer Bazy Danych Cynober DB (v8.2.6)
 ==========================================================================
 Zastępuje serwer HTTP. L0 Carrier = TCP (nakładka; QKD = seed w HSL KDF, paper §6.4).
 Protokół: HSS + HSL (+ KPC przy establish/epoch) + KarminQL-RPC + MEDIA/KAFS.
@@ -20,6 +20,8 @@ v8.1: gossip SOUL (bąble+bindings+atomy) nad RPC — BubbleVFS-lite.
 v8.2: KPC w HSL (bootstrap/epoch), ZDROWIE l0/kpc, klient session_info + media errors.
 v8.2.3: MEDIA LIST "bąbel" — lista bindingów mediów (lore-editor).
 v8.2.4: native hydrate, ACL REZONANS/gossip sesji, legacy gate, FETCH MEDIA, MRC kontekst.
+v8.2.5: cynober_paths w wheel.
+v8.2.6: rola max(świat, *), SYNC/FETCH = global admin, id kopii, media zostają przy ZAPISZ.
 """
 
 from __future__ import annotations

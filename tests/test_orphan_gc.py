@@ -124,6 +124,46 @@ class TestPersistGC(unittest.TestCase):
             self.assertEqual(atom.metadata.get("v"), "v3.txt")
             reg2.release("gc_world")
 
+    def test_flush_keeps_media_by_id_and_drops_orphan_segment(self):
+        """MEDIA GET adresuje atom po id. ZAPISZ nie może go skosić jak sierotę."""
+        blob = b"BBBB" * 40
+        with tempfile.TemporaryDirectory() as tmp:
+            reg = reset_world_registry_for_tests(tmp)
+            world = reg.create("media_gc")
+            store = world.runtime.store
+            store.create_atom("b1", S="media", E="media", T=50.0)
+            head = store.get_atom("b1")
+            head.metadata["data"] = blob
+            head.metadata["mime"] = "application/octet-stream"
+            store.create_atom("film", S="media", E="media", T=50.0)
+            store.create_atom("film_s0", S="media_seg", E="seg0", T=45.0)
+            store.create_atom("lost", S="media_seg", E="seg", T=45.0)
+            film = store.get_atom("film")
+            seg = store.get_atom("film_s0")
+            film.metadata["data"] = b""
+            film.metadata["v"] = {
+                "kind": "media_stream",
+                "segments": ["film_s0"],
+                "size": 4,
+            }
+            seg.metadata["data"] = b"xxxx"
+            seg.metadata["v"] = {"kind": "media_segment", "parent": "film", "index": 0}
+            reg.mark_dirty("media_gc")
+            reg.flush("media_gc")
+
+            reg2 = reset_world_registry_for_tests(tmp)
+            world2 = reg2.attach("media_gc")
+            store2 = world2.runtime.store
+            kept = store2.get_atom("b1")
+            self.assertIsNotNone(kept)
+            self.assertEqual(kept.metadata.get("data"), blob)
+            self.assertIsNotNone(store2.get_atom("film"))
+            kept_seg = store2.get_atom("film_s0")
+            self.assertIsNotNone(kept_seg)
+            self.assertEqual(kept_seg.metadata.get("data"), b"xxxx")
+            self.assertIsNone(store2.get_atom("lost"))
+            reg2.release("media_gc")
+
 
 if __name__ == "__main__":
     unittest.main()

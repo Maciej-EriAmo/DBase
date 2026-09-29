@@ -2,7 +2,9 @@
 
 Format: skrót dla deweloperów. Protokół wire (**Cynober-Secure-1.2**) jest wersjonowany osobno od pakietu.
 
-## 8.2.6 (nieopublikowane)
+## 8.2.6
+
+Numer pakietu w repozytorium: `pyproject.toml` i `SERVER_VERSION`. Wire zostaje **Cynober-Secure-1.2**. Wheel na PyPI pozostaje 8.2.5 do osobnego `scripts/publish_pypi.ps1`.
 
 ### Audyt ACL, kopii i id atomu
 - Skuteczna rola = wyższa z wpisu świata i `"*"`. `LISTA ŚWIATÓW` przy grancie globalnym pokazuje wszystkie światy. `MEDIA` używa tej samej roli co zapis atomów.
@@ -10,6 +12,13 @@ Format: skrót dla deweloperów. Protokół wire (**Cynober-Secure-1.2**) jest w
 - Uszkodzony `auth.json` zamyka logowanie.
 - `PRZYWRÓĆ ŚWIAT` przyjmuje tylko id kopii wewnątrz `backups/{świat}/`.
 - `NativeStore.get_atom("1")` nie zwraca atomu o rdzeniu 1.
+- Urwany odbiór KAFS (`get_media`) zamyka tunel. Następne pobranie nie dostaje bajtów poprzedniego transferu.
+- Tunel do peera obsługuje jedno zapytanie naraz (wspólne gniazdo z cache).
+- Po wysłaniu ramki timeout nie powtarza tego samego polecenia.
+- Czysty `KAFS ERR` zostawia tunel. Zerwany strumień przy liście mediów wstaje raz (login i świat) i powtarza to jedno pobranie.
+- Pierwsze połączenie z peerem: jeden handshake na `host:port`, także z kilku wątków.
+- `with` na już otwartej sesji nie robi drugiego handshake. `close()` czyści tryb tunelu.
+- `ZAPISZ ŚWIAT` zostawia media adresowane po id i segmenty żywego strumienia. `MEDIA PUT` z bąblem wpina wiązanie w indeks zapytań.
 
 ## 8.2.5
 

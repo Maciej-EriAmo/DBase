@@ -737,29 +737,27 @@ def fetch_media_from_peer(
     c = CynoberClient(host, port)
     fetched = 0
     errors: list[dict] = []
+    user = str(peer.get("user") or "")
+    token = str(peer.get("token") or "")
+    world_name = world or ""
     try:
-        c.connect()
-        user, token = peer.get("user"), peer.get("token")
-        if user and token:
-            row = c.query_line(f'ZALOGUJ "{user}" TOKEN "{token}"')
-            if row.get("status") != "ok":
-                return {
-                    "status": "error",
-                    "action": "GOSSIP_FETCH_MEDIA",
-                    "peer": peer.get("name") or peer_name,
-                    "fetched": 0,
-                    "missing": len(ids),
-                    "ok": False,
-                    "message": row.get("message") or "login fail",
-                }
-        if world:
-            c.query_line(f'WYBIERZ ŚWIAT "{world}"')
-        if not c.kafs_enabled:
-            # MEDIA GET może iść inline base64 bez KAFS — spróbuj mimo to
-            pass
+        try:
+            c.bind_peer(user=user, token=token, world=world_name)
+        except CynoberClientError as e:
+            return {
+                "status": "error",
+                "action": "GOSSIP_FETCH_MEDIA",
+                "peer": peer.get("name") or peer_name,
+                "fetched": 0,
+                "missing": len(ids),
+                "ok": False,
+                "message": str(e),
+            }
         for mid in ids:
             try:
-                data, mime, _meta = c.get_media(mid)
+                data, mime, _meta = c.get_media_resilient(
+                    mid, user=user, token=token, world=world_name,
+                )
                 atom = store.get_atom(mid)
                 if atom is None:
                     errors.append({"id": mid, "error": "brak lokalnego atomu"})

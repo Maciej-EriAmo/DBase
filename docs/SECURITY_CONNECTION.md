@@ -1,6 +1,6 @@
 # Bezpieczeństwo połączenia Cynober (8.2.4+)
 
-**Pakiet:** cynober-db ≥ **8.2.5** (8.2.4 na PyPI było zepsute packagingiem — brak `cynober_paths`).  
+**Pakiet:** cynober-db **8.2.6** w repozytorium. Wheel na PyPI: **8.2.5**. Wheel 8.2.4 był zepsuty (brak `cynober_paths`).  
 **Wire:** Cynober-Secure-1.2 · HSL-1.1 · testy: `python -m unittest tests.test_security_audit`
 
 ---
@@ -70,6 +70,10 @@ Skuteczna rola = wyższa z wpisu świata i wpisu `"*"`. Wpis świata podnosi upr
 
 `LISTA WĘZŁÓW` / `LISTA WĘZŁÓW REZONANS` / `METRYKI SERWERA` → global reader.  
 `ZDROWIE` → liveness **bez** logowania.
+
+`PRZYWRÓĆ ŚWIAT` przyjmuje id kopii: pierwszy znak litera lub cyfra, dalej litery, cyfry, `_` i `-`, najwyżej 64 znaki, i tylko plik wewnątrz `backups/{świat}/`.
+
+`NativeStore.get_atom("1")` szuka publicznego id `"1"`. Numer rdzenia atomu tym napisem się nie aliasuje.
 
 ---
 

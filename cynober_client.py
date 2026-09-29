@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-cynober_client.py — oficjalny klient Cynober-Secure-1.2 (v8.2)
+cynober_client.py — oficjalny klient Cynober-Secure-1.2 (v8.2.6)
 ==============================================================
 Jeden protokół: TCP (L0 Carrier) + HSS + HSL (+ KPC na serwerze) + KarminQL-RPC.
 Media: put_media / get_media przez KAFS (negocjacja features).
@@ -49,6 +49,10 @@ from karmazyn_handshake import (
 
 class CynoberClientError(ConnectionError):
     """Błąd połączenia lub protokołu Cynober."""
+
+
+class CynoberMediaError(CynoberClientError):
+    """Błąd medium, gdy ramka KAFS ERR została w całości odczytana i tunel jest zsynchronizowany."""
 
 
 class CynoberClient:
@@ -110,7 +114,7 @@ class CynoberClient:
         except (ConnectionError, ConnectionResetError, OSError) as e:
             self.close()
             raise CynoberClientError(
-                "Serwer odrzucił połączenie — sprawdź wersję protokołu i profil HSS."
+                f"Serwer odrzucił połączenie ({e}). Sprawdź wersję protokołu i profil HSS."
             ) from e
         except RuntimeError as e:
             self.close()
@@ -137,22 +141,6 @@ class CynoberClient:
         if self.sock is not None:
             self.close()
         return self.connect()
-
-    def _transport_dead(self, exc: BaseException) -> bool:
-        msg = str(exc).lower()
-        needles = (
-            "zamkn",
-            "closed",
-            "reset",
-            "broken",
-            "timed out",
-            "timeout",
-            "eof",
-            "nie połączono",
-            "pusta odpowiedź",
-            "tunel",
-        )
-        return any(n in msg for n in needles)
 
     def session_info(self) -> dict[str, Any]:
         """
@@ -188,15 +176,20 @@ class CynoberClient:
 
     def query(self, text: str, *, _retried: bool = False) -> dict:
         """
-        Jedno zapytanie na **istniejącym** tunelu (stała sesja).
-        Przy padnięciu TCP — jeden auto-reconnect + ponowienie (nie zamyka po sukcesie).
+        Jedno zapytanie na istniejącym tunelu.
+
+        Martwy socket przed wysłaniem jest otwierany od nowa (jeden raz).
+        Gdy ramka wyszła na TCP, timeout i zła odpowiedź zamykają tunel
+        i nie wysyłają tego samego tekstu drugi raz — serwer mógł już go wykonać.
         """
         self.ensure_connected()
+        sent = False
         try:
             enc_req = encode_rpc_request_frame(
                 text, self.crypto, self.hsl_link, framed=self.kafs_enabled
             )
             _send_frame(self.sock, enc_req)
+            sent = True
 
             enc_resp = _recv_frame(self.sock)
             if not enc_resp:
@@ -207,23 +200,26 @@ class CynoberClient:
             if not isinstance(data, dict):
                 raise CynoberClientError("Uszkodzona odpowiedź serwera (nie JSON)")
             return data
-        except CynoberClientError as e:
-            if not _retried and self._transport_dead(e):
-                self.close()
-                self.connect()
-                return self.query(text, _retried=True)
-            raise
-        except (TimeoutError, socket.timeout, OSError) as e:
-            err = CynoberClientError(f"Błąd tunelu RPC: {e}")
-            if not _retried:
+        except Exception as e:
+            # sendall nie wrócił — serwer nie dostał pełnej ramki, wolno spróbować raz.
+            if (
+                not sent
+                and not _retried
+                and isinstance(e, (TimeoutError, socket.timeout, OSError))
+            ):
                 self.close()
                 try:
                     self.connect()
                     return self.query(text, _retried=True)
                 except Exception:
-                    raise err from e
-            raise err from e
-        except (ValueError, json.JSONDecodeError, UnicodeDecodeError, IndexError) as e:
+                    raise CynoberClientError(f"Błąd tunelu RPC: {e}") from e
+            # Po wysłaniu tunel jest niewiarygodny (timeout, KAFS zamiast RPC, śmieci).
+            if sent or not isinstance(e, CynoberClientError):
+                self.close()
+            if isinstance(e, CynoberClientError):
+                raise
+            if isinstance(e, (TimeoutError, socket.timeout, OSError)):
+                raise CynoberClientError(f"Błąd tunelu RPC: {e}") from e
             raise CynoberClientError(f"Uszkodzona odpowiedź serwera: {e}") from e
 
     def _send_kafs(self, body: bytes) -> None:
@@ -233,8 +229,15 @@ class CynoberClient:
         _send_frame(self.sock, enc)
 
     def _recv_kafs_until_end(self, xfer_id: str) -> bytes:
-        from cynober_media_rpc import KAFS_DATA, KAFS_END, KAFS_ERR, decode_kafs_body
+        from cynober_media_rpc import (
+            KAFS_DATA,
+            KAFS_END,
+            KAFS_ERR,
+            decode_kafs_body,
+            kafs_wire_id,
+        )
 
+        expect = kafs_wire_id(xfer_id)
         parts: list[bytes] = []
         while True:
             enc = _recv_frame(self.sock)
@@ -242,11 +245,14 @@ class CynoberClient:
                 raise CynoberClientError("Tunel zamknięty w trakcie KAFS GET")
             kind, payload = decode_rpc_response_frame(enc, self.crypto, self.hsl_link)
             if kind == FRAME_RPC:
-                # błąd serwera w środku streamu?
                 raise CynoberClientError(f"RPC w trakcie KAFS: {payload}")
             msg = decode_kafs_body(payload)
+            if expect and msg.xfer_id and msg.xfer_id != expect:
+                raise CynoberClientError(
+                    f"KAFS: obca ramka „{msg.xfer_id}”, oczekiwano „{expect}”"
+                )
             if msg.msg_type == KAFS_ERR:
-                raise CynoberClientError(msg.error or "KAFS ERR")
+                raise CynoberMediaError(msg.error or "KAFS ERR")
             if msg.msg_type == KAFS_END:
                 break
             if msg.msg_type == KAFS_DATA:
@@ -301,13 +307,8 @@ class CynoberClient:
                 self._send_kafs(encode_kafs_data(wire_id, seq, len(data), chunk))
                 seq += 1
             end = self.query_line(f'MEDIA PUT END "{atom_id}"')
-        except CynoberClientError as e:
+        except Exception as e:
             # Mid-PUT: nowa sesja TCP nie zna MediaSession — nie kontynuuj; START od nowa.
-            self.close()
-            raise CynoberClientError(
-                f"MEDIA PUT przerwany (transport) — wywołaj put_media ponownie od START: {e}"
-            ) from e
-        except (OSError, TimeoutError) as e:
             self.close()
             raise CynoberClientError(
                 f"MEDIA PUT przerwany (transport) — wywołaj put_media ponownie od START: {e}"
@@ -336,12 +337,59 @@ class CynoberClient:
             raise CynoberClientError(row.get("message") or "MEDIA GET failed")
         mime = str(row.get("mime") or "application/octet-stream")
         if row.get("stream") and self.kafs_enabled:
-            data = self._recv_kafs_until_end(str(row.get("id") or atom_id))
+            try:
+                data = self._recv_kafs_until_end(str(row.get("id") or atom_id))
+            except CynoberMediaError:
+                raise
+            except Exception as e:
+                # Niedoczytany strumień zostawia w buforze cudze ramki.
+                self.close()
+                raise CynoberClientError(
+                    "MEDIA GET przerwany (transport) — tunel zamknięty, "
+                    f"powtórz get_media: {e}"
+                ) from e
             return data, mime, row
         b64 = row.get("data_b64")
         if isinstance(b64, str) and b64:
             return base64.b64decode(b64.encode("ascii")), mime, row
         raise CynoberClientError("MEDIA GET: brak streamu KAFS i data_b64")
+
+    def bind_peer(self, *, user: str = "", token: str = "", world: str = "") -> None:
+        """Gdy gniazdo nie żyje: nowy tunel, logowanie i wybór świata."""
+        if self._sock_alive():
+            return
+        self.connect()
+        if user and token:
+            row = self.query_line(f'ZALOGUJ "{user}" TOKEN "{token}"')
+            if row.get("status") != "ok":
+                raise CynoberClientError(row.get("message") or "Logowanie nie powiodło się.")
+        if world:
+            row = self.query_line(f'WYBIERZ ŚWIAT "{world}"')
+            if row.get("status") == "error":
+                raise CynoberClientError(row.get("message") or "WYBIERZ ŚWIAT nie powiódł się.")
+
+    def get_media_resilient(
+        self,
+        atom_id: str,
+        *,
+        offset: int = 0,
+        limit: int = 0,
+        user: str = "",
+        token: str = "",
+        world: str = "",
+    ) -> tuple[bytes, str, dict]:
+        """
+        get_media z jednym wstaniem tunelu.
+        Błąd przy żywym gnieździe (KAFS ERR) nie jest powtarzany.
+        """
+        self.bind_peer(user=user, token=token, world=world)
+        try:
+            return self.get_media(atom_id, offset=offset, limit=limit)
+        except CynoberClientError:
+            if self._sock_alive():
+                raise
+            self.bind_peer(user=user, token=token, world=world)
+            return self.get_media(atom_id, offset=offset, limit=limit)
 
     def media_stat(self, atom_id: str) -> dict:
         return self.query_line(f'MEDIA STAT "{atom_id}"')
@@ -353,15 +401,24 @@ class CynoberClient:
         return results[-1] if results else {}
 
     def close(self) -> None:
-        if self.sock:
+        sock = self.sock
+        self.sock = None
+        if sock is not None:
             try:
-                self.sock.close()
+                sock.close()
             except OSError:
                 pass
-            self.sock = None
+        self.crypto = _CryptoLayer()
+        self.crypto_mode = None
+        self.hsl_link = None
+        self.local_caps = None
+        self.remote_caps = None
+        self.kafs_enabled = False
 
     def __enter__(self) -> "CynoberClient":
-        return self.connect()
+        if not self._sock_alive():
+            self.connect()
+        return self
 
     def __exit__(self, *args: Any) -> None:
         self.close()

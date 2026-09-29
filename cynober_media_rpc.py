@@ -458,6 +458,36 @@ def _runtime_store(facade: Any):
     return rt.engine.api.store if hasattr(rt, "engine") else rt.store
 
 
+def _attach_media_binding(facade: Any, store: Any, *, bubble: str, binding: str, head: Any) -> None:
+    """Wiązanie na bąblu silnika zapytań — ten sam obiekt widzi GC i zapis świata."""
+    from karmazyn_media import ensure_bubble, sync_bubble_record
+
+    api = None
+    runtime = facade._runtime() if callable(getattr(facade, "_runtime", None)) else None
+    engine = getattr(runtime, "engine", None)
+    api = getattr(engine, "api", None)
+    target = None
+    if api is not None:
+        target = api._bubble_index.get(bubble)
+        if target is None:
+            try:
+                api.create_bubble(bubble)
+            except Exception:
+                pass
+            target = api._bubble_index.get(bubble)
+    if target is None and callable(getattr(store, "bubble_new", None)):
+        target = ensure_bubble(store, bubble, as_root=True)
+    if target is None:
+        return
+    if callable(getattr(target, "bind", None)):
+        target.bind(binding, head)
+    else:
+        target.bindings[binding] = getattr(head, "id", "")
+    if api is not None:
+        api._track_atom(bubble, str(getattr(head, "id", "")), add=True)
+    sync_bubble_record(store, target)
+
+
 def _commit_media_atom(
     facade: Any,
     *,
@@ -471,11 +501,9 @@ def _commit_media_atom(
     from karmazyn_media import (
         MEDIA_S,
         MEDIA_SEG_S,
-        ensure_bubble,
         is_stream_atom,
         segment_size_effective,
         stream_threshold_effective,
-        sync_bubble_record,
         _cas12,
     )
     import hashlib
@@ -592,13 +620,10 @@ def _commit_media_atom(
             "requested_id": atom_id,
         }
 
-    if bubble and binding and callable(getattr(store, "bubble_new", None)):
-        b = ensure_bubble(store, bubble, as_root=True)
-        if callable(getattr(b, "bind", None)):
-            b.bind(binding, head)
-        else:
-            b.bindings[binding] = head.id
-        sync_bubble_record(store, b)
+    if bubble and binding:
+        _attach_media_binding(
+            facade, store, bubble=bubble, binding=binding, head=head
+        )
     if getattr(facade, "_world", None) is not None:
         facade._registry.mark_dirty(facade._world.name)
 

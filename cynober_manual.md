@@ -1,8 +1,8 @@
-# Cynober DB — Podręcznik Użytkownika i Składnia KarminQL (v8.2.5)
+# Cynober DB — Podręcznik Użytkownika i Składnia KarminQL (v8.2.6)
 
 Cynober DB to relacyjno-grafowa baza danych na termodynamicznym rdzeniu **KarmazynOS**, z transportem **Cynober-Secure-1.2** i warstwą **HSL** (Holographic Session Links). Trzy autorskie elementy — silnik, baza, protokół — opierają się na jednej zasadzie: **struktura wynika z rezonansu stanu sesji**, a nie z zewnętrznych etykiet (adres, certyfikat, ACL).
 
-**Numeracja:** `8.2.5` = wersja **pakietu / serwera** (`pyproject.toml`, `SERVER_VERSION`).  
+**Numeracja:** `8.2.6` = wersja **pakietu / serwera** (`pyproject.toml`, `SERVER_VERSION`).  
 **Cynober-Secure-1.2** = wersja **protokołu wire** (nie mylić z 8.x).  
 **Bezpieczeństwo tunelu (env, ACL, HSL1, scrypt):** [`docs/SECURITY_CONNECTION.md`](docs/SECURITY_CONNECTION.md).
 
@@ -11,8 +11,8 @@ Cynober DB to relacyjno-grafowa baza danych na termodynamicznym rdzeniu **Karmaz
 | KarminQL (silnik zapytań) | v6.9 | `cynober_query_engine.py` |
 | Most pandas | — | `cynober_pandas_bridge.py` |
 | Klient CLI | v1.8.0 | `Cynober_db.py` |
-| Serwer / pakiet | **8.2.5** | `cynober_server.py` / `cynober_ops.SERVER_VERSION` / `pyproject.toml` |
-| Klient SDK | **8.2.5** | `cynober_client.py` (`session_info`, `put_media`, reconnect) |
+| Serwer / pakiet | **8.2.6** | `cynober_server.py` / `cynober_ops.SERVER_VERSION` / `pyproject.toml` |
+| Klient SDK | **8.2.6** | `cynober_client.py` (`session_info`, `put_media`, reconnect) |
 | Protokół transportu | Cynober-Secure-1.2 | `cynober_rpc.py` |
 | HSL (sesje sieciowe) | HSL-1.1 + KPC + **HSL1** AEAD | `karmazyn_hsl.py`, `karmazyn_key_predict.py` |
 | Mazur Crystal | LorentzBridge + MRC | `mazur_crystal/` · `docs/MAZUR_CRYSTAL.md` |
@@ -31,7 +31,7 @@ Cynober DB to relacyjno-grafowa baza danych na termodynamicznym rdzeniu **Karmaz
 ┌─────────────────┐     L0 = TCP :8080      ┌──────────────────┐
 │  Cynober_db.py  │ ◄──────────────────────► │ cynober_server.py│
 │  cynober_client │   Cynober-Secure-1.2     │  (serwer RPC)    │
-│  lore-editor    │   (Carrier wymienny)     │  v8.2.5          │
+│  lore-editor    │   (Carrier wymienny)     │  v8.2.6          │
 └────────┬────────┘                          └────────┬─────────┘
          │                                            │
          │  HSS/ECDH → PSK? → QKD-slot? → HSL+KPC     │
@@ -165,10 +165,12 @@ Metryki i kopie zapasowe trwałych światów. Kopie trafiają do `{worlds_dir}/b
 | Polecenie | Opis | Auth (gdy włączone) |
 |-----------|------|---------------------|
 | `ZDROWIE` | Status serwera, wersja, uptime | publiczne |
-| `METRYKI SERWERA` | Liczniki zapytań, sesji, światów, top_actions | publiczne |
+| `METRYKI SERWERA` | Liczniki zapytań, sesji, światów, top_actions | globalny reader, gdy auth włączone |
 | `KOPIA ZAPASOWA ŚWIATA "nazwa"` | Snapshot `.kafd` + meta + `shards/` + `proca/` | writer+ w świecie |
 | `LISTA KOPII ŚWIATA "nazwa"` | Katalog kopii | reader+ w świecie |
 | `PRZYWRÓĆ ŚWIAT "nazwa" Z KOPII "id"` | Przywrócenie z kopii | admin w świecie |
+
+Id kopii: pierwszy znak to litera lub cyfra, dalej litery, cyfry, `_` i `-`, najwyżej 64 znaki. Plik zostaje w `backups/{świat}/`.
 
 `GameStore`: `health()`, `server_metrics()`, `backup_world()`, `list_backups()`, `restore_world()`.
 
@@ -336,7 +338,9 @@ with connect("127.0.0.1", 8080) as c:
 
 Bez `kafs-stream`: PUT odrzucony; GET małych plików (≤ 64 KiB) może wrócić `data_b64`.
 
-### Klient SDK (v8.2.5)
+`ZAPISZ ŚWIAT` zostawia atom medium pod id z `MEDIA GET` oraz segmenty, które wskazuje żywy nagłówek strumienia. `BĄBEL … JAKO …` wpina wiązanie w indeks zapytań.
+
+### Klient SDK (v8.2.6)
 
 Oficjalny klient Python — ten sam tunel HSS+HSL+RPC co CLI, bez HTTP.
 
@@ -356,6 +360,10 @@ c = connect("192.168.1.42", 8080)       # host + port
 | `CynoberClient.query(text)` | Pełna odpowiedź RPC (`results`, `status`) |
 | `CynoberClient.query_line(text)` | Ostatni wiersz z `results` |
 | Context manager | `with connect() as c:` — auto `close()` |
+| `get_media` / `put_media` | KAFS. Urwany strumień zamyka tunel. Czysty `KAFS ERR` zostawia go otwarty |
+| `get_media_resilient` | Jedno wstanie: login, ten sam świat, powtórka tego jednego pobrania |
+
+Martwy socket przed wysłaniem ramki otwiera się od nowa, jeden raz. Po wysłaniu timeout zamyka tunel i nie powtarza polecenia. `close()` czyści tryb tunelu. `with` na już otwartej sesji nie robi drugiego handshake.
 
 Szybki test zespołu: `python examples/team_connect.py` (lub `--profile nazwa`).
 
@@ -368,7 +376,7 @@ Profil w `~/.karmazyn_client.json` może zawierać `hss_profile` (jak sekcja `se
 ### Instalacja z PyPI
 
 ```bash
-pip install -U "cynober-db>=8.2.5"
+pip install -U "cynober-db>=8.2.5"   # wheel na PyPI; źródła tego repo = 8.2.6
 python -m cynober_server        # serwer (gdy Scripts nie ma PATH)
 python -m Cynober_db            # klient CLI
 ```
@@ -1327,7 +1335,7 @@ Skrypt **wieloliniowy** (więcej niż jedna komenda, bez wiodącego `BEGIN`) jes
 
 ## 14. Testy
 
-Projekt zawiera **~400+ testów** w katalogu `tests/` (stan na serwer **8.2.5** + security audit + HSL1 + KPC/qpredict + jądro v1.1.0 + KarminQL v6.9). Część wymaga harnessu serwera w procesie (`test_server_rpc.py`). Audyt połączenia: `tests.test_security_audit` · docs: `docs/SECURITY_CONNECTION.md`.
+Projekt zawiera **~400+ testów** w katalogu `tests/` (stan na serwer **8.2.6** + security audit + HSL1 + KPC/qpredict + jądro v1.1.0 + KarminQL v6.9). Część wymaga harnessu serwera w procesie (`test_server_rpc.py`). Audyt połączenia: `tests.test_security_audit` · docs: `docs/SECURITY_CONNECTION.md`.
 
 ### Uruchomienie wszystkich testów
 
@@ -1421,8 +1429,8 @@ DBase/
 ├── README.md                  ← szybki start i status projektu
 ├── cynober_manual.md          ← ten podręcznik
 ├── HSL_Paper_v1_1_0_EN.md     ← specyfikacja HSL (teoria)
-├── cynober_server.py          ← serwer TCP v8.2.5 (sesje + światy + ops + repl + KPC + ACL)
-├── cynober_client.py          ← oficjalny klient SDK (v8.2.5, session_info, media, reconnect)
+├── cynober_server.py          ← serwer TCP v8.2.6 (sesje + światy + ops + repl + KPC + ACL)
+├── cynober_client.py          ← oficjalny klient SDK (v8.2.6, session_info, media, reconnect)
 ├── karmazyn_key_predict.py    ← KPC (exact + |Ψ⟩)
 ├── karmazyn_qpredict.py       ← predykcja interferencji EriAmo
 ├── cynober_auto_flush.py      ← okresowy zapis dirty światów (v7.8)
@@ -1486,7 +1494,7 @@ DBase/
 | **Silnik** | KarminQL v6.9 — bogaty dialekt zapytań, transakcje, JSON, EXPLAIN, indeksy |
 | **Sieć** | Tunel HSS + HSL, profile klienta, rate limit, sandbox v7.0, trwałe światy v7.1 |
 | **Persystencja** | Auto-flush v7.8, lazy unfold v7.9, shardy KAFD v8.0, replikacja manifest-first |
-| **Dystrybucja** | PyPI `cynober-db` **8.2.5** (`pip install -U "cynober-db>=8.2.5"`) |
+| **Dystrybucja** | Repozytorium **8.2.6**. Wheel na PyPI: **8.2.5** (`pip install -U "cynober-db>=8.2.5"`) |
 | **Analityka** | pandas, CSV, `.kafd`, `examples/analyst_demo.py` |
 | **Aplikacje** | `GameStore` + demo gry przez RPC lub lokalnie |
 | **Jakość** | 322 testy jednostkowe i integracyjne |
@@ -1519,6 +1527,7 @@ DBase/
 | **v8.2.2** ✓ | **KPC + L0 docs** | KPC w HSL (bootstrap/epoch), qpredict fidelity, `session_info`, ZDROWIE `l0`/`kpc`, media errors; L0=TCP dziś / QKD seed jutro |
 | **v8.2.4** ✓ | **Sieć + security** | HSL1 AEAD, MIN_CRYPTO/legacy gates, gossip ACL, scrypt+lockout, FETCH MEDIA, Mazur KONTEKST, NativeStore bind |
 | **v8.2.5** ✓ | **Packaging** | `cynober_paths` w wheel (8.2.4 PyPI broken); docs `SECURITY_CONNECTION.md` |
+| **v8.2.6** ✓ | **ACL + klient** | rola max(świat, `*`), `SYNC`/`FETCH` = global admin, id kopii, media przy `ZAPISZ`, tunel bez powtórki po wysłaniu |
 
 **Czego nie planujemy:** REST gateway, ODBC, równoległy TLS/HTTP — rozproszyłyby adopcję i osłabiły model HSL jako jedynej warstwy sesji post-kwantowej.
 

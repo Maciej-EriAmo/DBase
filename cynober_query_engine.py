@@ -2319,7 +2319,14 @@ class SubstrateAPI:
         source_bubble.bindings.pop(bind_key, None)
 
     def live_atom_ids(self, *, keep_hist: bool = False) -> set:
-        """Atomy osiągalne z aktywnych bindings (hist opcjonalnie)."""
+        """Atomy osiągalne z aktywnych bindings (hist opcjonalnie).
+
+        Medium jest adresowane po id (`MEDIA GET`), więc nagłówek zostaje
+        także bez cechy bąbla. Segment strumienia zostaje, gdy wskazuje
+        go żywy nagłówek — samo wiązanie trzyma tylko głowę.
+        """
+        from karmazyn_media import MEDIA_S, MEDIA_SEG_S
+
         live: set = set()
         for bubble in self._bubble_index.values():
             for key, atom_id in bubble.bindings.items():
@@ -2328,6 +2335,28 @@ class SubstrateAPI:
                 if key.startswith("hist:") and not keep_hist:
                     continue
                 live.add(atom_id)
+        heads: list = []
+        segments: list = []
+        for atom in self.store.atoms():
+            kind = getattr(atom, "S", "") or ""
+            if kind == MEDIA_S:
+                live.add(atom.id)
+                heads.append(atom)
+            elif kind == MEDIA_SEG_S:
+                segments.append(atom)
+        for atom in heads:
+            meta = getattr(atom, "metadata", None)
+            v = meta.get("v") if isinstance(meta, dict) else None
+            if isinstance(v, dict):
+                for sid in v.get("segments") or []:
+                    if sid:
+                        live.add(str(sid))
+        for atom in segments:
+            meta = getattr(atom, "metadata", None)
+            v = meta.get("v") if isinstance(meta, dict) else None
+            parent = v.get("parent") if isinstance(v, dict) else None
+            if parent and str(parent) in live:
+                live.add(atom.id)
         return live
 
     def prune_dead_bindings(self) -> int:

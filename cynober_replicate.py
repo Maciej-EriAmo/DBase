@@ -431,6 +431,8 @@ class _PeerRpc:
         self._sock: Optional[socket.socket] = None
         self._crypto = None
         self._hsl = None
+        # Jedno gniazdo = jedno zapytanie. Serwer woła gossip z wielu wątków.
+        self._io = threading.RLock()
 
     def _sock_alive(self) -> bool:
         sock = self._sock
@@ -442,6 +444,10 @@ class _PeerRpc:
             return False
 
     def connect(self) -> None:
+        with self._io:
+            self._connect_locked()
+
+    def _connect_locked(self) -> None:
         from cynober_rpc import (
             HS_TIMEOUT_SEC,
             PROTO_VERSION,
@@ -453,7 +459,7 @@ class _PeerRpc:
         if self._sock_alive():
             return  # już połączony — podtrzymanie sesji peera
         if self._sock is not None:
-            self.close()
+            self._close_locked()
         self._crypto = _CryptoLayer()
         self._sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self._sock.settimeout(HS_TIMEOUT_SEC)
@@ -468,31 +474,41 @@ class _PeerRpc:
         apply_tcp_keepalive(self._sock)
 
     def query(self, text: str, *, _retried: bool = False) -> dict:
+        with self._io:
+            return self._query_locked(text, _retried=_retried)
+
+    def _query_locked(self, text: str, *, _retried: bool = False) -> dict:
         import json
         from cynober_rpc import build_rpc_request, decrypt_rpc_response, encrypt_rpc_request
         from karmazyn_handshake import _compress, _decompress, _recv_frame, _send_frame
 
         if not self._sock_alive() or not self._crypto:
-            self.connect()
+            self._connect_locked()
+        sent = False
         try:
             req = json.dumps(
                 build_rpc_request(text, self._hsl), ensure_ascii=False
             ).encode("utf-8")
             enc = encrypt_rpc_request(self._crypto, _compress(req), self._hsl)
             _send_frame(self._sock, enc)
+            sent = True
             enc_resp = _recv_frame(self._sock)
             if not enc_resp:
                 raise ConnectionError("Węzeł zamknął połączenie.")
             raw = _decompress(decrypt_rpc_response(self._crypto, enc_resp, self._hsl))
             return json.loads(raw.decode("utf-8"))
-        except (ConnectionError, OSError, TimeoutError):
-            if _retried:
+        except Exception as e:
+            self._close_locked()
+            if sent or _retried or not isinstance(e, (ConnectionError, OSError, TimeoutError)):
                 raise
-            self.close()
-            self.connect()
-            return self.query(text, _retried=True)
+            self._connect_locked()
+            return self._query_locked(text, _retried=True)
 
     def close(self) -> None:
+        with self._io:
+            self._close_locked()
+
+    def _close_locked(self) -> None:
         if self._sock:
             try:
                 self._sock.close()
@@ -506,10 +522,21 @@ class _PeerRpc:
 # Cache stałych tuneli peer→peer (klucz host:port). Close dopiero przy błędzie / reset.
 _peer_session_cache: Dict[str, "_PeerRpc"] = {}
 _peer_session_lock = threading.Lock()
+_peer_connect_locks: Dict[str, threading.Lock] = {}
 
 
 def _peer_cache_key(peer: dict) -> str:
     return f"{peer.get('host', '')}:{int(peer.get('port') or 0)}"
+
+
+def _peer_connect_lock(key: str) -> threading.Lock:
+    """Jeden handshake na host:port, także gdy cache jest jeszcze pusty."""
+    with _peer_session_lock:
+        lock = _peer_connect_locks.get(key)
+        if lock is None:
+            lock = threading.Lock()
+            _peer_connect_locks[key] = lock
+        return lock
 
 
 def reset_peer_sessions() -> None:
@@ -530,23 +557,33 @@ def _peer_client(peer: dict, *, reuse: bool = True) -> _PeerRpc:
     R wybiera peera wcześniej (resolve_peer); tu tylko hydraulika L0.
     """
     key = _peer_cache_key(peer)
-    if reuse:
+    if not reuse:
+        client = _PeerRpc(peer["host"], int(peer["port"]))
+        client.connect()
+        return client
+    with _peer_connect_lock(key):
         with _peer_session_lock:
             cached = _peer_session_cache.get(key)
             if cached is not None and cached._sock_alive():
                 return cached
-            if cached is not None:
-                _peer_session_cache.pop(key, None)
-                try:
-                    cached.close()
-                except Exception:
-                    pass
-    client = _PeerRpc(peer["host"], int(peer["port"]))
-    client.connect()
-    if reuse:
+            stale = _peer_session_cache.pop(key, None)
+        if stale is not None:
+            try:
+                stale.close()
+            except Exception:
+                pass
+        client = _PeerRpc(peer["host"], int(peer["port"]))
+        try:
+            client.connect()
+        except Exception:
+            try:
+                client.close()
+            except Exception:
+                pass
+            raise
         with _peer_session_lock:
             _peer_session_cache[key] = client
-    return client
+        return client
 
 
 def _peer_release(client: _PeerRpc, *, drop: bool = False) -> None:
@@ -753,20 +790,10 @@ def sync_missing_media(
     c = CynoberClient(host, port)
     fetched = 0
     errors: list = []
+    user = str(peer.get("user") or "")
+    token = str(peer.get("token") or "")
     try:
-        c.connect()
-        user, token = peer.get("user"), peer.get("token")
-        if user and token:
-            row = c.query_line(f'ZALOGUJ "{user}" TOKEN "{token}"')
-            if row.get("status") != "ok":
-                return {
-                    "fetched": 0,
-                    "missing": len(missing),
-                    "ok": False,
-                    "error": row.get("message") or "login fail",
-                }
-        # wybór świata na serwerze
-        c.query_line(f'WYBIERZ ŚWIAT "{world}"')
+        c.bind_peer(user=user, token=token, world=world)
         if not c.kafs_enabled:
             return {
                 "fetched": 0,
@@ -784,7 +811,9 @@ def sync_missing_media(
         for e in missing:
             mid = str(e.get("id"))
             try:
-                data, mime, _meta = c.get_media(mid)
+                data, mime, _meta = c.get_media_resilient(
+                    mid, user=user, token=token, world=world,
+                )
                 mime = mime or e.get("mime") or "application/octet-stream"
                 existing = store.get_atom(mid)
                 if existing is None and callable(getattr(store, "create_atom", None)):
