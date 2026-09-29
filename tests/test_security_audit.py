@@ -472,6 +472,47 @@ class TestF_AclRegressions(_AuthServerCase):
         c.query('ZALOGUJ "reader" TOKEN "r-secret"')
         self.assertEqual(c.query("LISTA WĘZŁÓW")["results"][0]["status"], "ok")
 
+    def test_writer_on_world_cannot_sync_or_fetch(self):
+        name = f"gs_{time.time_ns()}"
+        c = self._client()
+        c.query('ZALOGUJ "admin" TOKEN "admin-secret"')
+        created = c.query(f'UTWÓRZ ŚWIAT "{name}"')
+        self.assertEqual(created["results"][0]["status"], "ok", created["results"][0].get("message"))
+        c.close()
+
+        writer = self._client()
+        writer.query('ZALOGUJ "writer" TOKEN "w-secret"')
+        att = writer.query(f'WYBIERZ ŚWIAT "{name}"')
+        self.assertEqual(att["results"][0]["status"], "ok", att["results"][0].get("message"))
+        for q in (
+            'GOSSIP SYNC PHI Z "nope"',
+            'GOSSIP SYNC SOUL Z "nope"',
+            'GOSSIP FETCH MEDIA Z "nope"',
+            'GOSSIP FETCH MEDIA "a0" Z "nope"',
+        ):
+            row = writer.query(q)["results"][0]
+            self.assertEqual(row["status"], "error", msg=q)
+            self.assertIn("admin", (row.get("message") or "").lower(), msg=q)
+
+    def test_admin_on_world_sync_reaches_peer_lookup(self):
+        name = f"ga_{time.time_ns()}"
+        c = self._client()
+        c.query('ZALOGUJ "admin" TOKEN "admin-secret"')
+        created = c.query(f'UTWÓRZ ŚWIAT "{name}"')
+        self.assertEqual(created["results"][0]["status"], "ok", created["results"][0].get("message"))
+        row = c.query('GOSSIP SYNC PHI Z "nope"')["results"][0]
+        self.assertEqual(row["status"], "error")
+        self.assertIn("zarejestrowany", (row.get("message") or "").lower())
+
+    def test_star_grant_lists_world_without_explicit_acl_row(self):
+        c = self._client()
+        c.query('ZALOGUJ "admin" TOKEN "admin-secret"')
+        name = f"star_{time.time_ns()}"
+        c.query(f'UTWÓRZ ŚWIAT "{name}"')
+        c.query("ODŁĄCZ ŚWIAT")
+        names = [w["name"] for w in c.query("LISTA ŚWIATÓW")["results"][0]["worlds"]]
+        self.assertIn(name, names)
+
 
 class TestG_SecureBootPosture(unittest.TestCase):
     def test_secure_boot_exits_on_public_bind_without_auth(self):

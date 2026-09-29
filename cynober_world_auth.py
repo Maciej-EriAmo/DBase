@@ -127,6 +127,7 @@ class WorldAuthStore:
         self._path = self._base / "auth.json"
         self._audit_path = self._base / "audit.log"
         self._lock = threading.RLock()
+        self._load_error: Optional[str] = None
         self._data = self._load()
         # user -> list[fail_ts]; lock until monotonic
         self._fail_ts: Dict[str, list[float]] = {}
@@ -141,18 +142,29 @@ class WorldAuthStore:
     def path(self) -> Path:
         return self._path
 
+    def _closed(self, reason: str) -> dict:
+        """Plik jest, ale nie da się go odczytać — nikt nie wchodzi."""
+        self._load_error = reason
+        return {"enabled": True, "users": {}, "acl": {}}
+
     def _load(self) -> dict:
         if not self._path.is_file():
+            self._load_error = None
             return {"enabled": False, "users": {}, "acl": {}}
         try:
             data = json.loads(self._path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            return {"enabled": False, "users": {}, "acl": {}}
+        except (OSError, json.JSONDecodeError) as exc:
+            return self._closed(f"auth.json uszkodzony ({exc.__class__.__name__})")
         if not isinstance(data, dict):
-            return {"enabled": False, "users": {}, "acl": {}}
+            return self._closed("auth.json uszkodzony (oczekiwano obiektu)")
+        self._load_error = None
         data.setdefault("users", {})
         data.setdefault("acl", {})
         return data
+
+    @property
+    def load_error(self) -> Optional[str]:
+        return self._load_error
 
     def reload(self) -> None:
         with self._lock:
@@ -210,32 +222,45 @@ class WorldAuthStore:
             return ok
 
     def role_for(self, user: Optional[str], world: Optional[str]) -> Optional[str]:
+        """Wyższa z roli na świecie i roli globalnej (`*`).
+
+        Wpis świata podnosi uprawnienie. Nie zbija wyższej roli z `*`.
+        """
         if not user:
             return None
         with self._lock:
             if not self._data.get("enabled"):
                 return ROLE_ADMIN
             acl = self._data.get("acl", {})
+            found: List[str] = []
             if world:
-                role = acl.get(world, {}).get(user)
-                if role:
-                    return _normalize_role(role)
-            role = acl.get("*", {}).get(user)
-            if role:
-                return _normalize_role(role)
-            return None
+                world_acl = acl.get(world)
+                if isinstance(world_acl, dict) and world_acl.get(user):
+                    found.append(_normalize_role(world_acl[user]))
+            star_acl = acl.get("*")
+            if isinstance(star_acl, dict) and star_acl.get(user):
+                found.append(_normalize_role(star_acl[user]))
+            if not found:
+                return None
+            return max(found, key=lambda r: ROLE_RANK[r])
 
     def worlds_for(self, user: Optional[str]) -> Optional[Set[str]]:
-        """None = wszystkie (auth wyłączone); set = dostępne światy."""
+        """None = wszystkie światy (auth off albo grant na `*`).
+
+        set = światy z własnego wpisu, gdy użytkownik nie ma roli globalnej.
+        """
         if not self.enabled:
             return None
         if not user:
             return set()
         with self._lock:
             acl = self._data.get("acl", {})
+            star = acl.get("*")
+            if isinstance(star, dict) and user in star:
+                return None
             out: Set[str] = set()
             for world, grants in acl.items():
-                if world == "*":
+                if world == "*" or not isinstance(grants, dict):
                     continue
                 if user in grants:
                     out.add(world)
@@ -323,6 +348,7 @@ class WorldAuthStore:
                 },
                 "acl": acl,
             }
+            self._load_error = None
             self._base.mkdir(parents=True, exist_ok=True)
             self._save()
 

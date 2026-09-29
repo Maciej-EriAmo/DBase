@@ -430,8 +430,8 @@ class CynoberFacade:
     def _check_gossip_permission(self, stripped: str, upper: str) -> list | None:
         """
         GOSSIP podlega ACL gdy auth włączone.
-        Sesja efemeryczna NIE jest już „bez blokady”: SYNC/FETCH używa peers.json
-        (confused deputy) — wymaga globalnego admin; EXPORT → global reader.
+        SYNC/FETCH loguje się do peera tokenem z peers.json — zawsze globalny admin,
+        także po wybraniu świata. EXPORT → reader, IMPORT → writer.
         """
         if not self._auth.enabled:
             return None
@@ -471,10 +471,18 @@ class CynoberFacade:
                 return None
             return [{"status": "error", "message": f"GOSSIP EKSPORT wymaga roli reader w '{world}'."}]
 
-        # IMPORT / SYNC / FETCH — zapis (+ peer dla SYNC/FETCH)
+        # SYNC/FETCH używa konta z peers.json — próg nie spada po wejściu w świat.
+        if is_sync or is_fetch:
+            if self._auth.has_min_role(self._auth_user, "*", ROLE_ADMIN):
+                return None
+            return [{
+                "status": "error",
+                "message": "GOSSIP SYNC/FETCH wymaga globalnej roli admin.",
+            }]
+
         if self._auth.has_min_role(self._auth_user, world, ROLE_WRITER):
             return None
-        return [{"status": "error", "message": f"GOSSIP IMPORT/SYNC/FETCH wymaga roli writer w '{world}'."}]
+        return [{"status": "error", "message": f"GOSSIP IMPORT wymaga roli writer w '{world}'."}]
 
     def _check_replicate_permission(self, stripped: str, upper: str) -> list | None:
         if not self._auth.enabled:
@@ -1186,6 +1194,8 @@ def run_server(host='0.0.0.0', port=8080):
         print(f"  Węzły replikacji: {n_peers} (peers.json)")
     if auth.enabled:
         print(f"  Auth światów: WŁĄCZONE ({auth.path})")
+        if auth.load_error:
+            print(f"  UWAGA BEZPIECZEŃSTWO: {auth.load_error} — logowanie zamknięte")
     else:
         print("  Auth światów: wyłączone (brak auth.json lub enabled=false)")
     if any(rl.values()):

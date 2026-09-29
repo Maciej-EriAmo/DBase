@@ -62,9 +62,11 @@ Test: `tests.test_hsl_encrypted_link`.
 |---------|--------------------------------|-----------------|
 | `GOSSIP EKSPORT …` | global **reader** | reader na świecie |
 | `GOSSIP IMPORT …` | global **writer** | writer na świecie |
-| `GOSSIP SYNC/FETCH …` | global **admin** (peers.json) | writer na świecie |
+| `GOSSIP SYNC/FETCH …` | global **admin** (peers.json) | global **admin** (peers.json) |
 
-Bez logowania → błąd. Sesja efemeryczna **nie** jest już „open proxy” na tokeny `peers.json`.
+Bez logowania → błąd. `SYNC`/`FETCH` zostają przy globalnym adminie także po `WYBIERZ ŚWIAT` — token z `peers.json` nie schodzi do writera świata.
+
+Skuteczna rola = wyższa z wpisu świata i wpisu `"*"`. Wpis świata podnosi uprawnienie, nie zbija roli globalnej. Użytkownik z `"*"` widzi w `LISTA ŚWIATÓW` wszystkie światy. Uszkodzony `auth.json` (plik jest, JSON nie) zamyka logowanie: nikt nie dostaje roli admin.
 
 `LISTA WĘZŁÓW` / `LISTA WĘZŁÓW REZONANS` / `METRYKI SERWERA` → global reader.  
 `ZDROWIE` → liveness **bez** logowania.

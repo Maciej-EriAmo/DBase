@@ -442,8 +442,9 @@ def _media_perm(facade: Any, *, write: bool) -> Optional[list]:
     world = facade.world_name or "*"
     from cynober_world_auth import ROLE_READER, ROLE_WRITER
 
+    # Ta sama rola co zapis atomów: wyższa z wpisu świata i `*` (role_for).
     need = ROLE_WRITER if write else ROLE_READER
-    if auth.has_min_role(user, world, need) or auth.has_min_role(user, "*", need):
+    if auth.has_min_role(user, world, need):
         return None
     role_name = "writer" if write else "reader"
     return [{

@@ -46,6 +46,8 @@ _RESTORE_RE = re.compile(
     r'^PRZYWRÓĆ\s+ŚWIAT\s+"([^"]+)"\s+Z\s+KOPII\s+"([^"]+)"$',
     re.IGNORECASE,
 )
+# Id kopii z zegara (20260929T120000Z) i ręczne nazwy katalogu. Bez kropek i separatorów ścieżki.
+_BACKUP_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
 
 
 class ServerMetrics:
@@ -231,12 +233,23 @@ class WorldBackupManager:
             })
         return out
 
+    def _backup_src(self, name: str, backup_id: str) -> Path:
+        bid = backup_id.strip()
+        if not _BACKUP_ID_RE.fullmatch(bid):
+            raise ValueError(
+                "Nieprawidłowy identyfikator kopii "
+                "(dozwolone: litery, cyfry, _, -, max 64 znaki)."
+            )
+        base = (self._root / name).resolve()
+        src = (base / bid).resolve()
+        if src == base or not src.is_relative_to(base):
+            raise ValueError("Identyfikator kopii wychodzi poza katalog kopii.")
+        return src
+
     def restore(self, world_name: str, backup_id: str) -> dict:
         name = validate_world_name(world_name)
         bid = backup_id.strip()
-        if not bid:
-            raise ValueError("Brak identyfikatora kopii.")
-        src = self._root / name / bid
+        src = self._backup_src(name, bid)
         if not src.is_dir():
             raise ValueError(f"Kopia '{bid}' nie istnieje dla świata '{name}'.")
         src_kafd = src / f"{name}.kafd"

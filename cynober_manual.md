@@ -152,7 +152,7 @@ Plik `{worlds_dir}/auth.json` z `"enabled": true` włącza kontrolę dostępu. B
 
 **Role:** `reader` (odczyt), `writer` (+ zapis), `admin` (+ zarządzanie światem i ACL).
 
-**ACL:** sekcja `"acl"` w `auth.json` — klucz `"*"` = globalnie, klucz nazwy świata = per świat.
+**ACL:** sekcja `"acl"` w `auth.json` — klucz `"*"` = rola globalna, klucz nazwy świata = rola na tym świecie. Obowiązuje wyższa z tych dwóch. Grant na `"*"` pokazuje wszystkie światy na `LISTA ŚWIATÓW`. Plik `auth.json`, który jest, ale nie daje się odczytać, zamyka logowanie.
 
 Audyt: `{worlds_dir}/audit.log` (JSON lines) — zapis przy operacjach na świecie.
 
@@ -231,6 +231,8 @@ Lżejsza synchronizacja **aktywnego Store** (sandbox lub wybranego świata) po t
 | `GOSSIP SYNC SOUL Z "peer"` | Sync SOUL z peerem |
 
 **PHI** = temperatura/tożsamość atomów. **SOUL** = BubbleVFS-lite (graf bąbli). Pełne pliki `.soul` / Proca COLD — kolejny krok.
+
+Gdy auth jest włączone: `EKSPORT` wymaga reader, `IMPORT` wymaga writer, `SYNC` i `FETCH` wymagają globalnego admina (logowanie do peera idzie kontem z `peers.json`).
 
 **SOUL a multimedia (Faza 0):** domyślnie `data_b64` tylko dla payloadów **≤ 64 KiB**. Większe atomy dostają `media_ref` (`size`, `mime`, `cas`) zamiast base64 — duże media nie puchną gossip. Jawne pełne bloby: `serialize_soul(..., include_blobs=True)`.
 

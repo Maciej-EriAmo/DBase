@@ -820,11 +820,10 @@ class NativeStore:
             except Exception:
                 pass
         if isinstance(raw, str):
+            # Tylko publiczne id. Sam numer ("1") to nie rdzeń a1 — inaczej
+            # get_atom("1") oddaje cudzy atom i plotka go nadpisuje.
             if raw in self._sid_to_aid:
                 return int(self._sid_to_aid[raw])
-            # rzadki fallback: czysty int jako string
-            if raw.isdigit() or (raw.startswith("-") and raw[1:].isdigit()):
-                return int(raw)
             raise KeyError(f"nieznany atom id {raw!r}")
         return int(raw)
 

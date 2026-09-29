@@ -2,6 +2,15 @@
 
 Format: skrót dla deweloperów. Protokół wire (**Cynober-Secure-1.2**) jest wersjonowany osobno od pakietu.
 
+## 8.2.6 (nieopublikowane)
+
+### Audyt ACL, kopii i id atomu
+- Skuteczna rola = wyższa z wpisu świata i `"*"`. `LISTA ŚWIATÓW` przy grancie globalnym pokazuje wszystkie światy. `MEDIA` używa tej samej roli co zapis atomów.
+- `GOSSIP SYNC` / `FETCH` wymaga globalnego admina także po wybraniu świata (token z `peers.json`).
+- Uszkodzony `auth.json` zamyka logowanie.
+- `PRZYWRÓĆ ŚWIAT` przyjmuje tylko id kopii wewnątrz `backups/{świat}/`.
+- `NativeStore.get_atom("1")` nie zwraca atomu o rdzeniu 1.
+
 ## 8.2.5
 
 ### Packaging hotfix (PyPI)
