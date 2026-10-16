@@ -131,6 +131,35 @@ def restore_query_indexes(api, data: dict[str, Any] | None) -> bool:
     return True
 
 
+def _saved_indexes_fit(api) -> bool:
+    """Czy przywrócony indeks wskazuje wyłącznie żywe bąble i atomy."""
+    names = set(api._bubble_index)
+    indexable = False
+    for bubble in api._bubble_index.values():
+        for key, aid in getattr(bubble, "bindings", {}).items():
+            if not aid or str(key).startswith(("hist:", "rel:")):
+                continue
+            if api.store.get_atom(aid) is not None:
+                indexable = True
+                break
+        if indexable:
+            break
+    if indexable and not api._inv_index:
+        return False
+    for vals in api._inv_index.values():
+        if not isinstance(vals, dict):
+            return False
+        for bubs in vals.values():
+            if not set(bubs) <= names:
+                return False
+    for aid, bubs in api._atom_index.items():
+        if not set(bubs) <= names:
+            return False
+        if api.store.get_atom(aid) is None:
+            return False
+    return True
+
+
 def rebuild_all_indexes(api) -> None:
     """Odtwarza inv_index i atom_index po wczytaniu z .kafd."""
     ns = api.active_ns
@@ -231,7 +260,8 @@ def _finalize_kafd_load(
     if hasattr(store, "sync_id_counter"):
         store.sync_id_counter()
     engine.api.prune_dead_bindings()
-    rebuild_all_indexes(engine.api)
+    if not restore_query_indexes(engine.api, query_indexes) or not _saved_indexes_fit(engine.api):
+        rebuild_all_indexes(engine.api)
 
 
 def load_runtime_from_kafd(
@@ -259,9 +289,17 @@ def load_runtime_from_kafd(
         if shard_paths:
             from karmazyn_atom import T_HOT
 
+            media_paths: Dict[str, str] = {}
             for aid, spath in shard_paths.items():
                 atom = store.get_atom(aid)
                 if atom is None or atom.S == "__bubble__":
+                    continue
+                # media / media_seg: payload zostaje (albo wraca ze sharda).
+                # Zwinięcie kasowało bajty i GOSSIP FETCH MEDIA nie miał czego oddać.
+                if atom.S in ("media", "media_seg"):
+                    data = atom.metadata.get("data")
+                    if not (isinstance(data, (bytes, bytearray)) and data):
+                        media_paths[aid] = str(spath)
                     continue
                 if float(atom.T) >= T_HOT:
                     continue
@@ -269,6 +307,10 @@ def load_runtime_from_kafd(
                 atom.metadata[FOLDED_META_KEY] = True
                 atom.metadata[FOLD_SRC_KEY] = str(spath)
                 atom.metadata.pop("data", None)
+            if media_paths:
+                karmazyn_store.load_folded_atoms_multi(
+                    store, media_paths, proca_index=proca_index, world=wname
+                )
     else:
         loaded = karmazyn_store.load_documents(
             store, str(path), proca_index=proca_index, world=wname
@@ -348,8 +390,11 @@ def unfold_runtime(
                     atom_paths[aid] = str(spath)
                 elif runtime.kafd_path and runtime.kafd_path.is_file():
                     atom_paths[aid] = str(runtime.kafd_path)
+            world_name = (
+                runtime.kafd_path.stem if runtime.kafd_path is not None else None
+            )
             loaded = karmazyn_store.load_folded_atoms_multi(
-                runtime.store, atom_paths, proca_index=proca
+                runtime.store, atom_paths, proca_index=proca, world=world_name
             )
         elif runtime.kafd_path and runtime.kafd_path.is_file():
             loaded = karmazyn_store.load_folded_atoms(

@@ -274,10 +274,7 @@ class _CryptoLayer:
         # Fallback: keystream XOR z per-ramkowym nonce (bez reużycia pada).
         # Nonce (8 B) idzie jawnie z ramką; dwie ramki nie dzielą już keystreamu.
         nonce = secrets.token_bytes(8)
-        stream_key = hashlib.sha256(use_key + (aad or b"")).digest()
-        ks = hashlib.shake_256(stream_key + b"ks" + nonce).digest(len(data))
-        body = bytes(a ^ b for a, b in zip(data, ks))
-        return nonce + body
+        return nonce + self._xor_stream(data, nonce, key=use_key, aad=aad)
 
     def decrypt(
         self,
@@ -292,9 +289,7 @@ class _CryptoLayer:
             nonce, ct = data[:12], data[12:]
             return AESGCM(use_key).decrypt(nonce, ct, aad)
         nonce, body = data[:8], data[8:]
-        stream_key = hashlib.sha256(use_key + (aad or b"")).digest()
-        ks = hashlib.shake_256(stream_key + b"ks" + nonce).digest(len(body))
-        return bytes(a ^ b for a, b in zip(body, ks))
+        return self._xor_stream(body, nonce, key=use_key, aad=aad)
 
     @property
     def mode(self) -> str:
@@ -311,12 +306,17 @@ class _CryptoLayer:
         )
         return h.derive(ikm)
 
-    def _xor_stream(self, data: bytes, nonce: bytes = b"") -> bytes:
-        """Keystream z SHAKE-256, różnicowany per-ramkę przez nonce.
-        Symetryczny: encrypt = decrypt przy tym samym (key, nonce, długość).
-        Bez nonce degeneruje do trybu poprzedniego — dlatego encrypt ZAWSZE
-        podaje świeży nonce, by uniknąć reużycia pada (two-time pad)."""
-        ks = hashlib.shake_256(self._key + b"ks" + nonce).digest(len(data))
+    def _xor_stream(
+        self,
+        data: bytes,
+        nonce: bytes,
+        *,
+        key: bytes,
+        aad: Optional[bytes] = None,
+    ) -> bytes:
+        """Keystream SHAKE-256. encrypt i decrypt muszą używać tej samej funkcji."""
+        stream_key = hashlib.sha256(key + (aad or b"")).digest()
+        ks = hashlib.shake_256(stream_key + b"ks" + nonce).digest(len(data))
         return bytes(a ^ b for a, b in zip(data, ks))
 
 
@@ -746,37 +746,10 @@ class KarmazynHandshake:
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _node_id() -> str:
-    """
-    [BUG FIX #9] Persystentny node_id w LOCALAPPDATA\\Cynober\\node_id.
-    uuid.getnode() może się zmieniać (VM, kontener, random MAC).
-    Plik zapewnia stabilność między restartami.
-    """
-    try:
-        from cynober_paths import node_id_path, relocate_legacy
+    """Persystentny node_id — ten sam plik i algorytm co cynober_rpc."""
+    from cynober_paths import load_or_create_node_id
 
-        relocate_legacy()
-        id_path = str(node_id_path())
-    except Exception:
-        id_path = os.path.join(os.path.expanduser("~"), ".karmazyn_node_id")
-    try:
-        saved = open(id_path, encoding="utf-8").read().strip()
-        if saved.startswith("node_") and len(saved) == 17:
-            return saved
-    except Exception:
-        pass
-    raw = socket.gethostname().encode("utf-8", errors="replace")
-    try:
-        import uuid
-        raw += str(uuid.getnode()).encode()
-    except Exception:
-        pass
-    node_id = "node_" + hashlib.sha256(raw).hexdigest()[:12]
-    try:
-        with open(id_path, "w", encoding="utf-8") as f:
-            f.write(node_id)
-    except Exception:
-        pass
-    return node_id
+    return load_or_create_node_id()
 
 
 # ─────────────────────────────────────────────────────────────────────────────

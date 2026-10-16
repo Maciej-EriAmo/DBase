@@ -187,8 +187,7 @@ def pack_cleartext(kind: int, payload: bytes, *, framed: bool = False) -> bytes:
     """
     if kind == FRAME_KAFS:
         if not framed:
-            # KAFS i tak ma prefiks; flaga framed=True wymagana świadomie
-            pass
+            raise ValueError("KAFS wymaga framed=True (prefiks 0x02)")
         return bytes([FRAME_KAFS]) + payload
     if framed and kind == FRAME_RPC:
         return bytes([FRAME_RPC]) + payload
@@ -408,24 +407,9 @@ def perform_handshake(
 
 
 def _node_id() -> str:
-    from cynober_paths import node_id_path, relocate_legacy
+    from cynober_paths import load_or_create_node_id
 
-    relocate_legacy()
-    path = str(node_id_path())
-    try:
-        with open(path, encoding="utf-8") as f:
-            saved = f.read().strip()
-        if saved.startswith("node_") and len(saved) == 17:
-            return saved
-    except OSError:
-        pass
-    nid = "node_" + secrets.token_hex(6)
-    try:
-        with open(path, "w", encoding="utf-8") as f:
-            f.write(nid)
-    except OSError:
-        pass
-    return nid
+    return load_or_create_node_id()
 
 
 def error_result(message: str, action: str = "PROTOCOL") -> list[dict[str, Any]]:

@@ -300,15 +300,27 @@ class HSSDaemon:
             del self._agents[agent_uuid]
             self._terminated_agents.add(agent_uuid)
 
-    def vacuum_decay(self):
-        pass
+    def vacuum_decay(self) -> int:
+        """Usuń zakończonych agentów i puste historie inode. Nie tyka aktywnego KEM."""
+        removed = 0
+        for uuid in list(self._terminated_agents):
+            self._agents.pop(uuid, None)
+            self._terminated_agents.discard(uuid)
+            removed += 1
+        for inode, hist in list(self._inodes.items()):
+            if hist:
+                continue
+            self._inodes.pop(inode, None)
+            self._inode_prisms.pop(inode, None)
+            removed += 1
+        return removed
 
     def _kem_dot(self, sk: np.ndarray, pk: np.ndarray) -> int:
         p = self._profile
         if hss_use_ntt(p):
-            from karmazyn_hss_ntt import kem_shared_ntt
+            from karmazyn_hss_ntt import kem_dot_ntt
 
-            return kem_shared_ntt(sk, pk, p)
+            return kem_dot_ntt(sk, pk, p)
         return int(np.dot(sk, pk) % p.q)
 
     def _kem_pubkey(self, sk: np.ndarray, rng: np.random.Generator) -> np.ndarray:

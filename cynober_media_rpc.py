@@ -382,9 +382,11 @@ def try_media_command(
         atom_id = m.group(1)
         offset = int(m.group(2) or 0)
         limit = int(m.group(3) or 0)
+        from karmazyn_media import MediaError
+
         try:
             data, mime, T = _load_media_atom(facade, atom_id)
-        except ValueError as e:
+        except (ValueError, MediaError) as e:
             return [{"status": "error", "action": "MEDIA_GET", "message": str(e)}]
         if offset < 0:
             offset = 0

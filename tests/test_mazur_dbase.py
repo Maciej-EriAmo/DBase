@@ -117,6 +117,60 @@ class TestPeerResonanceNet(unittest.TestCase):
             self.assertEqual(info["label"], "cynober rpc")
             self.assertAlmostEqual(float(info["energy"]), 0.7)
 
+    def test_auto_peer_below_threshold_lists_ranking(self):
+        from cynober_replicate import PeerRegistry, resolve_peer
+
+        with tempfile.TemporaryDirectory() as td:
+            peers = PeerRegistry(Path(td))
+            peers.add("wezel-b", "127.0.0.1", 9, label="magazyn", energy=1.5)
+            with self.assertRaises(ValueError) as ctx:
+                resolve_peer(
+                    peers,
+                    "@",
+                    local={"label": "cynober rpc karminql", "energy": 1.0},
+                )
+            msg = str(ctx.exception)
+            self.assertIn("wezel-b", msg)
+            self.assertIn("R=", msg)
+            self.assertIn("0.15", msg)
+
+
+class TestTickAfterContext(unittest.TestCase):
+    def test_settle_after_set_context_returns(self):
+        import threading
+
+        from mazur_crystal import attach_lorentz_bridge
+        from native.karmazyn_substrate_native import NativeStore, native_available
+
+        if not native_available():
+            self.skipTest("brak natywnego substratu")
+        inner = NativeStore(thermal=True)
+        store = attach_lorentz_bridge(inner, mrc=True)
+        try:
+            created = store.create_atom("ctx", "S", "kontekst-magazynu", T=80.0)
+            cid = created if isinstance(created, str) else getattr(created, "id", created)
+            store.set_context(str(cid))
+            err: list[BaseException] = []
+
+            def _run() -> None:
+                try:
+                    store.settle(2)
+                except BaseException as exc:
+                    err.append(exc)
+
+            worker = threading.Thread(target=_run, daemon=True)
+            worker.start()
+            worker.join(8)
+            self.assertFalse(
+                worker.is_alive(),
+                "TICK po USTAW KONTEKST nie wrócił (zakleszczenie extra_reach)",
+            )
+            self.assertEqual(err, [])
+        finally:
+            close = getattr(inner, "close", None)
+            if callable(close):
+                close()
+
 
 if __name__ == "__main__":
     unittest.main()

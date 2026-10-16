@@ -77,7 +77,10 @@ class LocalBackend:
         }
 
     def close(self) -> None:
-        pass
+        store = getattr(getattr(self.engine, "api", None), "store", None)
+        close = getattr(store, "close", None)
+        if callable(close):
+            close()
 
 
 class RpcBackend:

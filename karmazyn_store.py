@@ -4,9 +4,9 @@ karmazyn_store.py — Trwałość dokumentów KarmazynOS v1.3 (Z Kryptografią P
 KarmazynOS — Warsaw 2026
 
 Zapisuje dokumenty na dysk fizyczny w formacie KAFD.
-Wspiera kompresję semantyczną w locie (Proca Index) oraz
-transparentne, strumieniowe szyfrowanie (Phi-Cipher), czyniąc 
-zrzuty bazy nieczytelnymi dla zewnętrznych edytorów tekstowych.
+Wspiera kompresję semantyczną w locie (Proca Index).
+Zapis idzie kopertą KAFX (AES-GCM, klucz świata).
+Stary XOR jest w karmazyn_cipher.legacy_phi_xor, nie na ścieżce zapisu.
 """
 
 import json
@@ -421,6 +421,8 @@ def load_folded_atoms_multi(
     phi,
     atom_paths: dict[str, str],
     proca_index=None,
+    *,
+    world: Optional[str] = None,
 ) -> int:
     """Dociągnij zwinięte atomy z wielu plików .kafd (shardy)."""
     if not atom_paths:
@@ -430,7 +432,9 @@ def load_folded_atoms_multi(
         by_path.setdefault(path, set()).add(aid)
     total = 0
     for path, aids in by_path.items():
-        total += load_folded_atoms(phi, path, aids, proca_index=proca_index)
+        total += load_folded_atoms(
+            phi, path, aids, proca_index=proca_index, world=world
+        )
     return total
 
 

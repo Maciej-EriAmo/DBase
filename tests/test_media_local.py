@@ -426,6 +426,93 @@ class TestSoulBlobLimit(unittest.TestCase):
         self.assertNotIn("data_b64", atom["meta"])
         self.assertIn("media_ref", atom["meta"])
 
+    def test_soul_merge_keeps_media_ref_for_fetch(self) -> None:
+        from cynober_gossip import _atoms_needing_media, merge_soul
+
+        doc = {
+            "v": 1,
+            "kind": "soul",
+            "atoms": [{
+                "id": "karta_sruby",
+                "S": "media",
+                "E": "karta",
+                "T": 50.0,
+                "meta": {
+                    "mime": "text/plain",
+                    "media_ref": {
+                        "id": "karta_sruby",
+                        "size": 47,
+                        "mime": "text/plain",
+                    },
+                },
+            }],
+            "bubbles": [],
+        }
+        merge_soul(self.store, doc)
+        atom = self.store.get_atom("karta_sruby")
+        self.assertIsNotNone(atom)
+        self.assertEqual(atom.metadata.get("mime"), "text/plain")
+        self.assertEqual(atom.metadata["media_ref"]["size"], 47)
+        self.assertEqual(_atoms_needing_media(self.store, None), ["karta_sruby"])
+
+    def test_fetch_media_error_carries_message(self) -> None:
+        from unittest.mock import patch
+
+        from cynober_client import CynoberClientError
+        from cynober_gossip import fetch_media_from_peer
+
+        class _Peers:
+            def get(self, name):
+                return {
+                    "name": name,
+                    "host": "127.0.0.1",
+                    "port": 1,
+                    "user": "",
+                    "token": "",
+                }
+
+        class _Atom:
+            id = "karta_sruby"
+            S = "media"
+            metadata = {
+                "mime": "text/plain",
+                "media_ref": {"id": "karta_sruby", "size": 47},
+            }
+
+        class _Store:
+            def get_atom(self, aid):
+                return _Atom() if str(aid) == "karta_sruby" else None
+
+            def atoms(self):
+                return [_Atom()]
+
+        class _Client:
+            def __init__(self, *_a, **_k):
+                pass
+
+            def bind_peer(self, **_k):
+                return None
+
+            def get_media_resilient(self, *_a, **_k):
+                raise CynoberClientError(
+                    "Atom „karta_sruby” nie ma payloadu metadata['data']."
+                )
+
+            def close(self):
+                return None
+
+        with patch("cynober_client.CynoberClient", _Client):
+            row = fetch_media_from_peer(
+                _Store(),
+                _Peers(),
+                "wezel-b",
+                atom_ids=["karta_sruby"],
+                world="warsztat",
+            )
+        self.assertEqual(row["status"], "error")
+        self.assertIn("payloadu", row.get("message") or "")
+        self.assertIn("karta_sruby", row["message"])
+
     def test_include_blobs_true_always_b64(self) -> None:
         big = b"Z" * (SOUL_MAX_INLINE_BLOB + 50)
         ref = media.attach_bytes(

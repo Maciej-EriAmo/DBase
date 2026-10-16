@@ -1360,7 +1360,7 @@ class KarminParser:
     def _split_top_oraz(self, text: str) -> List[str]:
         return ConditionParser()._split_top(text, "ORAZ")
 
-    def _split_at_top_gdzie(self, text: str) -> Tuple[str, str]:
+    def _split_at_top_gdzie(self, text: str) -> Optional[Tuple[str, str]]:
         kw = " GDZIE "
         depth_paren, depth_case = 0, 0
         in_quote = False
@@ -1386,7 +1386,7 @@ class KarminParser:
                         first_idx = i
             i += 1
         if first_idx < 0:
-            raise SyntaxError(f"Oczekiwano GDZIE w zapytaniu WYPISZ: {text}")
+            return None
         return text[:first_idx].strip(), text[first_idx + kw_len:].strip()
 
     def _parse_wypisz_gdzie_line(self, line: str) -> Optional[ProjectWhereNode]:
@@ -1394,7 +1394,10 @@ class KarminParser:
             return None
         distinct = bool(re.match(r'^WYPISZ\s+UNIKALNE\s+', line, re.IGNORECASE))
         body = re.sub(r'^WYPISZ\s+(?:UNIKALNE\s+)?', '', line, flags=re.IGNORECASE).strip()
-        head, tail = self._split_at_top_gdzie(body)
+        split = self._split_at_top_gdzie(body)
+        if split is None:
+            return None
+        head, tail = split
         join_rel = join_tgt = None
         if jm := re.search(
             r'\s+POŁĄCZONE\s+JAKO\s+"([^"]+)"\s+Z\s+"([^"]+)"\s*$',
@@ -2792,6 +2795,13 @@ class SubstrateAPI:
         if operator == "NIE JEST NIC":
             return val is not None
 
+        def _env_operand(raw: Any) -> Any:
+            if isinstance(raw, str) and raw.startswith("$"):
+                if raw not in env:
+                    raise ValueError(f"Niezdefiniowana zmienna {raw}")
+                return env[raw]
+            return KarminType.parse(raw)
+
         target_val = None
         target_list = None
         if cmp.subquery is not None:
@@ -2800,16 +2810,30 @@ class SubstrateAPI:
             target_list = query_runner(cmp.subquery, cmp.key)
             if cmp.quantifier:
                 return self._eval_quantified_compare(val, operator, cmp.quantifier, target_list)
-        elif target_val_str.startswith('$'):
-            target_list = env.get(target_val_str, [])
+        elif isinstance(target_val_str, str) and target_val_str.startswith("$"):
+            bound = _env_operand(target_val_str)
+            if operator in ("W", "NIE W"):
+                if isinstance(bound, (list, tuple, set)):
+                    target_list = list(bound)
+                elif bound is None:
+                    target_list = []
+                else:
+                    target_list = [bound]
+            else:
+                target_val = bound
         else:
             target_val = KarminType.parse(target_val_str)
 
         try:
             if operator == "MIĘDZY":
-                lo = KarminType.parse(target_val_str)
-                hi = KarminType.parse(cmp.val2) if cmp.val2 is not None else None
-                if hi is None or val is None:
+                if isinstance(target_val_str, str) and target_val_str.startswith("$"):
+                    lo = target_val
+                else:
+                    lo = KarminType.parse(target_val_str)
+                if cmp.val2 is None or val is None or lo is None:
+                    return False
+                hi = _env_operand(cmp.val2)
+                if hi is None:
                     return False
                 return lo <= val <= hi
             if operator == "W" and target_list is not None:
@@ -2896,10 +2920,11 @@ class SubstrateAPI:
 
     @staticmethod
     def _sort_key_part(val: Any) -> tuple:
-        if isinstance(val, (int, float)):
-            return (1, val)
+        # bool jest podklasą int — musi być przed liczbami, inaczej gałąź jest martwa.
         if isinstance(val, bool):
             return (2, val)
+        if isinstance(val, (int, float)):
+            return (1, val)
         if val is None:
             return (0, "")
         return (3, str(val))

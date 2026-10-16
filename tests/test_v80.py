@@ -126,6 +126,72 @@ class TestShardedPersist(unittest.TestCase):
             self.assertEqual(atom.metadata.get("data"), cold.metadata["data"])
             self.assertNotIn(FOLDED_META_KEY, atom.metadata)
 
+    def test_media_payload_stays_after_sharded_load(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            bridge = KarminLambdaBridge(kernel.Store(thermal=True))
+            store = bridge.store
+            api = bridge.engine.api
+
+            blob = b"karta sruba M8 ocynk 47B"
+            card = store.atom_new(S="media", E="karta", value=None)
+            card.T = 50.0
+            card.metadata["data"] = blob
+            card.metadata["mime"] = "text/plain"
+            cold = store.atom_new(S="document", E="cold", value="c")
+            cold.T = T_WARM - 5
+            cold.metadata["data"] = b"cold-body"
+
+            town = store.bubble_new(label="Sruba")
+            town.bindings["karta"] = card.id
+            town.bindings["opis"] = cold.id
+            store.set_root(town)
+            api._bubble_index["Sruba"] = town
+
+            kafd = base / "warsztat.kafd"
+            save_sharded_runtime(
+                bridge, kafd, base, "warsztat", proca_dir=_proca_dir(base, "warsztat")
+            )
+
+            bridge2 = KarminLambdaBridge(kernel.Store(thermal=True))
+            shard_paths = atom_shard_paths(base, "warsztat")
+            _, folded = load_runtime_from_kafd(
+                bridge2, kafd, lazy=True, shard_paths=shard_paths, world="warsztat"
+            )
+            self.assertIn(cold.id, folded)
+            self.assertNotIn(card.id, folded)
+            loaded = bridge2.store.get_atom(card.id)
+            self.assertIsNotNone(loaded)
+            self.assertEqual(loaded.metadata.get("data"), blob)
+            self.assertNotIn(FOLDED_META_KEY, loaded.metadata)
+
+            bridge3 = KarminLambdaBridge(kernel.Store(thermal=True))
+            load_runtime_from_kafd(bridge3, kafd, lazy=True, world="warsztat")
+            self.assertEqual(
+                bridge3.store.get_atom(card.id).metadata.get("data"), blob
+            )
+
+            # Stary zapis: manifest bez bajtów, payload tylko w shardzie.
+            import karmazyn_store
+
+            def _strip_media(atom, _card=card.id):
+                return atom.id != _card
+
+            karmazyn_store.save_documents_filtered(
+                bridge.store,
+                str(kafd),
+                include_payload=_strip_media,
+                world="warsztat",
+            )
+            bridge4 = KarminLambdaBridge(kernel.Store(thermal=True))
+            _, folded4 = load_runtime_from_kafd(
+                bridge4, kafd, lazy=True, shard_paths=shard_paths, world="warsztat"
+            )
+            self.assertNotIn(card.id, folded4)
+            self.assertEqual(
+                bridge4.store.get_atom(card.id).metadata.get("data"), blob
+            )
+
 
 class TestManifestFirstReplication(unittest.TestCase):
     def setUp(self):

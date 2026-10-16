@@ -11,7 +11,7 @@ Poprawki v1.4.1:
   - Poprawione is_proca_json (odporne na formatowanie)
 """
 
-import hashlib, json, os, struct, tempfile, time
+import hashlib, json, os, struct, tempfile, time, zlib
 from typing import Dict, Optional
 import numpy as np
 
@@ -71,7 +71,8 @@ def phi_coords_from_manifest_json(d: dict) -> Optional[np.ndarray]:
         try:
             arr = np.asarray(d['phi_coords'], dtype=np.float32).flatten()
             if arr.size > 0: result = arr
-        except: pass
+        except (TypeError, ValueError, OverflowError):
+            pass
     if result is None:
         for key in ('S_sem', 'S_struct'):
             if key in d:
@@ -79,7 +80,8 @@ def phi_coords_from_manifest_json(d: dict) -> Optional[np.ndarray]:
                     arr = np.asarray(d[key], dtype=np.float32).flatten()
                     if arr.size > 0:
                         result = arr; break
-                except: pass
+                except (TypeError, ValueError, OverflowError):
+                    pass
     if result is None:
         result = _synth_phi(d)
     if result is None: return None
@@ -103,7 +105,8 @@ def _synth_phi(d: dict) -> Optional[np.ndarray]:
             phi[idx] = val
         # Normalizacja będzie wykonana przez phi_coords_from_manifest_json
         return phi
-    except: return None
+    except (TypeError, ValueError, OverflowError):
+        return None
 
 
 class ProcaFieldSource:
@@ -166,7 +169,9 @@ class ProcaFieldSource:
         if crc_stored != (zlib.crc32(raw[:-4]) & 0xFFFFFFFF):
             raise ValueError("CRC niezgodny")
         off = 4
-        struct.unpack('>H', raw[off:off+2]); off += 2  # wersja pola (nieużywana tu)
+        ver = struct.unpack('>H', raw[off:off+2])[0]; off += 2
+        if ver != PFLD_VERSION:
+            raise ValueError(f"Nieobsługiwana wersja PFLD: {ver:#06x}")
         fid_len = struct.unpack('>H', raw[off:off+2])[0]; off += 2
         field_id = raw[off:off+fid_len].decode('ascii'); off += fid_len
         phi_dim = struct.unpack('>H', raw[off:off+2])[0]; off += 2
@@ -299,7 +304,9 @@ class ProcaIndex:
                 src = ProcaFieldSource.deserialize(raw)
                 self._sources[field_id] = src
                 return src
-            except: pass
+            except (OSError, ValueError, TypeError, struct.error, UnicodeDecodeError, zlib.error) as e:
+                import warnings
+                warnings.warn(f"[Proca] Nie wczytano {field_id}: {e}")
         return None
 
     def _source_path(self, field_id): return os.path.join(self.fields_dir, f"proca_{field_id}{PFLD_EXT}")
@@ -339,7 +346,8 @@ def analyze_field_coverage(atoms_with_phi, m_vector=None, threshold=DEFAULT_THRE
         else:
             sample_size = len(ProcaCoordinate("x","y", np.zeros(PHI_DIM, dtype=np.float32),
                                               np.zeros(PHI_DIM, dtype=np.float32)).to_json_bytes())
-    except: pass
+    except (TypeError, ValueError, OverflowError):
+        pass
 
     for cl in clusters:
         sizes = [len(atoms_with_phi[i][1]) for i in cl]
@@ -367,9 +375,14 @@ def _atomic_write_pfld(path, data):
         tmp_fd = None
         os.replace(tmp_path, path)
         tmp_path = None
-    except:
-        if tmp_fd is not None: os.close(tmp_fd)
-        if tmp_path is not None: os.unlink(tmp_path)
+    except Exception:
+        try:
+            if tmp_fd is not None:
+                os.close(tmp_fd)
+            if tmp_path is not None:
+                os.unlink(tmp_path)
+        except OSError:
+            pass
         raise
 
 

@@ -182,10 +182,16 @@ def _apply_meta(atom: Any, meta: dict) -> None:
         return
     if "v" in meta:
         atom.metadata["v"] = meta["v"]
+    if meta.get("mime"):
+        atom.metadata["mime"] = str(meta["mime"])
+    ref = meta.get("media_ref")
+    if isinstance(ref, dict):
+        atom.metadata["media_ref"] = ref
     data_b64 = meta.get("data_b64")
     if isinstance(data_b64, str) and data_b64:
         try:
             atom.metadata["data"] = base64.b64decode(data_b64.encode("ascii"))
+            atom.metadata.pop("media_ref", None)
         except Exception:
             pass
 
@@ -768,19 +774,40 @@ def fetch_media_from_peer(
                 atom.metadata.pop("media_ref", None)
                 fetched += 1
             except (CynoberClientError, OSError, ValueError) as e:
-                errors.append({"id": mid, "error": str(e)})
+                errors.append({"id": mid, "error": str(e) or type(e).__name__})
     finally:
         try:
             c.close()
         except Exception:
             pass
 
-    return {
-        "status": "ok" if not errors or fetched else "error",
+    failed = len(ids) - fetched
+    row = {
+        "status": "error" if errors and fetched == 0 else "ok",
         "action": "GOSSIP_FETCH_MEDIA",
         "peer": peer.get("name") or peer_name,
         "fetched": fetched,
-        "missing": len(ids) - fetched,
+        "missing": failed,
         "errors": errors,
         "ok": fetched > 0 or not ids,
     }
+    if errors:
+        row["message"] = _media_fetch_message(errors, fetched)
+    return row
+
+
+def _media_fetch_message(errors: list, fetched: int) -> str:
+    parts: list[str] = []
+    for item in errors[:5]:
+        if isinstance(item, dict):
+            aid = item.get("id") or "?"
+            err = item.get("error") or "błąd"
+            parts.append(f"{aid}: {err}")
+        else:
+            parts.append(str(item) or "błąd")
+    tail = f" (+{len(errors) - 5})" if len(errors) > 5 else ""
+    return (
+        f"Nie pobrano {len(errors)} mediów (ściągnięto {fetched}): "
+        + "; ".join(parts)
+        + tail
+    )

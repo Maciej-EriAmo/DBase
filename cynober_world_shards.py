@@ -224,7 +224,9 @@ def save_sharded_runtime(
         sharded_atom_ids = set(atom_to_region.keys())
 
         def _manifest_payload(atom) -> bool:
-            if atom.S == "__bubble__":
+            # media nigdy nie zostaje bez bajtów w manifeście: lazy fold
+            # kasował payload i MEDIA GET / FETCH wracały puste.
+            if atom.S in ("__bubble__", "media", "media_seg"):
                 return True
             if float(atom.T) >= T_HOT:
                 return True

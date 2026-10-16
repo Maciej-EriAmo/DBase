@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import secrets
 import shutil
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
@@ -47,6 +48,25 @@ def client_config_path() -> Path:
 
 def node_id_path() -> Path:
     return data_home() / "node_id"
+
+
+def load_or_create_node_id() -> str:
+    """Stabilne node_id w katalogu danych. Ten sam algorytm dla RPC i handshake."""
+    relocate_legacy()
+    path = node_id_path()
+    try:
+        saved = path.read_text(encoding="utf-8").strip()
+        if saved.startswith("node_") and len(saved) == 17:
+            return saved
+    except OSError:
+        pass
+    nid = "node_" + secrets.token_hex(6)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(nid, encoding="utf-8")
+    except OSError:
+        pass
+    return nid
 
 
 def phi2_path() -> Path:

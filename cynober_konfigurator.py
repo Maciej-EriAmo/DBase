@@ -285,7 +285,7 @@ NA TELEFONIE (Termux):
   4 → test połączenia
   5 → uruchom klienta
 
-Pliki ~/.karmazyn_node_id i ~/.karmazyn_phi2 — osobne na każdym urządzeniu (OK).
+Pliki node_id i phi2 leżą w katalogu danych Cynober (LOCALAPPDATA\\Cynober) — osobne na każdym urządzeniu.
 KARM_PSK / KARM_QKD_SEED — identyczne na serwerze i kliencie (sekcje server + profil).
 
 Termux: pkg install python numpy && cd ~/DBase && python cynober_konfigurator.py

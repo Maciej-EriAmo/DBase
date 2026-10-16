@@ -770,6 +770,10 @@ class NativeStore:
         self._pin: Dict[int, Any] = {}
         self._env_hooks: List[Tuple[str, Callable]] = []
         self._extra_hooks: List[Tuple[str, Callable]] = []
+        # Podczas ticku callback Rusta dostaje już policzone id.
+        # Inaczej extra_reach woła has_atom przy zajętym mutexie rdzenia.
+        self._extra_reach_cached = False
+        self._extra_reach_snapshot: List[int] = []
         self.reaped = 0
         self._tick_count = 0
         self.tick_event_mode = tick_event_mode
@@ -961,12 +965,15 @@ class NativeStore:
             dead = [
                 aid for aid in list(self._atoms) if not self._core.has_atom(aid)
             ]
+            reaped_now = self.reaped > reaped_before
             for aid in dead:
+                atom = self._atoms.get(aid)
                 sid = self._aid_to_sid.get(aid, str(aid))
                 self._forget_core(aid)
                 self._purge_py_bindings(sid)
-                if self.reaped > reaped_before:
-                    self.events.emit("vacuum_decay", None)
+                # Kontrakt jak Python Store: zdarzenie niesie atom, nie None.
+                if reaped_now and atom is not None:
+                    self.events.emit("vacuum_decay", atom)
             for b in self.bubbles:
                 if not b.bindings:
                     continue
@@ -1028,7 +1035,15 @@ class NativeStore:
             self._tick_count += 1
             # snapshot atomów przed GC (do dual-emit "tick")
             pre_atoms = list(self.atoms()) if emit_per else []
-            self._core.tick()
+            # Haki (Mazur) liczone PRZED ksub_tick. Callback w rdzeniu
+            # tylko oddaje tę listę — nie wchodzi ponownie w mutex Rusta.
+            self._extra_reach_snapshot = self._collect_extra_reach_core_ids()
+            self._extra_reach_cached = True
+            try:
+                self._core.tick()
+            finally:
+                self._extra_reach_cached = False
+                self._extra_reach_snapshot = []
             self._sync_after_gc(before)
             reaped_now = max(0, self.reaped - before)
             retained = int(self.stats().get("retained_tomb", 0))
@@ -1309,23 +1324,28 @@ class NativeStore:
         else:
             self._core.unregister_env_of()
 
+    def _collect_extra_reach_core_ids(self) -> List[int]:
+        ids: List[int] = []
+        for _name, fn in self._extra_hooks:
+            try:
+                raw = fn() if fn else ()
+            except Exception:
+                continue
+            for x in raw or ():
+                try:
+                    # Mazur/guest zwracają publiczne sid (str); core chce aid (int).
+                    ids.append(int(self._aid(x)))
+                except Exception:
+                    continue
+        return ids
+
     def _install_extra_cb(self):
         store = self
 
         def _cb() -> List[int]:
-            ids: List[int] = []
-            for _name, fn in store._extra_hooks:
-                try:
-                    raw = fn() if fn else ()
-                except Exception:
-                    continue
-                for x in raw or ():
-                    try:
-                        # Mazur/guest zwracają publiczne sid (str); core chce aid (int).
-                        ids.append(int(store._aid(x)))
-                    except Exception:
-                        continue
-            return ids
+            if store._extra_reach_cached:
+                return list(store._extra_reach_snapshot)
+            return store._collect_extra_reach_core_ids()
 
         if self._extra_hooks:
             self._core.register_extra_reach(_cb)

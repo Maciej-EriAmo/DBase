@@ -69,55 +69,26 @@ impl Inner {
         }
     }
 
-    fn dispatch_env_of(&self, token: u64) -> Option<BubbleId> {
-        for (_name, f) in &self.env_of_hooks {
-            if let Some(b) = f(token) {
-                if b != 0 {
-                    return Some(b);
-                }
-            }
+    fn reach_snapshot(&self) -> ReachSnap {
+        let mut bubbles = HashMap::new();
+        for (id, b) in &self.bubbles {
+            bubbles.insert(
+                *id,
+                ReachBubble {
+                    parent: b.parent,
+                    bindings: b.bindings.values().copied().collect(),
+                },
+            );
         }
-        None
-    }
-
-    fn dispatch_extra_reach(&self) -> Vec<AtomId> {
-        let mut ids = Vec::new();
-        for (_name, f) in &self.extra_reach_hooks {
-            ids.extend(f());
+        let mut atom_tokens = HashMap::new();
+        for (id, atom) in &self.atoms {
+            atom_tokens.insert(*id, atom.value_token);
         }
-        ids
-    }
-
-    fn walk_reach(&self) -> (HashSet<AtomId>, HashSet<BubbleId>) {
-        let mut reach = HashSet::new();
-        let mut seen = HashSet::new();
-        let mut stack: Vec<BubbleId> = self.roots.clone();
-
-        while let Some(bid) = stack.pop() {
-            if !seen.insert(bid) {
-                continue;
-            }
-            let Some(b) = self.bubbles.get(&bid) else {
-                continue;
-            };
-            for (_name, aid) in &b.bindings {
-                if self.atoms.contains_key(aid) {
-                    reach.insert(*aid);
-                    if let Some(atom) = self.atoms.get(aid) {
-                        if let Some(env_b) = self.dispatch_env_of(atom.value_token) {
-                            stack.push(env_b);
-                        }
-                    }
-                }
-            }
-            if let Some(p) = b.parent {
-                stack.push(p);
-            }
+        ReachSnap {
+            roots: self.roots.clone(),
+            bubbles,
+            atom_tokens,
         }
-        for aid in self.dispatch_extra_reach() {
-            reach.insert(aid);
-        }
-        (reach, seen)
     }
 
     fn purge_bindings(&mut self, aid: AtomId) {
@@ -126,8 +97,7 @@ impl Inner {
         }
     }
 
-    fn tick_body(&mut self) {
-        let (reach, _seen) = self.walk_reach();
+    fn tick_body(&mut self, reach: &HashSet<AtomId>) {
         let aids: Vec<AtomId> = self.atoms.keys().copied().collect();
         for aid in &aids {
             if let Some(a) = self.atoms.get_mut(aid) {
@@ -150,6 +120,75 @@ impl Inner {
                 }
             }
         }
+    }
+}
+
+struct ReachBubble {
+    parent: Option<BubbleId>,
+    bindings: Vec<AtomId>,
+}
+
+struct ReachSnap {
+    roots: Vec<BubbleId>,
+    bubbles: HashMap<BubbleId, ReachBubble>,
+    atom_tokens: HashMap<AtomId, u64>,
+}
+
+fn dispatch_env(token: u64, hooks: &[EnvOfFn]) -> Option<BubbleId> {
+    for f in hooks {
+        if let Some(b) = f(token) {
+            if b != 0 {
+                return Some(b);
+            }
+        }
+    }
+    None
+}
+
+fn compute_reach(
+    snap: &ReachSnap,
+    env_hooks: &[EnvOfFn],
+    extra_hooks: &[ExtraReachFn],
+) -> HashSet<AtomId> {
+    let mut reach = HashSet::new();
+    let mut seen = HashSet::new();
+    let mut stack: Vec<BubbleId> = snap.roots.clone();
+
+    while let Some(bid) = stack.pop() {
+        if !seen.insert(bid) {
+            continue;
+        }
+        let Some(b) = snap.bubbles.get(&bid) else {
+            continue;
+        };
+        for aid in &b.bindings {
+            if snap.atom_tokens.contains_key(aid) {
+                reach.insert(*aid);
+                if let Some(token) = snap.atom_tokens.get(aid) {
+                    if let Some(env_b) = dispatch_env(*token, env_hooks) {
+                        stack.push(env_b);
+                    }
+                }
+            }
+        }
+        if let Some(p) = b.parent {
+            stack.push(p);
+        }
+    }
+    for f in extra_hooks {
+        for aid in f() {
+            reach.insert(aid);
+        }
+    }
+    reach
+}
+
+/// Czyści `ticking` także gdy callback w ticku spanikuje.
+struct TickGuard<'a>(&'a Store);
+
+impl Drop for TickGuard<'_> {
+    fn drop(&mut self) {
+        self.0.lock().ticking = false;
     }
 }
 
@@ -406,13 +445,24 @@ impl Store {
     }
 
     pub fn tick(&self) {
-        let mut g = self.lock();
-        if !g.thermal || g.ticking {
-            return;
-        }
-        g.ticking = true;
-        g.tick_body();
-        g.ticking = false;
+        let prepared = {
+            let mut g = self.lock();
+            if !g.thermal || g.ticking {
+                return;
+            }
+            g.ticking = true;
+            let snap = g.reach_snapshot();
+            let env: Vec<EnvOfFn> = g.env_of_hooks.iter().map(|(_, f)| Arc::clone(f)).collect();
+            let extra: Vec<ExtraReachFn> =
+                g.extra_reach_hooks.iter().map(|(_, f)| Arc::clone(f)).collect();
+            (snap, env, extra)
+        };
+        // Callbacki (Mazur extra_reach, env_of) wołają has_atom/atoms.
+        // Mutex nie jest reentrantny — trzymanie go przez callback zakleszcza tick.
+        let _clear = TickGuard(self);
+        let (snap, env, extra) = prepared;
+        let reach = compute_reach(&snap, &env, &extra);
+        self.lock().tick_body(&reach);
     }
 
     pub fn settle(&self, n: u32) {
@@ -563,6 +613,19 @@ mod tests {
         HELD.store(u32::MAX, Ordering::SeqCst);
         s.settle(2);
         assert!(!s.has_atom(a));
+    }
+
+    #[test]
+    fn extra_reach_reenters_has_atom() {
+        let s = Store::new(true);
+        let a = s.atom_new("var", "flat", f64::NAN);
+        let probe = s.clone();
+        s.register_extra_reach("reenter", move || {
+            assert!(probe.has_atom(a));
+            vec![a]
+        });
+        s.settle(2);
+        assert!(s.has_atom(a));
     }
 
     #[test]

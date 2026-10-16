@@ -40,6 +40,10 @@ class TestFrameMux(unittest.TestCase):
         self.assertEqual(kind, FRAME_KAFS)
         self.assertEqual(payload, b"chunk")
 
+    def test_kafs_requires_framed(self):
+        with self.assertRaises(ValueError):
+            pack_cleartext(FRAME_KAFS, b"chunk", framed=False)
+
     def test_caps_include_kafs_feature(self):
         caps = build_local_caps()
         self.assertIn(FEATURE_KAFS, caps.get("features") or [])

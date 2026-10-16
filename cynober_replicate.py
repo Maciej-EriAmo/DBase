@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from cynober_ops import SERVER_VERSION
-from cynober_paths import atomic_write_json
+from cynober_paths import atomic_write_json, load_or_create_node_id
 from cynober_worlds import (
     WorldRegistry,
     _kafd_path,
@@ -609,7 +609,7 @@ def _local_peer_probe() -> dict:
             os.environ.get("CYNOBER_NODE_LABEL", "cynober rpc karminql"),
         ),
         "energy": float(os.environ.get("KARM_PEER_ENERGY", "1.0") or 1.0),
-        "node_id": os.environ.get("CYNOBER_NODE_ID", "local"),
+        "node_id": (os.environ.get("CYNOBER_NODE_ID") or "").strip() or load_or_create_node_id(),
     }
 
 
@@ -637,8 +637,12 @@ def select_peer_from_registry(
     plan = connect_plan(probe, entries, R_min=float(R_min))
     sel = plan.get("selected")
     if not sel:
+        ranking = plan.get("ranking") or []
+        shown = ", ".join(
+            f"{row.get('name')} R={row.get('R')}" for row in ranking[:8]
+        ) or "brak węzłów"
         raise ValueError(
-            f"Żaden peer nie osiągnął R>={R_min}. "
+            f"Żaden peer nie osiągnął R>={R_min}. Ranking: {shown}. "
             "Ustaw label/energy w peers.json albo wskaż węzeł po nazwie."
         )
     peer = dict(peers.get(sel["name"]))

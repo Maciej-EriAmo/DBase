@@ -3,7 +3,7 @@
 import unittest
 
 import karmazyn_kernel as kernel
-from cynober_query_engine import KarminEngine
+from cynober_query_engine import CondCompare, KarminEngine, SubstrateAPI
 
 
 def _last(results):
@@ -88,6 +88,32 @@ class TestKarminEngine(unittest.TestCase):
             'ZNAJDŹ GDZIE "BĄBEL" W $tylko_x'
         )
         self.assertEqual(_last(r)["matches"], ["A"])
+
+    def test_equality_uses_bound_variable_not_null(self):
+        self.engine.execute(
+            'UTRWAL "A"\n'
+            'WSTRZYKNIJ "RAM" = 100 DO "A"\n'
+            'UTRWAL "B"\n'
+            'WSTRZYKNIJ "RAM" = 5 DO "B"'
+        )
+        env = {"$n": 100}
+        cmp_eq = CondCompare("RAM", "=", "$n")
+        self.assertTrue(self.engine.api._eval_compare("A", cmp_eq, env))
+        self.assertFalse(self.engine.api._eval_compare("B", cmp_eq, env))
+        # Lista nazw z NIECH nie jest traktowana jak „cecha jest NIC”.
+        self.engine.execute('UTRWAL "Pusty"')
+        r = self.engine.execute(
+            'NIECH $ids = ZNAJDŹ GDZIE "RAM" = 100\n'
+            'ZNAJDŹ GDZIE "RAM" = $ids'
+        )
+        self.assertEqual(_last(r)["matches"], [])
+
+    def test_bool_sort_key_is_not_int(self):
+        key = SubstrateAPI._sort_key_part
+        self.assertEqual(key(True), (2, True))
+        self.assertEqual(key(False), (2, False))
+        self.assertLess(key(10), key(False))
+        self.assertNotEqual(key(True)[0], key(1)[0])
 
     def test_graph_connect_and_find(self):
         self.engine.execute(

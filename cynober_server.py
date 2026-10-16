@@ -36,6 +36,7 @@ from cynober_ops import (
     get_server_metrics,
     is_ops_admin_query,
     is_ops_query,
+    is_ops_read_query,
     is_ops_write_query,
     try_ops_command,
     world_from_ops_query,
@@ -558,9 +559,12 @@ class CynoberFacade:
                 }]
             return None
 
-        if not self._auth.has_min_role(self._auth_user, world, ROLE_READER):
-            return [{"status": "error", "message": f"Brak dostępu do świata '{world}'."}]
-        return None
+        if is_ops_read_query(stripped, upper):
+            if not self._auth.has_min_role(self._auth_user, world, ROLE_READER):
+                return [{"status": "error", "message": f"Brak dostępu do świata '{world}'."}]
+            return None
+
+        return [{"status": "error", "message": f"Brak dostępu do świata '{world}'."}]
 
     def _check_permission(self, stripped: str, upper: str) -> list | None:
         if is_ops_query(stripped, upper) or is_replicate_query(stripped, upper):
