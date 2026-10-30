@@ -286,10 +286,12 @@ def select_crypto_mode(local: dict, remote: dict) -> str:
         raise RuntimeError("Klient 1.0 wymaga wspólnego trybu simple (i CYNOBER_ALLOW_SIMPLE)")
 
     common = set(local.get("crypto", [])) & set(remote.get("crypto", []))
+    # CRYPTO_PRIORITY idzie od najsilniejszego: minimum odcina SŁABSZE tryby
+    # (MIN=hss → tylko hss; MIN=ecdh → hss, ecdh).
     order = CRYPTO_PRIORITY
     if min_crypto in CRYPTO_PRIORITY:
         idx = order.index(min_crypto)
-        order = order[idx:]
+        order = order[: idx + 1]
 
     for mode in order:
         if mode == "simple" and not allow_simple_crypto():

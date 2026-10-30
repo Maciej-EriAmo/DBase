@@ -143,6 +143,29 @@ class TestA_CryptoPolicy(unittest.TestCase):
             select_crypto_mode(local, remote)
         self.assertIn("MIN_CRYPTO", str(ctx.exception))
 
+    @patch.dict(os.environ, {"CYNOBER_MIN_CRYPTO": "hss"}, clear=False)
+    def test_min_crypto_hss_refuses_ecdh(self):
+        """MIN=hss: klient bez HSS (tylko ECDH) nie dostaje tunelu ECDH."""
+        from cynober_rpc import select_crypto_mode
+
+        local = {"version": "Cynober-Secure-1.2", "crypto": ["ecdh", "hss"]}
+        remote = {"version": "Cynober-Secure-1.2", "crypto": ["ecdh"]}
+        with self.assertRaises(RuntimeError):
+            select_crypto_mode(local, remote)
+        remote_hss = {"version": "Cynober-Secure-1.2", "crypto": ["ecdh", "hss"]}
+        self.assertEqual(select_crypto_mode(local, remote_hss), "hss")
+
+    @patch.dict(os.environ, {"CYNOBER_MIN_CRYPTO": "ecdh"}, clear=False)
+    def test_min_crypto_ecdh_keeps_stronger_hss(self):
+        """MIN=ecdh to minimum, nie sufit: HSS nadal wygrywa, simple odpada."""
+        from cynober_rpc import select_crypto_mode
+
+        both = {"version": "Cynober-Secure-1.2", "crypto": ["simple", "ecdh", "hss"]}
+        self.assertEqual(select_crypto_mode(both, both), "hss")
+        only_simple = {"version": "Cynober-Secure-1.2", "crypto": ["simple"]}
+        with self.assertRaises(RuntimeError):
+            select_crypto_mode(both, only_simple)
+
     @patch.dict(os.environ, {"CYNOBER_ALLOW_SIMPLE": "0", "CYNOBER_MIN_CRYPTO": "hss"}, clear=False)
     def test_server_without_simple_in_caps_refuses_simple_only_client(self):
         from cynober_rpc import build_local_caps, select_crypto_mode
