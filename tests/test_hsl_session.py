@@ -330,3 +330,83 @@ class TestHSLIntegration(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+class TestHSLDistinctNodeIds(unittest.TestCase):
+    """Klient i serwer na różnych maszynach mają różne node_id.
+
+    Przed poprawką AAD ramki RPC liczono z (local_id, remote_id) — po dwóch
+    stronach odwrotnie — i serwer odrzucał żądanie z InvalidTag.
+    """
+
+    def _session(self, server_id: str, client_id: str):
+        import threading as _th
+
+        import cynober_rpc as R
+        from karmazyn_handshake import _recv_frame, _send_frame
+
+        clear_replay_cache()
+        local = _th.local()
+        srv = socket.socket()
+        srv.bind(("127.0.0.1", 0))
+        srv.listen(1)
+        port = srv.getsockname()[1]
+        out: dict = {}
+
+        def server():
+            local.nid = server_id
+            conn, _ = srv.accept()
+            crypto = _CryptoLayer()
+            try:
+                _m, _lc, _rc, hsl = R.perform_handshake(
+                    conn, crypto, True, time.monotonic() + 10)
+                out["server_link"] = hsl
+                query = R.decode_request(_recv_frame(conn), crypto, hsl)
+                R.send_encrypted_response(
+                    conn, crypto, [{"status": "ok", "echo": query}], hsl)
+            except Exception as e:  # pragma: no cover - zapis do asercji
+                out["server_err"] = repr(e)
+            finally:
+                conn.close()
+
+        with patch.object(R, "_node_id", lambda: local.nid):
+            th = _th.Thread(target=server)
+            th.start()
+            local.nid = client_id
+            c = socket.create_connection(("127.0.0.1", port))
+            try:
+                crypto = _CryptoLayer()
+                _m, _lc, _rc, hsl = R.perform_handshake(
+                    c, crypto, False, time.monotonic() + 10)
+                _send_frame(c, R.encode_rpc_request_frame("ZDROWIE", crypto, hsl))
+                _kind, data = R.decode_rpc_response_frame(_recv_frame(c), crypto, hsl)
+            finally:
+                c.close()
+                th.join(10)
+                srv.close()
+        return hsl, out, data
+
+    def test_rpc_between_distinct_node_ids(self):
+        hsl, out, data = self._session("node_aaaaaaaaaaaa", "node_bbbbbbbbbbbb")
+        self.assertNotIn("server_err", out)
+        self.assertEqual(data["results"][0]["echo"], "ZDROWIE")
+        srv = out["server_link"]
+        self.assertTrue(srv.is_server)
+        self.assertFalse(hsl.is_server)
+        # ten sam kierunek → ten sam AAD i klucz po obu stronach
+        self.assertEqual(hsl.aad_request(), srv.aad_request())
+        self.assertEqual(hsl.aad_response(), srv.aad_response())
+        self.assertEqual(hsl.request_key(), srv.request_key())
+        self.assertNotEqual(hsl.request_key(), hsl.response_key())
+
+    def test_shared_node_id_keeps_old_aad(self):
+        # jedna maszyna, wspólny node_id: AAD jak przed poprawką
+        hsl, out, data = self._session("node_cccccccccccc", "node_cccccccccccc")
+        self.assertEqual(data["results"][0]["echo"], "ZDROWIE")
+        self.assertEqual(
+            hsl.aad_request(),
+            build_aad(hsl.local_id, hsl.remote_id, hsl.task, hsl.epoch, "req"),
+        )
+        self.assertEqual(
+            hsl.aad_response(),
+            build_aad(hsl.remote_id, hsl.local_id, hsl.task, hsl.epoch, "resp"),
+        )

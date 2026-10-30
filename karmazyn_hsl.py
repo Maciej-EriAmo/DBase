@@ -248,12 +248,23 @@ class HSLLink:
     _kpc: Any = None
     kpc_last_soft_residual: float = 0.0
     kpc_enabled: bool = True
+    # Strona łącza. AAD wiąże KIERUNEK ramki (klient→serwer = "req",
+    # serwer→klient = "resp"), nie to, kto jest lokalny — inaczej klient
+    # i serwer z różnymi node_id liczą różne klucze ramek (InvalidTag).
+    is_server: bool = False
+
+    def _client_server_ids(self) -> tuple[str, str]:
+        if self.is_server:
+            return self.remote_id, self.local_id
+        return self.local_id, self.remote_id
 
     def aad_request(self) -> bytes:
-        return build_aad(self.local_id, self.remote_id, self.task, self.epoch, "req")
+        client, server = self._client_server_ids()
+        return build_aad(client, server, self.task, self.epoch, "req")
 
     def aad_response(self) -> bytes:
-        return build_aad(self.remote_id, self.local_id, self.task, self.epoch, "resp")
+        client, server = self._client_server_ids()
+        return build_aad(server, client, self.task, self.epoch, "resp")
 
     def request_key(self) -> bytes:
         self.ensure_epoch()
@@ -488,6 +499,7 @@ def perform_hsl_link(
         _commit_local=commit_local,
         _commit_remote=commit_remote,
         _qkd_seed=qkd,
+        is_server=is_server,
     )
     # KPC bootstrap (historia gen=0) — brama ewolucji; nie per-frame
     link._kpc_bootstrap()
